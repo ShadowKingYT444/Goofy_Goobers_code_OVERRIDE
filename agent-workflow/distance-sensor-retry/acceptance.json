@@ -1,0 +1,9 @@
+{
+  "brain_ports_detected": true,
+  "program_uploaded": true,
+  "brain_loop_verified_by_capture": true,
+  "serial_console_streaming": false,
+  "screen_barcode_decoded": true,
+  "web_data_endpoint_verified": true,
+  "ui_started": true
+}

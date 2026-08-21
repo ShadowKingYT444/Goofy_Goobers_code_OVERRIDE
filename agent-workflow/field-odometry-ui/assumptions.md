@@ -1,0 +1,14 @@
+- Field is modeled as 144 in x 144 in.
+- Robot starts at x=0 in, y=0 in, heading 90 deg / upward.
+- Left drive ports are 17 and 18. Right drive ports are 11 and 13.
+- Each side can use the average of its two motor positions.
+- Motor position units are degrees from PROS get_position().
+- Wheel diameter is 2.75 in and track width is 10 in.
+- Odometry is relative and resets when the browser page reloads.
+- Horizontal odometer is a VEX Rotation Sensor on port 5.
+- Horizontal odometer wheel diameter is 2 in and position units are centidegrees.
+- Horizontal odometer is centered side-to-side and 12 cm / 4.72 in behind robot center.
+- Positive horizontal odometer delta means the robot slid right when starting bottom-left facing up.
+- The LiDAR bar faces the robot's left side.
+- LiDAR readings over 50 in are not trusted for pose correction.
+- LiDAR wall context is heading/helper-only in the current display; x/y should come from onboard fused pose when fresh, otherwise browser odometry fallback.

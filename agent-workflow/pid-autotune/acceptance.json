@@ -1,0 +1,39 @@
+{
+  "checks": [
+    {
+      "name": "autotune routine added",
+      "status": "passed_static",
+      "note": "pid_autotune_auton exists in src/pid_autotune.cpp."
+    },
+    {
+      "name": "controller launch",
+      "status": "passed_static",
+      "note": "src/main.cpp launches PID autotune with X + Down."
+    },
+    {
+      "name": "bounded trials",
+      "status": "passed_static",
+      "note": "Drive and turn trials now use EZ-Template pid_drive_set, pid_turn_set, pid_wait, and normal EZ exit conditions."
+    },
+    {
+      "name": "selected constants output",
+      "status": "passed_static",
+      "note": "Routine prints PID_TUNE drive_best, turn_best, and apply lines."
+    },
+    {
+      "name": "PROS build",
+      "status": "passed",
+      "note": "Downloaded workspace-local purduesigbots toolchain 13.3.1, set PROS_TOOLCHAIN to .pros-toolchain/usr, and clean PROS build produced fresh hot/cold package binaries."
+    },
+    {
+      "name": "fresh upload",
+      "status": "passed",
+      "note": "Freshly built EZ-based autotuner uploaded to V5 slot 1 on COM9 as MoreVex with --after run."
+    },
+    {
+      "name": "physical autotune run",
+      "status": "pending",
+      "note": "Requires open-space robot test."
+    }
+  ]
+}

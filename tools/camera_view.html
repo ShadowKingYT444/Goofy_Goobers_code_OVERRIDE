@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Camera Preview</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        color: white;
+        font-family: Arial, sans-serif;
+      }
+      video {
+        width: 100vw;
+        height: 100vh;
+        object-fit: contain;
+        background: #000;
+      }
+      #status {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        padding: 8px 10px;
+        background: rgba(0, 0, 0, 0.65);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">Starting camera...</div>
+    <video id="video" autoplay playsinline muted></video>
+    <script>
+      const status = document.getElementById("status");
+      const video = document.getElementById("video");
+
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        .then((stream) => {
+          video.srcObject = stream;
+          status.textContent = "Camera live";
+        })
+        .catch((err) => {
+          status.textContent = `Camera error: ${err.name}`;
+        });
+    </script>
+  </body>
+</html>

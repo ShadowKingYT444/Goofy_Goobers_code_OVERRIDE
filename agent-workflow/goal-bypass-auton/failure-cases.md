@@ -1,0 +1,4 @@
+- If turn sign is opposite on the real robot, the bypass will go left instead of right.
+- If the goal is larger than assumed, the 16 in diagonal clearance may need to increase.
+- If the robot starts too close to the left wall, the right-side bypass is preferred to avoid wall contact.
+- If field pose reset is not pressed before testing, the web overlay can show a shifted path even if the robot motion is correct.

@@ -1,0 +1,32 @@
+{
+  "task": "multisensor-localization-completion",
+  "checks": {
+    "full_goal_captured": true,
+    "baseline_captured": true,
+    "design_before_implementation": true,
+    "rear_odom_sign_live_calibrated": true,
+    "rear_odom_scale_live_calibrated": true,
+    "rear_odom_offset_live_calibrated": true,
+    "multisensor_turn_correlation_logger_built": true,
+    "drive_effective_track_width_live_calibrated": true,
+    "pure_rotation_translation_cancelled": true,
+    "webcam_diagnostic_only": true,
+    "ai_vision_port_verified": true,
+    "apriltag_known_pose_live_verified": true,
+    "duplicate_tag_ambiguity_gated": true,
+    "lidar_dropout_recovery_live_verified": true,
+    "stationary_tag_correction_with_lidar_unavailable": true,
+    "lidar_obstacle_heading_jump_gated": true,
+    "runtime_start_pose_entry_verified": false,
+    "port_9_conflict_resolved": true,
+    "full_regression_suite": true,
+    "controller_route_within_tolerance": false,
+    "rendered_ui_verified": false,
+    "slow_20ft_route_completed": true,
+    "constant_memory_capture_and_analysis": true,
+    "impossible_lidar_position_jump_gated": true,
+    "persistent_tag_reacquisition_verified": true,
+    "single_tag_heading_underconstraint_removed": true,
+    "stationary_absolute_correction_reset_fixed": true
+  }
+}

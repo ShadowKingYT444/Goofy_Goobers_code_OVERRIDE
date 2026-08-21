@@ -1,0 +1,16 @@
+{
+  "task": "known-start-tag-map",
+  "checks": [
+    {"name": "fixed nine-goal tag map", "status": "passed", "note": "center-origin map uses 24 inches per tile and matches FIELD_2d_VIEW.jpg"},
+    {"name": "duplicate tag IDs represented", "status": "passed", "note": "ID 0 occurs once; IDs 1-4 occur twice each"},
+    {"name": "editable start pose", "status": "passed", "note": "kEnteredStartPose is isolated in include/localization_config.hpp"},
+    {"name": "arbitrary start heading conversion", "status": "passed", "note": "source and adversarial math checks map raw IMU zero to entered field heading"},
+    {"name": "physical IMU reset to zero", "status": "passed", "note": "reset exists after calibration and at localization start; hardware confirmation still required"},
+    {"name": "LiDAR correction preserves configured field frame", "status": "passed", "note": "LiDAR IMU reset uses pose.imu_zero_field_heading_deg"},
+    {"name": "field dashboard signed frame", "status": "passed", "note": "HTTP and JavaScript checks passed; visual browser check unavailable"},
+    {"name": "regression source checks", "status": "passed"},
+    {"name": "PROS firmware build", "status": "passed", "note": "bin/hot.package.bin created with existing LVGL and RWX linker warnings"},
+    {"name": "physical robot validation", "status": "pending", "note": "requires entered pose, upload, and clockwise-turn sign check"},
+    {"name": "camera pose correction", "status": "deferred", "note": "right-side camera yaw and offsets are not calibrated yet"}
+  ]
+}

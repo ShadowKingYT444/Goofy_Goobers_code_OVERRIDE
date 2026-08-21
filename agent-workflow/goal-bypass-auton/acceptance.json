@@ -1,0 +1,11 @@
+{
+  "checks": [
+    { "name": "autonomous routine added", "status": "passed" },
+    { "name": "main autonomous calls routine", "status": "passed" },
+    { "name": "telemetry streams during autonomous", "status": "passed" },
+    { "name": "onboard sensor fusion", "status": "passed", "note": "Autonomous estimates pose from drivetrain encoders, port 5 odometer, and gated LiDAR wall projection" },
+    { "name": "PROS build", "status": "passed" },
+    { "name": "upload to robot", "status": "passed" },
+    { "name": "physical bypass path", "status": "pending", "note": "Needs on-field run to tune controller signs, gains, and clearances" }
+  ]
+}

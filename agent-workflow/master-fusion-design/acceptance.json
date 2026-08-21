@@ -1,0 +1,14 @@
+{
+  "task": "master-fusion-design",
+  "checks": [
+    {"name": "current behavior documented accurately", "status": "passed"},
+    {"name": "old NEXT_CHANGES content fully replaced", "status": "passed"},
+    {"name": "large innovation is not treated as automatic truth", "status": "passed"},
+    {"name": "every-fresh-sample comparison specified", "status": "passed"},
+    {"name": "LiDAR measurement model and gates specified", "status": "passed"},
+    {"name": "AI Vision bearing and duplicate-ID model specified", "status": "passed"},
+    {"name": "uncertainty and recovery behavior specified", "status": "passed"},
+    {"name": "implementation sequence and module contract specified", "status": "passed"},
+    {"name": "adversarial and 90-second evaluations specified", "status": "passed"}
+  ]
+}

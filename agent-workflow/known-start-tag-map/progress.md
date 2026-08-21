@@ -1,0 +1,7 @@
+2026-07-09: Inspected current firmware, dashboard, AI Vision smoke project, installed PROS 4.2.2 headers, and existing localization workflow artifacts. Baseline source checks mostly pass; one older architecture checker is stale because it expects the prior 2500 ms LiDAR correction cadence.
+2026-07-09: User supplied `FIELD_2d_VIEW.jpg` as the authoritative tag-ID layout and clarified that start pose must be entered explicitly rather than inferred from a corner.
+2026-07-09: User clarified that the handwritten numbers are Goal tag IDs, not coordinates. Adopted the requested center-origin frame: +X toward the 0-degree wall, +Y toward red, and 24 inches per tile step.
+2026-07-09: Added `include/localization_config.hpp` with the editable start pose, nine fixed Goal landmarks, duplicate tag IDs, Goal colors, and left-LiDAR/right-camera metadata.
+2026-07-09: Reworked onboard IMU conversion around the entered field heading. Both `initialize()` and localization startup reset raw IMU rotation to zero; LiDAR resets now preserve the configured field reference.
+2026-07-09: Converted the field dashboard to center-origin signed coordinates and added the nine Goal/tag markers. Automated source, parser, adversarial map, JavaScript syntax, HTTP, regression, and firmware build checks passed.
+2026-07-09: In-app browser rendering was unavailable. A foreground server returned `/playing-field` and `/data` successfully, but screenshot/visual inspection remains manual. No robot was connected for physical pose validation or upload.

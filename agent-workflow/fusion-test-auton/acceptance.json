@@ -1,0 +1,25 @@
+{
+  "checks": [
+    { "name": "workflow artifacts", "status": "passed" },
+    { "name": "fusion_test_auton declared", "status": "passed" },
+    { "name": "competition autonomous uses fusion_test_auton", "status": "passed" },
+    { "name": "X+Down triggers fusion_test_auton", "status": "passed" },
+    { "name": "phase logging", "status": "passed" },
+    { "name": "coordinate route logging", "status": "passed", "note": "auton logs FUSE_TEST route=start with wp1, turn_heading, and wp2" },
+    { "name": "coordinate-first movement", "status": "passed", "note": "route targets are derived from fused pose before commanding fused field movement" },
+    { "name": "full fused drive controller", "status": "passed", "note": "X+Down uses fused_drive_to_point for waypoint movement" },
+    { "name": "full fused turn controller", "status": "passed", "note": "X+Down uses fused_turn_to_heading for heading movement" },
+    { "name": "active LiDAR bias mode", "status": "passed", "note": "active fused controllers call update_pose with LidarFusionMode::kBiasOnly" },
+    { "name": "source regression check", "status": "passed" },
+    { "name": "PROS CLI V5 detection", "status": "passed", "note": "pros lsusb --target v5 detected COM9 communications and COM8 user ports" },
+    { "name": "old fused waypoint follower removed from X+Down test", "status": "passed" },
+    { "name": "smooth direct motor output", "status": "passed", "note": "fused controllers use slew-limited forward and turn commands with physical drive signs" },
+    { "name": "damped turn controller", "status": "passed", "note": "fused turn loop uses kP, kD, field-heading error, and slew limiting" },
+    { "name": "old encoder-only test path bypassed", "status": "passed", "note": "fusion_test_auton no longer calls drive_to_field_target or turn_to_field_heading" },
+    { "name": "one second LiDAR IMU correction", "status": "passed", "note": "accepted wall theta corrections reset drive IMU every 1000 ms gate" },
+    { "name": "LiDAR x/y correction disabled", "status": "passed", "note": "LiDAR wall path no longer writes pose.x or pose.y" },
+    { "name": "PROS build", "status": "passed", "note": "python -m pros.cli.main make produced bin/hot.package.bin with existing warnings" },
+    { "name": "PROS upload", "status": "passed", "note": "uploaded MoreVex to V5 slot 1 on COM9 with --after none" },
+    { "name": "manual robot path test", "status": "pending", "note": "Needs physical X+Down check that turn reaches about 45 deg without 10-30 deg oscillation" }
+  ]
+}

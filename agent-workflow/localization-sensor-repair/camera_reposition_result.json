@@ -1,0 +1,12 @@
+{
+  "video": "agent-workflow\\localization-sensor-repair\\camera_reposition.mp4",
+  "reference_center_x_px": 440.0,
+  "peak_time_s": 12.8333205,
+  "peak_delta_px": -19.0,
+  "known_peak_in": 1.51,
+  "pixels_per_in": 34.437086092715234,
+  "final_delta_px": -21.0,
+  "final_displacement_in": -0.6098076923076923,
+  "minimum_match_score": 0.7322084903717041,
+  "reliable_frames": 600
+}

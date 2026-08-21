@@ -1,0 +1,7 @@
+- Autotune runs while the robot is near a wall or game object and collides.
+- A candidate oscillates or fails to settle; it should get a large score penalty, stop, and move on.
+- Motor encoder telemetry is invalid; the drive trial should fail safely.
+- IMU telemetry is invalid; the turn trial should fail safely.
+- Integral windup accumulates while output is saturated; integral clamp prevents runaway.
+- Candidate tests walk the robot across the field; alternating forward/back and clockwise/counterclockwise trials limit drift.
+- The selected constants work only on battery voltage or carpet conditions present during tuning; results still need a validation route.

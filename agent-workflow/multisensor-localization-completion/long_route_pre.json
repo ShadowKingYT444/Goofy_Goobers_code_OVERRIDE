@@ -1,0 +1,158 @@
+﻿{
+    "connected":  true,
+    "serial_port":  "COM8",
+    "latest":  {
+                   "sample":  6618,
+                   "brain_ms":  399654,
+                   "pc_time":  1783753749.4045305,
+                   "sensors":  {
+                                   "6":  {
+                                             "mm":  558,
+                                             "in":  21.968503937007874,
+                                             "confidence":  63,
+                                             "installed":  true
+                                         },
+                                   "7":  {
+                                             "mm":  645,
+                                             "in":  25.393700787401578,
+                                             "confidence":  63,
+                                             "installed":  true
+                                         },
+                                   "8":  {
+                                             "mm":  727,
+                                             "in":  28.62204724409449,
+                                             "confidence":  35,
+                                             "installed":  true
+                                         },
+                                   "9":  {
+                                             "mm":  806,
+                                             "in":  31.73228346456693,
+                                             "confidence":  26,
+                                             "installed":  true
+                                         }
+                               },
+                   "motors":  {
+                                  "17":  {
+                                             "position_deg":  0.0
+                                         },
+                                  "18":  {
+                                             "position_deg":  0.0
+                                         },
+                                  "11":  {
+                                             "position_deg":  0.0
+                                         },
+                                  "13":  {
+                                             "position_deg":  0.0
+                                         }
+                              },
+                   "odometer":  {
+                                    "5":  {
+                                              "position_centideg":  0
+                                          }
+                                },
+                   "imu":  {
+                               "ez_rotation_deg":  0.0,
+                               "raw_rotation_deg":  0.0,
+                               "status":  18
+                           }
+               },
+    "onboard_pose":  {
+                         "phase":  "telemetry",
+                         "x":  17.65,
+                         "y":  44.12,
+                         "heading_deg":  146.23,
+                         "pc_time":  1783753749.4045305,
+                         "lidar":  "none",
+                         "reject":  "fit",
+                         "line":  "FUSE_TEST phase=telemetry x=17.65 y=44.12 heading=146.23 imu=146.23 bias=0.00 lidar=none reject=fit theta=nan distance=nan rmse=nan lidar_axis=none axis_step=0.00 drive=L2/R2 spread=0.0/0.0 side=none track=12.0086 rear=2.5665 lidar_scale=0.926770 ai_id=3 ai_bearing=-27.60 ai_range=16.46 ai_pred_range=16.52 ai_range_residual=0.06 ai_innovation=0.06 ai_pos_step=0.00 ai_heading_step=0.00 ai_goal=upper_red_neutral ai_face=-x ai_residual=0.04 ai_margin=135.95 ai_age=20 ai_reject=correction_wait",
+                         "imu":  146.23,
+                         "bias":  0.0,
+                         "axis_step":  0.0,
+                         "ai_bearing":  -27.6,
+                         "ai_residual":  0.04,
+                         "ai_margin":  135.95,
+                         "ai_age":  20.0,
+                         "ai_range":  16.46,
+                         "ai_pred_range":  16.52,
+                         "ai_range_residual":  0.06,
+                         "ai_innovation":  0.06,
+                         "ai_pos_step":  0.0,
+                         "ai_heading_step":  0.0,
+                         "track":  12.0086,
+                         "rear":  2.5665,
+                         "lidar_scale":  0.92677,
+                         "ai_id":  3,
+                         "ai_goal":  "upper_red_neutral",
+                         "ai_face":  "-x",
+                         "ai_reject":  "correction_wait"
+                     },
+    "camera_pose":  {
+                        "available":  false,
+                        "message":  "disabled in tournament mode; set MOREVEX_DEBUG_WEBCAM=1 for ground truth"
+                    },
+    "vision":  {
+                   "brain_ms":  399574,
+                   "poll":  3971,
+                   "port":  20,
+                   "installed":  true,
+                   "configured":  true,
+                   "object_count":  1,
+                   "tag_id":  3,
+                   "corners":  [
+                                   41,
+                                   176,
+                                   57,
+                                   174,
+                                   57,
+                                   160,
+                                   41,
+                                   162
+                               ],
+                   "center_px":  [
+                                     49.0,
+                                     168.0
+                                 ],
+                   "area_px2":  224.0,
+                   "mean_edge_px":  15.06,
+                   "range_estimate_in":  16.46,
+                   "edge_ratio":  1.15,
+                   "fill_ratio":  0.88,
+                   "bearing_deg":  -27.6,
+                   "repeated_geometry":  true,
+                   "geometry_age_ms":  1500,
+                   "valid":  true,
+                   "reason":  "repeat",
+                   "pc_time":  1783753749.3426104,
+                   "line":  "VISION_SHADOW t=399574 poll=3971 port=20 installed=1 configured=1 count=1 tag=3 corners=41,176,57,174,57,160,41,162 center=49.0,168.0 area=224.0 mean_edge=15.06 range=16.46 edge_ratio=1.15 fill=0.88 bearing=-27.60 repeat=1 geometry_age=1500 valid=1 reason=repeat",
+                   "message":  "Port 20 tag 3 valid"
+               },
+    "sensors":  {
+                    "6":  {
+                              "mm":  558,
+                              "in":  21.968503937007874,
+                              "confidence":  63,
+                              "installed":  true
+                          },
+                    "7":  {
+                              "mm":  645,
+                              "in":  25.393700787401578,
+                              "confidence":  63,
+                              "installed":  true
+                          },
+                    "8":  {
+                              "mm":  727,
+                              "in":  28.62204724409449,
+                              "confidence":  35,
+                              "installed":  true
+                          },
+                    "9":  {
+                              "mm":  806,
+                              "in":  31.73228346456693,
+                              "confidence":  26,
+                              "installed":  true
+                          }
+                },
+    "message":  "Live on COM8: ports 6, 7, 8, 9",
+    "rate_hz":  16.666666666666668,
+    "reset_token":  0
+}

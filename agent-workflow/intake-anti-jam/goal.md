@@ -1,0 +1,1 @@
+Add intake jam detection using V5 motor current, torque, and velocity. Add an UP-arrow calibration hotkey that measures normal intake values, sets thresholds, and reverses/forwards both intake motors in 50 ms pulses for about one second when a sustained stall is detected.

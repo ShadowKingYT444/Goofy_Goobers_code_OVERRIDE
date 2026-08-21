@@ -1,0 +1,9 @@
+- The active firmware is `src/main.cpp` plus `src/autons.cpp`.
+- The active dashboard and telemetry parser is `tools/lidar_bar_server.py`.
+- The robot starts from a known field pose; the current code hard-codes this as x=0 in, y=0 in, heading=90 deg.
+- Distance sensors are on smart ports 6, 7, 8, and 9, with a 2 in spacing model across the sensor bar.
+- The horizontal odometer is a VEX Rotation Sensor on port 5, 2 in wheel diameter, 12 cm behind robot center.
+- The LiDAR bar faces the robot's left side.
+- The current code has an IMU through `Drive chassis(..., imu_port=4, ...)`, but the custom fused pose code does not read IMU heading.
+- Drivetrain encoders are still used as the forward-distance source in the custom estimator.
+- No physical field test was run in this review.

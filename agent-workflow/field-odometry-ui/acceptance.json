@@ -1,0 +1,27 @@
+{
+  "checks": [
+    { "name": "python syntax", "status": "passed" },
+    { "name": "browser dashboard loads", "status": "passed" },
+    { "name": "field odometry panel visible", "status": "passed" },
+    { "name": "live robot telemetry", "status": "passed", "note": "LiDAR live; finite motor telemetry visible for 18, 11, and 13; 17 is ignored because it reports inf" },
+    { "name": "reset origin control", "status": "passed" },
+    { "name": "wheel travel diagnostics", "status": "passed" },
+    { "name": "horizontal odometer telemetry h5", "status": "passed", "note": "Live /data includes odometer port 5 position_centideg from COM14" },
+    { "name": "side odometer sign regression", "status": "passed" },
+    { "name": "telemetry parser compatibility", "status": "passed", "note": "Old motor-only frames and new h5 frames parse" },
+    { "name": "LiDAR assist gate", "status": "passed", "note": "UI gates wall assist behind RMSE <= 0.20 in and distance <= 50 in" },
+    { "name": "LiDAR field visualization", "status": "passed", "note": "Field map renders four red wall hypotheses with RMSE bands, theta labels, and 12 in arrow spacing" },
+    { "name": "field-only route", "status": "passed", "note": "/playing-field and /playing%20field render the field canvas view with non-field sections hidden" },
+    { "name": "field size", "status": "passed", "note": "Web UI uses fieldSizeIn = 144 for the 12 ft x 12 ft field" },
+    { "name": "bad LiDAR hold behavior", "status": "passed", "note": "Field overlay and LiDAR readouts keep the last good LiDAR wall estimate when current RMSE/gate is bad" },
+    { "name": "LiDAR x/y browser correction disabled", "status": "passed", "note": "Browser LiDAR wall path reports heading context but no longer writes pose.x or pose.y" },
+    { "name": "onboard fused pose parser", "status": "passed", "note": "telemetry parser accepts FUSE_TEST phase lines with x/y/h and x/y/heading" },
+    { "name": "onboard fused pose payload", "status": "passed", "note": "/data includes onboard_pose when FUSE_TEST pose lines are observed" },
+    { "name": "pose-grid route", "status": "passed", "note": "/pose-grid serves the field-only grid view" },
+    { "name": "field HUD", "status": "passed", "note": "field grid contains an always-visible HUD for x/y/heading and pose source" },
+    { "name": "LiDAR wall choice scoring", "status": "passed", "note": "Wall hypothesis selection combines odometry distance error and odometry-heading theta error" },
+    { "name": "drivetrain vertical overlay", "status": "passed", "note": "Field canvas draws a cyan drive Y line from averaged drivetrain encoder vertical displacement" },
+    { "name": "port 5 motor conflict removed", "status": "passed", "note": "claw_rotate_motor(5) and its L2 command were removed because port 5 is the horizontal odometer" },
+    { "name": "physical side-slide verification", "status": "pending", "note": "Robot was streaming but h5 stayed at 0 during the sampled stationary check" }
+  ]
+}

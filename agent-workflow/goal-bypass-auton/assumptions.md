@@ -1,0 +1,5 @@
+- Robot starts near the lower-left field area shown in the screenshot and faces upfield.
+- The obstacle/goal is centered directly ahead of the robot.
+- The desired endpoint is roughly 36 inches farther upfield from the starting pose.
+- The drivetrain is differential/tank drive, so the bypass uses turns and forward segments rather than strafing.
+- Drive wheel diameter is 2.75 in, motor cartridge is 450 rpm, and external ratio is 1:1.

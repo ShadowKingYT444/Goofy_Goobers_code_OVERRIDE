@@ -1,0 +1,7 @@
+- Field coordinates use inches with the center Goal at `(0, 0)`.
+- Positive X points toward the 0-degree/top wall, positive Y points toward the red side, and negative Y points toward the blue side.
+- Field heading is counterclockwise-positive with 0 degrees along positive X. Therefore 90 degrees points toward the red side.
+- `FIELD_2d_VIEW.jpg` is the source of truth for goal tag IDs: center 0; top row 2,1; upper side row 3,4; lower side row 4,3; bottom row 1,2.
+- Goal coordinates are the fixed tile-grid goal centers shown in `FIELD_2d_VIEW.jpg`. One tile equals 24 inches and one coordinate unit equals one inch.
+- The LiDAR array is on the robot's left side and the future AI Vision sensor will be on the opposite/right side.
+- Resetting the physical IMU to zero does not require the field heading to be zero. The entered start heading defines which field direction raw IMU zero represents.

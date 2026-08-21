@@ -1,0 +1,1 @@
+Add a focused autonomous routine for testing the LiDAR, odometry, IMU, and motor encoder fusion together. The routine should drive forward 12 inches, turn 45 degrees, then drive forward another 12 inches. It should become the competition autonomous routine and should be triggerable from opcontrol with X+Down.

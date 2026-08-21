@@ -1,0 +1,1 @@
+Show drivetrain position on the LiDAR web UI using motor positions. Assume VEX field is 12 ft square, robot starts at bottom-left, heading upward, wheel diameter is 2.75 in, track width is 10 in, and left/right motor pairs are gear-linked.

@@ -1,0 +1,12 @@
+{
+  "video": "agent-workflow\\localization-sensor-repair\\camera_forward_test.mp4",
+  "reference_center_x_px": 440.0,
+  "peak_time_s": 11.8333215,
+  "peak_delta_px": 52.0,
+  "known_peak_in": 1.51,
+  "pixels_per_in": 34.437086092715234,
+  "final_delta_px": -190.0,
+  "final_displacement_in": -5.517307692307692,
+  "minimum_match_score": 0.7416823506355286,
+  "reliable_frames": 659
+}

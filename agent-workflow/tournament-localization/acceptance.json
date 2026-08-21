@@ -1,0 +1,17 @@
+{
+  "task": "tournament-localization",
+  "checks": {
+    "objective_captured": true,
+    "baseline_before_production_edits": true,
+    "official_research_recorded": true,
+    "ai_vision_port_20_live_verified": true,
+    "production_ai_vision_integrated": false,
+    "tag_face_geometry_calibrated": false,
+    "webcam_is_debug_only": false,
+    "lidar_blackout_fallback_proved": false,
+    "port5_rotation_ratio_calibrated": false,
+    "motion_budget_guarded": false,
+    "rendered_tournament_ui_verified": false,
+    "bounded_live_route_passed": false
+  }
+}

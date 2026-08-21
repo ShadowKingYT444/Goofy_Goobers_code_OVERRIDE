@@ -1,0 +1,58 @@
+{
+  "ai_rejects": {
+    "correction_wait": 363,
+    "no_tag": 8,
+    "position_innovation": 451,
+    "settling": 38
+  },
+  "checks": {
+    "ai_heading_step_bounded_0p5deg": true,
+    "ai_position_step_bounded_0p75in": true,
+    "heading_error_le_10deg": false,
+    "lidar_step_bounded_2in": true,
+    "no_heading_jump_over_10deg_per_report": false,
+    "no_pose_jump_over_8in_per_report": true,
+    "return_error_le_2in": false,
+    "route_completed": false,
+    "same_side_encoder_spread_le_8deg": true
+  },
+  "counts": {
+    "d4": 1410,
+    "fuse": 899,
+    "lines": 3256,
+    "vision": 843,
+    "vision_valid": 843
+  },
+  "file": "agent-workflow\\multisensor-localization-completion\\slow_long_route_live.log",
+  "heading_error_deg": 11.79,
+  "lidar_rejects": {
+    "fit": 854,
+    "motion": 24,
+    "wait": 13
+  },
+  "maxima": {
+    "ai_heading_step_deg": 0.0,
+    "ai_position_step_in": 0.0,
+    "heading_jump_deg_per_fuse_report": 11.79,
+    "imu_jump_deg_per_d4_sample": 11.8,
+    "left_encoder_spread_deg": 8.0,
+    "lidar_axis_step_in": 0.0,
+    "pose_jump_in_per_fuse_report": 5.705,
+    "right_encoder_spread_deg": 2.0
+  },
+  "passed": false,
+  "return_error_in": 3.04,
+  "route": {
+    "heading": "155.97",
+    "heading_error": "11.79",
+    "ok": "0",
+    "return_error": "3.04",
+    "route": "slow_long_done",
+    "x": "20.35",
+    "y": "39.50"
+  },
+  "vision_reasons": {
+    "repeat": 827,
+    "shadow_valid": 16
+  }
+}

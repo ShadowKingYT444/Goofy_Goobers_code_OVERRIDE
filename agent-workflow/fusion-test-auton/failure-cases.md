@@ -1,0 +1,24 @@
+- X+Down still triggers PID autotune instead of the fusion test.
+- Competition autonomous still runs the old bypass route.
+- The 45 degree turn uses fixed PID/IMU only and does not update the fused pose loop.
+- The second 12 inch leg is hard-coded instead of being based on the post-turn fused heading.
+- The test produces no phase logs, making it hard to compare intended and observed pose.
+- The routine keeps driving after a timeout or after the opcontrol task finishes.
+- The test silently depends on LiDAR wall correction being available; it should still run as odometry+IMU when no clean wall is present.
+- Same-sign `chassis.drive_set()` power makes the robot turn or drive backward because this robot's physical forward convention is left negative, right positive.
+- The source regression passes while `fusion_test_auton()` still uses the old fused waypoint follower.
+- The screen label is ambiguous, making it unclear whether the corrected X+Down test is loaded.
+- Forward legs use slow manual power loops instead of PROS motor-controller relative movements.
+- LiDAR theta only changes an internal bias and never corrects the drive IMU used by turn movements.
+- The test is just fixed leg commands and never defines field-coordinate waypoints, making the odometry pose useless.
+- LiDAR wall fusion changes `pose.x` or `pose.y` during this test instead of only correcting heading/IMU drift.
+- The route leaves long pauses between movements, so it cannot represent chained autonomous movement timing.
+- The coordinate wrapper recomputes the second segment from a bad pose estimate and commands much more than the planned 12 inches.
+- EZ-Template turn signs make the robot drive backward instead of turning in place.
+- `move_relative()` target waits time out or overshoot, creating a long pause before the next chained command.
+- LiDAR wall correction resets the drive IMU during an active turn, so the turn target stays fixed while the IMU reference jumps.
+- A hard minimum turn power makes the robot reverse aggressively near the target and oscillate between partial headings.
+- The UI pose grid shows a squiggly heading/path during the turn, meaning the estimator is seeing the heading bounce too.
+- Movement only logs the fused pose but still controls from encoder distance and raw IMU, so the full localization system never actually drives the robot.
+- LiDAR is fully disabled during movement, so clean wall theta cannot help heading while testing fused motion.
+- Fused x/y is computed but the drive does not continuously correct bearing or distance to the target point.

@@ -1,0 +1,9 @@
+{
+  "workflow_artifacts_created": true,
+  "baseline_attempted": true,
+  "static_motor_name_mismatch_identified": true,
+  "implementation_done": true,
+  "build_verified": false,
+  "robot_calibration_verified": false,
+  "robot_jam_verified": false
+}

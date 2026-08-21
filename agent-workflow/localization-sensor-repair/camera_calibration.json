@@ -1,0 +1,8 @@
+{
+  "camera": "Brio 101",
+  "baseline_x_px": 715,
+  "baseline_y_in": 0.5,
+  "pixels_per_inch": 30.0,
+  "updated_unix_s": 1783728313.3622942,
+  "note": "Fixed-camera anchor. Use Reset Start only at the configured robot pose."
+}

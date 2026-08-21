@@ -1,0 +1,6 @@
+- The robot has a clear 24 in space around it before the autotune routine starts.
+- The drivetrain encoder signs match the existing field-odometry checks: left encoder sign is -1 and right encoder sign is +1.
+- IMU port 4 is calibrated in `initialize()` before tuning turns.
+- The first autotuner should favor safe, smooth candidates over aggressive ultimate-gain oscillation tests.
+- Results are printed to the V5 serial console as `PID_TUNE ...` lines and shown on the Brain LCD.
+- Tuned constants are applied for the current run, but not persisted across program restarts.

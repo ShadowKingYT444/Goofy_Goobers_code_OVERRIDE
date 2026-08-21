@@ -1,0 +1,8 @@
+- A vertical tracking wheel cannot fit on this robot.
+- The left-side four-sensor LiDAR array and right-side AI Vision camera are the available external-reference sensors.
+- The center-origin inch field frame and repeated Goal tag IDs in `include/localization_config.hpp` are authoritative.
+- Raw IMU zero is mapped to the entered field heading.
+- Drivetrain encoders remain the only continuous robot-forward displacement input.
+- The current PROS version is 4.2.2 and its AI Vision API returns a tag ID plus four image corners.
+- The next estimator should fit the V5 Brain and remain testable by students; a small fixed-size error-state filter is preferable to an opaque general-purpose robotics stack.
+- Working hypothesis: a single central estimator with motion-dependent process uncertainty, sensor-specific measurement uncertainty, normalized innovation gating, and shadow-mode rollout will bound drift better than fixed one-second corrections or hard sensor overwrites.

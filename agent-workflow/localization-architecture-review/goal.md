@@ -1,0 +1,1 @@
+Determine whether the fixes proposed in `NEXT_CHANGES.md` will make the current LiDAR + horizontal odometer + drivetrain encoder + IMU localization approach work well enough for reliable autonomous localization, after reading the codebase and tool history first. The review should account for the fact that the robot's starting field pose is known.

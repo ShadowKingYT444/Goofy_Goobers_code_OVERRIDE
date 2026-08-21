@@ -1,0 +1,9 @@
+- Wheel slip or push while driving forward: drivetrain encoders report motion that did not happen, so y drifts without a vertical tracking wheel.
+- In-place turn with poor drive traction: drivetrain-derived heading can drift even though the IMU would be the better high-rate source.
+- Clean but ambiguous wall scan: the same wall distance and theta can match multiple wall hypotheses; current code always chooses the first best candidate.
+- Good line fit to the wrong flat object: RMSE alone cannot prove the target is a field wall.
+- Far wall with a 6 in sensor baseline: small distance noise can create noisy theta.
+- Low-confidence distance readings: current onboard fusion does not reject them even though telemetry includes confidence.
+- Robot rotating quickly: four distance readings are not a single static wall snapshot, but current onboard fusion does not gate by angular rate.
+- Axis projection without heading correction: LiDAR can repeatedly snap x/y while heading remains wrong, causing waypoint control to steer incorrectly.
+- Known start pose not applied as a field contract: if the estimator starts with the wrong x/y/theta, wall identity and route waypoints are corrupted from the first update.
