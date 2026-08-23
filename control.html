@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>VEX F310 Drive</title>
+  <style>
+    :root { color-scheme: dark; font: 16px system-ui, sans-serif; }
+    body { max-width: 760px; margin: 30px auto; padding: 0 18px; background: #11151b; color: #e8edf2; }
+    .card { background: #1b222c; border: 1px solid #344152; border-radius: 12px; padding: 18px; margin: 14px 0; }
+    .good { color: #72e59a; } .bad { color: #ff7a7a; } .warn { color: #ffd36a; }
+    .meters { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    meter { width: 100%; height: 28px; }
+    button { font: inherit; padding: 12px 18px; border-radius: 8px; border: 0; background: #b52832; color: white; cursor: pointer; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: #aebdcb; }
+    kbd { background: #303b49; padding: 2px 6px; border-radius: 4px; }
+    canvas { display: block; width: 100%; height: auto; background: #081018; border-radius: 10px; }
+    .legend { color: #aebdcb; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>VEX Remote Drive</h1>
+  <div class="card">
+    <div id="gamepad" class="bad">No gamepad detected</div>
+    <div id="drive" class="bad">STOPPED</div>
+    <p>F310: switch to <b>X</b> mode. Left stick steers, <b>RT</b> drives forward, and <b>LT</b> reverses.</p>
+    <p>Hold <kbd>LB</kbd> to enable motion. Press <kbd>B</kbd> for emergency stop. Maximum output is 50%.</p>
+    <button id="estop">EMERGENCY STOP</button>
+  </div>
+  <div class="card meters">
+    <div>Left: <span id="leftValue">0</span><meter id="left" min="-63" max="63" value="0"></meter></div>
+    <div>Right: <span id="rightValue">0</span><meter id="right" min="-63" max="63" value="0"></meter></div>
+  </div>
+  <div class="card">
+    <b>AprilTag polar view</b>
+    <p class="legend">Robot forward is up. Camera baseline is 12 in: port 19 faces left; port 20 faces right. Range uses VEX's 18 mm (0.709 in) detected tag quadrilateral.</p>
+    <canvas id="radar" width="720" height="520"></canvas>
+  </div>
+  <div class="card"><b>Brain telemetry</b><pre id="telemetry">Waiting...</pre></div>
+<script>
+const MAX = 63, DEADZONE = 0.12;
+let emergency = false, lastB = false, requestBusy = false, hadGamepad = false;
+const gamepadText = document.querySelector('#gamepad');
+const driveText = document.querySelector('#drive');
+const radar = document.querySelector('#radar');
+const radarContext = radar.getContext('2d');
+const CAMERA_BASELINE_IN = 12;
+const TAG_SIZE_IN = 18 / 25.4;
+const FOCAL_X = 212.34, FOCAL_Y = 195.82;
+const IMAGE_CENTER_X = 160, IMAGE_CENTER_Y = 120;
+let latestDetections = {};
+
+function deadzone(value) {
+  const magnitude = Math.abs(value);
+  if (magnitude <= DEADZONE) return 0;
+  return Math.sign(value) * (magnitude - DEADZONE) / (1 - DEADZONE);
+}
+function buttonValue(gamepad, index) {
+  const button = gamepad.buttons[index];
+  return button ? Math.max(button.value || 0, button.pressed ? 1 : 0) : 0;
+}
+function stopNow() {
+  emergency = true;
+  if (hadGamepad) send(0, 0, false);
+}
+document.querySelector('#estop').addEventListener('click', stopNow);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopNow(); });
+window.addEventListener('pagehide', stopNow);
+
+async function send(left, right, enabled) {
+  if (requestBusy) return;
+  requestBusy = true;
+  try {
+    await fetch('/api/drive', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({left, right, enabled}), cache: 'no-store'
+    });
+  } catch (_) {
+    driveText.textContent = 'CONNECTION LOST — FIRMWARE WATCHDOG STOP';
+    driveText.className = 'bad';
+  } finally { requestBusy = false; }
+}
+
+function update() {
+  const pads = [...navigator.getGamepads()].filter(Boolean);
+  const gamepad = pads.find(p => /logitech|f310/i.test(p.id)) || pads[0];
+  let left = 0, right = 0, enabled = false;
+  if (gamepad) {
+    hadGamepad = true;
+    gamepadText.textContent = `Connected: ${gamepad.id}`;
+    gamepadText.className = 'good';
+    const steer = deadzone(gamepad.axes[0] || 0);
+    const forward = buttonValue(gamepad, 7);
+    const reverse = buttonValue(gamepad, 6);
+    const throttle = forward - reverse;
+    let leftMix = throttle + steer;
+    let rightMix = throttle - steer;
+    const normalization = Math.max(1, Math.abs(leftMix), Math.abs(rightMix));
+    left = Math.round(MAX * leftMix / normalization);
+    right = Math.round(MAX * rightMix / normalization);
+    const bPressed = buttonValue(gamepad, 1) > 0.5;
+    if (bPressed && !lastB) emergency = true;
+    lastB = bPressed;
+    const deadman = buttonValue(gamepad, 4) > 0.5;
+    if (!deadman) emergency = false;
+    enabled = deadman && !emergency;
+  } else {
+    if (hadGamepad) send(0, 0, false);
+    hadGamepad = false;
+    gamepadText.textContent = 'No gamepad detected — press a gamepad button';
+    gamepadText.className = 'bad';
+    emergency = false;
+  }
+  if (!enabled) left = right = 0;
+  driveText.textContent = enabled ? 'DRIVE ENABLED (LB held)' : (emergency ? 'EMERGENCY STOP — release LB to reset' : 'STOPPED');
+  driveText.className = enabled ? 'good' : 'bad';
+  document.querySelector('#left').value = left;
+  document.querySelector('#right').value = right;
+  document.querySelector('#leftValue').textContent = left;
+  document.querySelector('#rightValue').textContent = right;
+  if (gamepad) send(left, right, enabled);
+}
+
+function tagPose(corners) {
+  const points = [];
+  for (let index = 0; index < 8; index += 2) points.push({x: corners[index], y: corners[index + 1]});
+  const edge = (a, b) => Math.hypot(points[a].x - points[b].x, points[a].y - points[b].y);
+  const widthPx = (edge(0, 1) + edge(2, 3)) / 2;
+  const heightPx = (edge(1, 2) + edge(3, 0)) / 2;
+  if (widthPx < 1 || heightPx < 1) return null;
+  const centerX = points.reduce((sum, point) => sum + point.x, 0) / 4;
+  const centerY = points.reduce((sum, point) => sum + point.y, 0) / 4;
+  const opticalRange = ((FOCAL_X * TAG_SIZE_IN / widthPx) + (FOCAL_Y * TAG_SIZE_IN / heightPx)) / 2;
+  const nx = (centerX - IMAGE_CENTER_X) / FOCAL_X;
+  const ny = (centerY - IMAGE_CENTER_Y) / FOCAL_Y;
+  return {
+    range: opticalRange * Math.sqrt(1 + nx * nx + ny * ny),
+    bearing: Math.atan((centerX - IMAGE_CENTER_X) / FOCAL_X) * 180 / Math.PI
+  };
+}
+
+function drawRadar() {
+  const context = radarContext, width = radar.width, height = radar.height;
+  context.clearRect(0, 0, width, height);
+  const origin = {x: width / 2, y: height / 2 + 35};
+  const poses = [];
+  for (const [portText, frame] of Object.entries(latestDetections)) {
+    const port = Number(portText);
+    const cameraX = port === 20 ? CAMERA_BASELINE_IN / 2 : -CAMERA_BASELINE_IN / 2;
+    const cameraYaw = port === 20 ? 90 : -90;
+    for (const tag of frame.tags || []) {
+      const relative = tagPose(tag.corners);
+      if (!relative) continue;
+      const direction = (cameraYaw + relative.bearing) * Math.PI / 180;
+      poses.push({
+        port, id: tag.id, range: relative.range, bearing: relative.bearing,
+        cameraX, x: cameraX + relative.range * Math.sin(direction),
+        y: relative.range * Math.cos(direction)
+      });
+    }
+  }
+  const plotRange = 60;
+  const scale = Math.min((width - 90) / (2 * plotRange), (height - 90) / (2 * plotRange));
+  const screen = (x, y) => ({x: origin.x + x * scale, y: origin.y - y * scale});
+
+  context.strokeStyle = '#1e4b58'; context.fillStyle = '#668997'; context.lineWidth = 1;
+  context.font = '12px system-ui';
+  for (let radius = 12; radius <= plotRange; radius += 12) {
+    context.beginPath(); context.arc(origin.x, origin.y, radius * scale, 0, Math.PI * 2); context.stroke();
+    context.fillText(`${radius} in`, origin.x + 5, origin.y - radius * scale + 14);
+  }
+  context.beginPath(); context.moveTo(origin.x, 20); context.lineTo(origin.x, height - 20); context.stroke();
+  context.beginPath(); context.moveTo(20, origin.y); context.lineTo(width - 20, origin.y); context.stroke();
+  context.fillStyle = '#9db3c2'; context.fillText('FORWARD', origin.x + 8, 20);
+  context.fillText('LEFT', 24, origin.y - 8); context.fillText('RIGHT', width - 64, origin.y - 8);
+
+  const robotWidth = CAMERA_BASELINE_IN * scale;
+  context.fillStyle = '#768493'; context.fillRect(origin.x - robotWidth / 2, origin.y - 10, robotWidth, 20);
+  context.strokeStyle = '#d5e0e8'; context.strokeRect(origin.x - robotWidth / 2, origin.y - 10, robotWidth, 20);
+  context.fillStyle = '#fff'; context.fillText('robot', origin.x - 15, origin.y + 5);
+
+  for (const camera of [{port:19, x:-6, color:'#53d6ff'}, {port:20, x:6, color:'#ffb54d'}]) {
+    const point = screen(camera.x, 0);
+    context.fillStyle = camera.color; context.beginPath(); context.arc(point.x, point.y, 6, 0, Math.PI * 2); context.fill();
+    context.fillText(`P${camera.port}`, point.x - 12, point.y + 22);
+  }
+  for (const pose of poses) {
+    const camera = screen(pose.cameraX, 0), tag = screen(pose.x, pose.y);
+    const color = pose.port === 20 ? '#ffb54d' : '#53d6ff';
+    context.strokeStyle = color; context.lineWidth = 2; context.beginPath();
+    context.moveTo(camera.x, camera.y); context.lineTo(tag.x, tag.y); context.stroke();
+    context.fillStyle = '#ff4f7b'; context.beginPath(); context.arc(tag.x, tag.y, 7, 0, Math.PI * 2); context.fill();
+    context.fillStyle = '#fff'; context.fillText(`Tag ${pose.id}`, tag.x + 10, tag.y - 4);
+    context.fillStyle = '#c8d6df'; context.fillText(`${pose.range.toFixed(1)} in, ${pose.bearing.toFixed(1)}°`, tag.x + 10, tag.y + 12);
+  }
+  if (!poses.length) {
+    context.fillStyle = '#ffca67'; context.font = '18px system-ui';
+    context.fillText('No fresh AprilTag detections', origin.x - 120, origin.y - 45);
+  }
+}
+
+setInterval(update, 50);
+setInterval(async () => {
+  try {
+    const status = await (await fetch('/api/status', {cache:'no-store'})).json();
+    document.querySelector('#telemetry').textContent = status.telemetry.join('\n') || 'Connected; awaiting telemetry';
+    latestDetections = status.detections || {};
+    drawRadar();
+  } catch (_) {}
+}, 500);
+drawRadar();
+</script>
+</body>
+</html>
