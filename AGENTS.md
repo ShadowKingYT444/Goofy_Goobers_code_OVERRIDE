@@ -29,9 +29,10 @@ This file applies to the repository root and all descendants. This is a VEX V5 C
 |---|---|
 | Drive left motors | Smart Ports `17` and `18`, both reversed (`-17`, `-18`) |
 | Drive right motors | Smart Ports `11` and `13` |
-| Chassis IMU | Chassis constructor argument `3`; verify in the vendored EZ-Template constructor, but it is expected to be Smart Port `3` |
+| Chassis IMU | Smart Port `6` |
 | Drive setup | `2.75 in` wheels, `450 RPM`, ratio `1.0`, as passed to `Drive chassis(...)` |
-| Distance/ToF sensor bar | Smart Ports `6`, `7`, `8`, `9` |
+| Forward Distance/ToF sensor | Smart Port `1`, pointing robot-forward |
+| VEX GPS sensor | Smart Port `7`; lens points robot-right (90° clockwise from forward), mounted 6 in right and 6 in behind robot center |
 | Horizontal tracking odometer | Rotation sensor on Smart Port `5` |
 | Slider left motor | Smart Port `9`, reversed (`-9`) |
 | Slider right motor | Smart Port `2` |
@@ -40,9 +41,7 @@ This file applies to the repository root and all descendants. This is a VEX V5 C
 | Claw arm motor | Smart Port `4` |
 | Upper intake motor | Smart Port `14` |
 | Counter-rollers motor | Smart Port `15` |
-| VEX AI Vision sensor | Port not yet verified; locate it in production source and/or `ai_vision_smoke/`. Do not invent a port. |
-
-**Known hardware-map conflict:** `distance_9` and `slider_left(-9)` both claim Smart Port `9`. A negative motor port means reversed direction, not a different physical port. These devices cannot both be active on the same V5 Smart Port. Verify the current robot wiring and current branch before touching either subsystem; do not silently choose one mapping.
+| VEX AI Vision sensor | Smart Port `8` |
 
 Motor reversal signs are intentional calibration. Do not remove a leading `-` merely to make port numbers look uniform.
 
@@ -58,8 +57,8 @@ The estimator is a multi-sensor fusion system. Preserve the distinction between 
 
 ### Correction sources
 
-- The four aligned distance/ToF sensors on ports `6`–`9` form a rigid sensor bar. Existing code/calibration contains the spacing between sensors. Use that calibrated geometry and the existing sensor ordering to infer wall-relative angle and wall offset from the range differences and inverse-trigonometric calculation.
-- Distance-based heading is a frequent correction for IMU drift, not the primary dead-reckoning source. Apply it opportunistically at a high rate when geometry and readings are valid. About `0.1 s` may be a useful nominal cadence, but do not introduce a hard-coded timing value without checking the current task loop and sensor update rate.
+- The single forward Distance/ToF sensor on port `1` provides obstacle range along the robot's forward axis. It cannot independently estimate wall-relative heading.
+- Use the forward range opportunistically for collision avoidance and wall-distance corrections only when robot heading and field geometry make the observed wall unambiguous.
 - VEX AI Vision/AprilTag observations provide landmark-based/global corrections when a known goal tag is visible. The camera-to-robot extrinsic transform, field tag pose, ambiguity handling, and measurement confidence must be explicit.
 
 ### Fusion invariants

@@ -13,17 +13,15 @@
 // the robot forward.
 Drive chassis({17, 18},
               {-11, -13},
-              0,
+              6,
               localization::kDriveWheelDiameterIn,
               localization::kDriveRpm,
               localization::kDriveExternalRatio);
-pros::Distance distance_6(6);
-pros::Distance distance_7(7);
-pros::Distance distance_8(8);
+pros::Distance distance_1(localization::kForwardDistancePort);
+pros::Gps gps_7(localization::kGpsPort);
 pros::Rotation horizontal_odom(5);
 
 namespace {
-constexpr std::array<std::uint8_t, 3> DISTANCE_PORTS = {6, 7, 8};
 constexpr std::uint32_t SAMPLE_PERIOD_MS = 20;
 constexpr std::uint32_t TELEMETRY_PERIOD_MS = 50;
 constexpr bool RUN_STARTUP_LIDAR_CALIBRATION = false;
@@ -36,6 +34,15 @@ constexpr bool RUN_STARTUP_SCAN_RECOVERY = false;
 // One supervised tether-managed acceptance boot only. Restore false after the
 // route and upload a no-motion production image.
 constexpr bool RUN_STARTUP_LONG_FUSION_ROUTE = false;
+// One supervised diagnostic boot; restore false immediately after the test.
+constexpr bool RUN_STARTUP_DISTANCE_SWEEP_TEST = false;
+// One supervised diagnostic boot; restore false immediately after the test.
+constexpr bool RUN_STARTUP_ROTATION_SWEEP_TEST = false;
+// One supervised obstacle-aware route; restore false immediately afterward.
+constexpr bool RUN_STARTUP_GPS_SAFE_ROUTE = false;
+// One-shot, pose-gated move away from the left wall. The pose gate prevents a
+// reboot from repeating the translation after a successful recovery.
+constexpr bool RUN_STARTUP_WALL_RECOVERY = false;
 constexpr int CONTROLLER_DRIVE_DEADBAND = 5;
 
 struct RuntimePoseEditor {
@@ -108,12 +115,6 @@ bool update_runtime_pose_editor(pros::Controller& master) {
   return true;
 }
 
-std::array<pros::Distance*, 3> distance_sensors = {
-    &distance_6,
-    &distance_7,
-    &distance_8,
-};
-
 volatile bool opcontrol_auton_running = false;
 
 int apply_controller_deadband(int value) {
@@ -130,6 +131,516 @@ bool drive_positions_are_zeroed() {
     if (!std::isfinite(position) || std::fabs(position) > 10.0) return false;
   }
   return true;
+}
+
+void run_distance_sweep_test() {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kWheelCircumferenceIn =
+      kPi * localization::kDriveWheelDiameterIn;
+  constexpr double kVelocityRpm = 15.0;
+  constexpr std::uint32_t kTimeoutPerInchMs = 1800;
+  constexpr std::array<int, 3> kTargetsIn = {2, 5, 10};
+  pros::Gps gps(localization::kGpsPort);
+  pros::Imu imu6(6);
+
+  struct GpsSample {
+    double x_m;
+    double y_m;
+    double heading_deg;
+    double error_m;
+  };
+  auto sample_gps = [&]() {
+    constexpr int kSamples = 20;
+    GpsSample sample{0.0, 0.0, 0.0, 0.0};
+    double heading_sin = 0.0;
+    double heading_cos = 0.0;
+    for (int i = 0; i < kSamples; ++i) {
+      const auto position = gps.get_position();
+      sample.x_m += position.x;
+      sample.y_m += position.y;
+      sample.error_m += gps.get_error();
+      const double heading_rad = gps.get_heading() * kPi / 180.0;
+      heading_sin += std::sin(heading_rad);
+      heading_cos += std::cos(heading_rad);
+      pros::delay(50);
+    }
+    sample.x_m /= kSamples;
+    sample.y_m /= kSamples;
+    sample.error_m /= kSamples;
+    sample.heading_deg = std::atan2(heading_sin, heading_cos) * 180.0 / kPi;
+    if (sample.heading_deg < 0.0) sample.heading_deg += 360.0;
+    return sample;
+  };
+  auto motor_positions = [&]() {
+    return std::array<double, 4>{
+        chassis.left_motors[0].get_position(),
+        chassis.left_motors[1].get_position(),
+        chassis.right_motors[0].get_position(),
+        chassis.right_motors[1].get_position(),
+    };
+  };
+  auto average_delta_deg = [](const std::array<double, 4>& now,
+                              const std::array<double, 4>& baseline) {
+    double total = 0.0;
+    for (std::size_t i = 0; i < now.size(); ++i) total += now[i] - baseline[i];
+    return total / static_cast<double>(now.size());
+  };
+  auto stop = [&]() {
+    for (auto& motor : chassis.left_motors) motor.move_velocity(0);
+    for (auto& motor : chassis.right_motors) motor.move_velocity(0);
+  };
+  auto command = [&](double rpm) {
+    for (auto& motor : chassis.left_motors) motor.move_velocity(rpm);
+    for (auto& motor : chassis.right_motors) motor.move_velocity(rpm);
+  };
+  auto heading_delta = [](double a, double b) {
+    double delta = a - b;
+    while (delta > 180.0) delta -= 360.0;
+    while (delta < -180.0) delta += 360.0;
+    return delta;
+  };
+
+  chassis.drive_mode_set(ez::DISABLE, true);
+  for (auto& motor : chassis.left_motors)
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  for (auto& motor : chassis.right_motors)
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  stop();
+
+  const bool imu_installed = imu6.is_installed();
+  if (imu_installed) {
+    imu6.reset();
+    const std::uint32_t calibration_started = pros::millis();
+    while (imu6.is_calibrating() && pros::millis() - calibration_started < 5000) {
+      pros::delay(20);
+    }
+  }
+  printf("STRAIGHT_IMU_INIT port=6 installed=%d status=%d\n",
+         static_cast<int>(imu_installed), static_cast<int>(imu6.get_status()));
+  fflush(stdout);
+
+  for (int target_in : kTargetsIn) {
+    pros::lcd::print(6, "Sweep %din: sampling", target_in);
+    const auto baseline = motor_positions();
+    const GpsSample start_gps = sample_gps();
+    const double start_imu_deg = imu6.get_rotation();
+    double max_abs_imu_delta_deg = 0.0;
+    const double target_deg =
+        static_cast<double>(target_in) * 360.0 / kWheelCircumferenceIn;
+
+    pros::lcd::print(6, "Sweep %din: BACK", target_in);
+    const std::uint32_t back_started = pros::millis();
+    while (pros::millis() - back_started <
+               kTimeoutPerInchMs * static_cast<std::uint32_t>(target_in) &&
+           average_delta_deg(motor_positions(), baseline) > -target_deg) {
+      command(-kVelocityRpm);
+      max_abs_imu_delta_deg = std::max(
+          max_abs_imu_delta_deg, std::fabs(imu6.get_rotation() - start_imu_deg));
+      pros::delay(10);
+    }
+    stop();
+    pros::delay(300);
+    const auto back_motors = motor_positions();
+    const GpsSample back_gps = sample_gps();
+    const double encoder_back_in =
+        -average_delta_deg(back_motors, baseline) * kWheelCircumferenceIn / 360.0;
+    const double gps_back_in =
+        std::hypot(back_gps.x_m - start_gps.x_m,
+                   back_gps.y_m - start_gps.y_m) * 39.37007874;
+    printf("SWEEP target_in=%d phase=back encoder_in=%.3f gps_in=%.3f difference_in=%.3f gps_heading_delta=%.3f gps_error_in=%.3f imu_delta_deg=%.3f imu_max_abs_deg=%.3f\n",
+           target_in, encoder_back_in, gps_back_in,
+           gps_back_in - encoder_back_in,
+           heading_delta(back_gps.heading_deg, start_gps.heading_deg),
+           back_gps.error_m * 39.37007874,
+           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg);
+    fflush(stdout);
+
+    pros::lcd::print(6, "Sweep %din: RETURN", target_in);
+    const std::uint32_t return_started = pros::millis();
+    while (pros::millis() - return_started <
+               kTimeoutPerInchMs * static_cast<std::uint32_t>(target_in) &&
+           average_delta_deg(motor_positions(), baseline) < -1.5) {
+      command(kVelocityRpm);
+      max_abs_imu_delta_deg = std::max(
+          max_abs_imu_delta_deg, std::fabs(imu6.get_rotation() - start_imu_deg));
+      pros::delay(10);
+    }
+    stop();
+    pros::delay(300);
+    const auto final_motors = motor_positions();
+    const GpsSample final_gps = sample_gps();
+    const double encoder_residual_in =
+        average_delta_deg(final_motors, baseline) * kWheelCircumferenceIn / 360.0;
+    const double gps_residual_in =
+        std::hypot(final_gps.x_m - start_gps.x_m,
+                   final_gps.y_m - start_gps.y_m) * 39.37007874;
+    printf("SWEEP target_in=%d phase=return encoder_residual_in=%.3f gps_residual_in=%.3f gps_heading_delta=%.3f gps_error_in=%.3f imu_residual_deg=%.3f imu_max_abs_deg=%.3f\n",
+           target_in, encoder_residual_in, gps_residual_in,
+           heading_delta(final_gps.heading_deg, start_gps.heading_deg),
+           final_gps.error_m * 39.37007874,
+           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg);
+    fflush(stdout);
+    pros::delay(500);
+  }
+  pros::lcd::set_text(6, "Distance sweep DONE");
+}
+
+void run_rotation_sweep_test() {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kWheelCircumferenceIn =
+      kPi * localization::kDriveWheelDiameterIn;
+  constexpr std::array<double, 5> kTargetsDeg = {15.0, 30.0, 45.0, 60.0, 90.0};
+  constexpr double kVelocityRpm = 12.0;
+  pros::Gps gps(localization::kGpsPort);
+  pros::Imu imu6(6);
+
+  struct HeadingSample {
+    double gps_deg;
+    double imu_deg;
+    double gps_x_m;
+    double gps_y_m;
+    double gps_error_m;
+  };
+  auto angle_delta = [](double a, double b) {
+    double delta = a - b;
+    while (delta > 180.0) delta -= 360.0;
+    while (delta < -180.0) delta += 360.0;
+    return delta;
+  };
+  auto sample_headings = [&]() {
+    constexpr int kSamples = 20;
+    double gps_sin = 0.0, gps_cos = 0.0;
+    double imu_sin = 0.0, imu_cos = 0.0;
+    HeadingSample result{0.0, 0.0, 0.0, 0.0, 0.0};
+    for (int i = 0; i < kSamples; ++i) {
+      const auto position = gps.get_position();
+      const double gps_rad = gps.get_heading() * kPi / 180.0;
+      const double imu_rad = imu6.get_heading() * kPi / 180.0;
+      gps_sin += std::sin(gps_rad);
+      gps_cos += std::cos(gps_rad);
+      imu_sin += std::sin(imu_rad);
+      imu_cos += std::cos(imu_rad);
+      result.gps_x_m += position.x;
+      result.gps_y_m += position.y;
+      result.gps_error_m += gps.get_error();
+      pros::delay(50);
+    }
+    result.gps_deg = std::atan2(gps_sin, gps_cos) * 180.0 / kPi;
+    result.imu_deg = std::atan2(imu_sin, imu_cos) * 180.0 / kPi;
+    if (result.gps_deg < 0.0) result.gps_deg += 360.0;
+    if (result.imu_deg < 0.0) result.imu_deg += 360.0;
+    result.gps_x_m /= kSamples;
+    result.gps_y_m /= kSamples;
+    result.gps_error_m /= kSamples;
+    return result;
+  };
+  auto motor_positions = [&]() {
+    return std::array<double, 4>{
+        chassis.left_motors[0].get_position(),
+        chassis.left_motors[1].get_position(),
+        chassis.right_motors[0].get_position(),
+        chassis.right_motors[1].get_position(),
+    };
+  };
+  auto turn_motor_delta = [](const std::array<double, 4>& now,
+                             const std::array<double, 4>& baseline) {
+    const double left = ((now[0] - baseline[0]) + (now[1] - baseline[1])) / 2.0;
+    const double right = ((now[2] - baseline[2]) + (now[3] - baseline[3])) / 2.0;
+    return (left - right) / 2.0;
+  };
+  auto stop = [&]() {
+    for (auto& motor : chassis.left_motors) motor.move_velocity(0);
+    for (auto& motor : chassis.right_motors) motor.move_velocity(0);
+  };
+  auto command_turn = [&](double rpm) {
+    for (auto& motor : chassis.left_motors) motor.move_velocity(rpm);
+    for (auto& motor : chassis.right_motors) motor.move_velocity(-rpm);
+  };
+
+  chassis.drive_mode_set(ez::DISABLE, true);
+  for (auto& motor : chassis.left_motors)
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  for (auto& motor : chassis.right_motors)
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  stop();
+  const bool imu_installed = imu6.is_installed();
+  if (imu_installed) {
+    imu6.reset();
+    const std::uint32_t calibration_started = pros::millis();
+    while (imu6.is_calibrating() && pros::millis() - calibration_started < 5000) {
+      pros::delay(20);
+    }
+  }
+  printf("ROTATION_SWEEP_INIT imu_port=6 installed=%d status=%d\n",
+         static_cast<int>(imu_installed), static_cast<int>(imu6.get_status()));
+  fflush(stdout);
+
+  for (double target_deg : kTargetsDeg) {
+    pros::lcd::print(6, "Turn %.0f: sampling", target_deg);
+    const auto baseline = motor_positions();
+    const HeadingSample start = sample_headings();
+    const double side_arc_target_in =
+        target_deg * kPi / 180.0 * localization::kDriveTrackWidthIn / 2.0;
+    const double motor_target_deg = side_arc_target_in * 360.0 / kWheelCircumferenceIn;
+
+    pros::lcd::print(6, "Turn %.0f: CW", target_deg);
+    const std::uint32_t turn_started = pros::millis();
+    while (pros::millis() - turn_started < 8000 &&
+           turn_motor_delta(motor_positions(), baseline) < motor_target_deg) {
+      command_turn(kVelocityRpm);
+      pros::delay(10);
+    }
+    stop();
+    pros::delay(300);
+    const auto peak_motors = motor_positions();
+    const HeadingSample peak = sample_headings();
+    const double motor_turn_deg = turn_motor_delta(peak_motors, baseline);
+    const double encoder_heading_deg =
+        (motor_turn_deg * kWheelCircumferenceIn / 360.0) * 2.0 /
+        localization::kDriveTrackWidthIn * 180.0 / kPi;
+    const double gps_heading_deg = angle_delta(peak.gps_deg, start.gps_deg);
+    const double imu_heading_deg = imu_installed
+        ? angle_delta(peak.imu_deg, start.imu_deg) : NAN;
+    const double effective_track_in = std::fabs(gps_heading_deg) > 1.0
+        ? (motor_turn_deg * kWheelCircumferenceIn / 360.0) * 2.0 /
+              (std::fabs(gps_heading_deg) * kPi / 180.0)
+        : NAN;
+    printf("ROT_SWEEP target_deg=%.0f phase=turn encoder_deg=%.3f gps_deg=%.3f imu_deg=%.3f encoder_minus_gps_deg=%.3f effective_track_in=%.3f gps_error_in=%.3f\n",
+           target_deg, encoder_heading_deg, gps_heading_deg, imu_heading_deg,
+           encoder_heading_deg - std::fabs(gps_heading_deg), effective_track_in,
+           peak.gps_error_m * 39.37007874);
+    fflush(stdout);
+
+    pros::lcd::print(6, "Turn %.0f: RETURN", target_deg);
+    const std::uint32_t return_started = pros::millis();
+    while (pros::millis() - return_started < 8000 &&
+           turn_motor_delta(motor_positions(), baseline) > 1.5) {
+      command_turn(-kVelocityRpm);
+      pros::delay(10);
+    }
+    stop();
+    pros::delay(300);
+    const auto final_motors = motor_positions();
+    const HeadingSample final = sample_headings();
+    const double gps_position_residual_in =
+        std::hypot(final.gps_x_m - start.gps_x_m,
+                   final.gps_y_m - start.gps_y_m) * 39.37007874;
+    printf("ROT_SWEEP target_deg=%.0f phase=return encoder_residual_motor_deg=%.3f gps_heading_residual_deg=%.3f imu_heading_residual_deg=%.3f gps_position_residual_in=%.3f\n",
+           target_deg, turn_motor_delta(final_motors, baseline),
+           angle_delta(final.gps_deg, start.gps_deg),
+           imu_installed ? angle_delta(final.imu_deg, start.imu_deg) : NAN,
+           gps_position_residual_in);
+    fflush(stdout);
+    pros::delay(500);
+  }
+  pros::lcd::set_text(6, "Rotation sweep DONE");
+}
+
+void run_wall_recovery() {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kInchesPerMeter = 39.37007874015748;
+  constexpr double kTargetRobotHeadingCwDeg = 90.0;
+  constexpr double kDriveDistanceIn = 10.0;
+  constexpr double kMeasuredEncoderScale = 0.887;
+  constexpr double kTurnRpm = 12.0;
+  constexpr double kDriveRpm = 15.0;
+  constexpr double kWheelCircumferenceIn =
+      kPi * localization::kDriveWheelDiameterIn;
+  pros::Gps gps(localization::kGpsPort);
+  pros::Imu imu(6);
+
+  struct RobotPose {
+    double x_in;
+    double y_in;
+    double heading_cw_deg;
+    double error_in;
+    double position_span_in;
+  };
+  auto normalize = [](double degrees) {
+    while (degrees >= 360.0) degrees -= 360.0;
+    while (degrees < 0.0) degrees += 360.0;
+    return degrees;
+  };
+  auto signed_delta = [](double target, double current) {
+    double delta = target - current;
+    while (delta > 180.0) delta -= 360.0;
+    while (delta < -180.0) delta += 360.0;
+    return delta;
+  };
+  auto sample_pose = [&]() {
+    constexpr int kSamples = 25;
+    double sensor_x_in = 0.0;
+    double sensor_y_in = 0.0;
+    double heading_sin = 0.0;
+    double heading_cos = 0.0;
+    double error_in = 0.0;
+    double min_x = 1e9, max_x = -1e9, min_y = 1e9, max_y = -1e9;
+    for (int i = 0; i < kSamples; ++i) {
+      const auto position = gps.get_position();
+      const double x_in = position.x * kInchesPerMeter;
+      const double y_in = position.y * kInchesPerMeter;
+      const double heading_rad = gps.get_heading() * kPi / 180.0;
+      sensor_x_in += x_in;
+      sensor_y_in += y_in;
+      heading_sin += std::sin(heading_rad);
+      heading_cos += std::cos(heading_rad);
+      error_in += gps.get_error() * kInchesPerMeter;
+      min_x = std::min(min_x, x_in);
+      max_x = std::max(max_x, x_in);
+      min_y = std::min(min_y, y_in);
+      max_y = std::max(max_y, y_in);
+      pros::delay(40);
+    }
+    sensor_x_in /= kSamples;
+    sensor_y_in /= kSamples;
+    error_in /= kSamples;
+    const double sensor_heading_cw_deg = normalize(
+        std::atan2(heading_sin, heading_cos) * 180.0 / kPi);
+    const double robot_heading_cw_deg = normalize(
+        sensor_heading_cw_deg - localization::kGpsSensorHeadingOffsetCwDeg);
+    const double heading_rad = robot_heading_cw_deg * kPi / 180.0;
+    const double forward_x = std::sin(heading_rad);
+    const double forward_y = std::cos(heading_rad);
+    const double right_x = std::cos(heading_rad);
+    const double right_y = -std::sin(heading_rad);
+    const double center_x = sensor_x_in -
+        (localization::kGpsRightOffsetIn * right_x +
+         localization::kGpsForwardOffsetIn * forward_x);
+    const double center_y = sensor_y_in -
+        (localization::kGpsRightOffsetIn * right_y +
+         localization::kGpsForwardOffsetIn * forward_y);
+    return RobotPose{center_x, center_y, robot_heading_cw_deg, error_in,
+                     std::hypot(max_x - min_x, max_y - min_y)};
+  };
+  auto stop = [&]() {
+    for (auto& motor : chassis.left_motors) motor.move_velocity(0);
+    for (auto& motor : chassis.right_motors) motor.move_velocity(0);
+  };
+  auto command = [&](double left_rpm, double right_rpm) {
+    for (auto& motor : chassis.left_motors) motor.move_velocity(left_rpm);
+    for (auto& motor : chassis.right_motors) motor.move_velocity(right_rpm);
+  };
+  auto average_motor_delta = [](const std::array<double, 4>& baseline) {
+    const std::array<double, 4> now = {
+        chassis.left_motors[0].get_position(),
+        chassis.left_motors[1].get_position(),
+        chassis.right_motors[0].get_position(),
+        chassis.right_motors[1].get_position(),
+    };
+    double total = 0.0;
+    for (std::size_t i = 0; i < now.size(); ++i) total += now[i] - baseline[i];
+    return total / static_cast<double>(now.size());
+  };
+
+  chassis.drive_mode_set(ez::DISABLE, true);
+  for (auto& motor : chassis.left_motors)
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  for (auto& motor : chassis.right_motors)
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  stop();
+  if (!gps.is_installed() || !imu.is_installed()) {
+    printf("WALL_RECOVERY abort=sensor_missing gps=%d imu=%d\n",
+           static_cast<int>(gps.is_installed()),
+           static_cast<int>(imu.is_installed()));
+    fflush(stdout);
+    return;
+  }
+
+  const RobotPose start = sample_pose();
+  const bool start_gate = start.x_in >= -53.0 && start.x_in <= -43.0 &&
+                          start.y_in >= -12.0 && start.y_in <= 5.0 &&
+                          start.heading_cw_deg >= 130.0 &&
+                          start.heading_cw_deg <= 165.0 &&
+                          start.error_in <= 2.0 &&
+                          start.position_span_in <= 2.0;
+  printf("WALL_RECOVERY start x=%.2f y=%.2f heading_cw=%.2f error=%.2f span=%.2f gate=%d\n",
+         start.x_in, start.y_in, start.heading_cw_deg, start.error_in,
+         start.position_span_in, static_cast<int>(start_gate));
+  fflush(stdout);
+  if (!start_gate) {
+    pros::lcd::set_text(6, "Recovery pose ABORT");
+    return;
+  }
+
+  imu.reset();
+  const std::uint32_t calibration_started = pros::millis();
+  while (imu.is_calibrating() && pros::millis() - calibration_started < 5000)
+    pros::delay(20);
+  if (imu.is_calibrating() || imu.get_status() == pros::ImuStatus::error) {
+    printf("WALL_RECOVERY abort=imu_calibration status=%d\n",
+           static_cast<int>(imu.get_status()));
+    fflush(stdout);
+    return;
+  }
+
+  const double turn_target_deg = signed_delta(
+      kTargetRobotHeadingCwDeg, start.heading_cw_deg);
+  const std::uint32_t turn_started = pros::millis();
+  while (pros::millis() - turn_started < 10000 &&
+         imu.get_rotation() > turn_target_deg) {
+    command(-kTurnRpm, kTurnRpm);
+    pros::delay(10);
+  }
+  stop();
+  pros::delay(350);
+  const double turn_result_deg = imu.get_rotation();
+  const RobotPose after_turn = sample_pose();
+  const double turn_position_shift = std::hypot(
+      after_turn.x_in - start.x_in, after_turn.y_in - start.y_in);
+  const bool turn_ok = std::fabs(turn_result_deg - turn_target_deg) <= 3.0 &&
+                       after_turn.error_in <= 2.0 &&
+                       after_turn.position_span_in <= 2.0 &&
+                       turn_position_shift <= 4.0;
+  printf("WALL_RECOVERY turn target=%.2f imu=%.2f x=%.2f y=%.2f heading_cw=%.2f shift=%.2f error=%.2f ok=%d\n",
+         turn_target_deg, turn_result_deg, after_turn.x_in, after_turn.y_in,
+         after_turn.heading_cw_deg, turn_position_shift, after_turn.error_in,
+         static_cast<int>(turn_ok));
+  fflush(stdout);
+  if (!turn_ok) {
+    pros::lcd::set_text(6, "Recovery turn ABORT");
+    return;
+  }
+
+  const std::array<double, 4> drive_baseline = {
+      chassis.left_motors[0].get_position(),
+      chassis.left_motors[1].get_position(),
+      chassis.right_motors[0].get_position(),
+      chassis.right_motors[1].get_position(),
+  };
+  const double encoder_target_deg =
+      (kDriveDistanceIn / kMeasuredEncoderScale) * 360.0 /
+      kWheelCircumferenceIn;
+  bool drive_quality_ok = true;
+  const std::uint32_t drive_started = pros::millis();
+  while (pros::millis() - drive_started < 9000 &&
+         average_motor_delta(drive_baseline) < encoder_target_deg) {
+    const double heading_error_deg = turn_target_deg - imu.get_rotation();
+    const double turn_rpm = std::clamp(heading_error_deg * 0.25, -3.0, 3.0);
+    command(kDriveRpm + turn_rpm, kDriveRpm - turn_rpm);
+    if (gps.get_error() * kInchesPerMeter > 2.5 ||
+        std::fabs(heading_error_deg) > 6.0) {
+      drive_quality_ok = false;
+      break;
+    }
+    pros::delay(10);
+  }
+  stop();
+  pros::delay(350);
+  const double encoder_deg = average_motor_delta(drive_baseline);
+  const RobotPose final_pose = sample_pose();
+  const double gps_distance_in = std::hypot(
+      final_pose.x_in - after_turn.x_in, final_pose.y_in - after_turn.y_in);
+  const bool drive_ok = drive_quality_ok &&
+                        encoder_deg >= encoder_target_deg - 3.0 &&
+                        final_pose.error_in <= 2.0;
+  printf("WALL_RECOVERY drive encoder_deg=%.2f target_deg=%.2f gps_distance=%.2f final_x=%.2f final_y=%.2f heading_cw=%.2f error=%.2f ok=%d\n",
+         encoder_deg, encoder_target_deg, gps_distance_in, final_pose.x_in,
+         final_pose.y_in, final_pose.heading_cw_deg, final_pose.error_in,
+         static_cast<int>(drive_ok));
+  fflush(stdout);
+  pros::lcd::print(6, "Recovery %s x%.0f y%.0f",
+                   drive_ok ? "OK" : "FAIL", final_pose.x_in,
+                   final_pose.y_in);
 }
 
 struct DistanceReading {
@@ -158,31 +669,22 @@ void print_distance_frame() {
   const std::uint32_t now = pros::millis();
   if (last_frame_ms != 0 && now - last_frame_ms < TELEMETRY_PERIOD_MS) return;
   last_frame_ms = now;
-  std::array<DistanceReading, 3> readings{};
-
-  for (std::size_t i = 0; i < distance_sensors.size(); ++i) {
-    readings[i] = read_sensor(*distance_sensors[i]);
-  }
+  const DistanceReading forward_distance = read_sensor(distance_1);
+  const auto gps_position = gps_7.get_position();
+  const double gps_heading_deg = gps_7.get_heading();
+  const double gps_error_m = gps_7.get_error();
 
   printf(
       "D4 s=%lu t=%lu "
-      "p6=%ld,%ld,%d p7=%ld,%ld,%d p8=%ld,%ld,%d p9=%ld,%ld,%d "
+      "p1=%ld,%ld,%d "
       "m17=%.1f m18=%.1f m11=%.1f m13=%.1f h5=%ld "
-      "imu=%.2f rawimu=%.2f imust=%d errno=%d\n",
+      "imu=%.2f rawimu=%.2f imust=%d "
+      "gps7=%.4f,%.4f,%.2f,%.4f,%d errno=%d\n",
       static_cast<unsigned long>(sample++),
       static_cast<unsigned long>(now),
-      readings[0].mm,
-      readings[0].confidence,
-      static_cast<int>(readings[0].installed),
-      readings[1].mm,
-      readings[1].confidence,
-      static_cast<int>(readings[1].installed),
-      readings[2].mm,
-      readings[2].confidence,
-      static_cast<int>(readings[2].installed),
-      -1L,
-      0L,
-      0,
+      forward_distance.mm,
+      forward_distance.confidence,
+      static_cast<int>(forward_distance.installed),
       chassis.left_motors[0].get_position(),
       chassis.left_motors[1].get_position(),
       chassis.right_motors[0].get_position(),
@@ -191,17 +693,21 @@ void print_distance_frame() {
       chassis.drive_imu_get(),
       chassis.imu.get_rotation(),
       static_cast<int>(chassis.imu.get_status()),
+      gps_position.x,
+      gps_position.y,
+      gps_heading_deg,
+      gps_error_m,
+      static_cast<int>(gps_7.is_installed()),
       errno);
   fflush(stdout);
 
   if (sample % 5 == 0) {
-    pros::lcd::print(0, "P6 %4ldmm c%2ld %s", readings[0].mm, readings[0].confidence,
-                     readings[0].installed ? "ok" : "no");
-    pros::lcd::print(1, "P7 %4ldmm c%2ld %s", readings[1].mm, readings[1].confidence,
-                     readings[1].installed ? "ok" : "no");
-    pros::lcd::print(2, "P8 %4ldmm c%2ld %s", readings[2].mm, readings[2].confidence,
-                     readings[2].installed ? "ok" : "no");
-    pros::lcd::set_text(3, "P9 right slider");
+    pros::lcd::print(0, "P1 FWD %4ldmm c%2ld %s", forward_distance.mm,
+                     forward_distance.confidence,
+                     forward_distance.installed ? "ok" : "no");
+    pros::lcd::print(1, "GPS P7 e%.3fm", gps_error_m);
+    pros::lcd::set_text(2, "IMU P6 / AI P8");
+    pros::lcd::set_text(3, "P9 left slider");
     const auto& vision = ai_vision_shadow_snapshot();
     pros::lcd::print(4, "AI P%u tag=%d %s",
                      static_cast<unsigned>(vision.port),
@@ -490,23 +996,31 @@ bool recover_scan_start_heading() {
 
 void initialize() {
   pros::lcd::initialize();
-  pros::lcd::set_text(0, "3x Distance sensors");
-  pros::lcd::set_text(1, "Ports 6, 7, 8");
+  pros::lcd::set_text(0, "Forward Distance P1");
+  pros::lcd::set_text(1, "GPS P7 / IMU P6");
   pros::lcd::set_text(2, "IMU calibrating...");
   chassis.drive_sensor_reset();
-  const bool imu_ready = chassis.drive_imu_calibrate(false);
-  chassis.drive_imu_reset(0.0);
+  bool imu_ready = false;
+  if (chassis.imu.is_installed()) {
+    chassis.imu.reset();
+    const std::uint32_t imu_calibration_started = pros::millis();
+    while (chassis.imu.is_calibrating() &&
+           pros::millis() - imu_calibration_started < 5000) {
+      pros::delay(20);
+    }
+    imu_ready = !chassis.imu.is_calibrating() &&
+                chassis.imu.get_status() != pros::ImuStatus::error;
+    if (imu_ready) chassis.drive_imu_reset(0.0);
+  }
   pros::lcd::set_text(2, imu_ready ? "IMU ready" : "IMU check failed");
   horizontal_odom.reset_position();
   localization_telemetry_reset();
   ai_vision_shadow_initialize();
   pros::delay(500);
 
-  printf("D4 init ports=6,7,8 period_ms=%lu installed=%d,%d,%d\n",
+  printf("D4 init distance_port=1 direction=forward period_ms=%lu installed=%d\n",
          static_cast<unsigned long>(TELEMETRY_PERIOD_MS),
-         static_cast<int>(distance_6.is_installed()),
-         static_cast<int>(distance_7.is_installed()),
-         static_cast<int>(distance_8.is_installed()));
+         static_cast<int>(distance_1.is_installed()));
   printf("IMU_INIT calibrated=%d raw_heading=%.2f\n",
          static_cast<int>(imu_ready),
          chassis.drive_imu_get());
@@ -546,6 +1060,26 @@ void opcontrol() {
   if (drive_positions_are_zeroed()) {
     localization_telemetry_reset();
   }
+  if (RUN_STARTUP_WALL_RECOVERY) {
+    pros::lcd::set_text(6, "Wall recovery in 10s");
+    pros::delay(10000);
+    run_wall_recovery();
+  }
+  if (RUN_STARTUP_DISTANCE_SWEEP_TEST) {
+    pros::lcd::set_text(6, "Sweep starts in 3 sec");
+    pros::delay(3000);
+    run_distance_sweep_test();
+  }
+  if (RUN_STARTUP_ROTATION_SWEEP_TEST) {
+    pros::lcd::set_text(6, "Turns start in 3 sec");
+    pros::delay(3000);
+    run_rotation_sweep_test();
+  }
+  if (RUN_STARTUP_GPS_SAFE_ROUTE) {
+    pros::lcd::set_text(6, "GPS route in 5 sec");
+    pros::delay(5000);
+    gps_obstacle_aware_route_test();
+  }
   if (RUN_STARTUP_LIDAR_CALIBRATION) {
     pros::lcd::set_text(6, "Cal starts in 5 sec");
     pros::delay(5000);
@@ -569,8 +1103,8 @@ void opcontrol() {
     pros::lcd::set_text(6, vision_scan_ok ? "Vision tag found" : "Vision scan no tag");
   }
   if (RUN_STARTUP_LONG_FUSION_ROUTE) {
-    pros::lcd::set_text(6, "Long fusion in 5 sec");
-    pros::delay(5000);
+    pros::lcd::set_text(6, "Long fusion in 10 sec");
+    pros::delay(10000);
     fusion_test_auton();
     pros::lcd::set_text(6, "Long fusion done");
   }
@@ -643,12 +1177,13 @@ void opcontrol() {
       slider_right.move(!pose_editor_active ? slider_power : 0);
       slider_left.move(!pose_editor_active ? slider_power : 0);
 
-      const int claw_arm_power = pose_editor_active
-          ? 0
-          : master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)
-              ? 127
-              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2) ? -127 : 0);
-      counter_rollers.move(claw_arm_power);
+      if (!pose_editor_active) {
+        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)) {
+          clamp_piston.set_value(true);
+        } else if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2)) {
+          clamp_piston.set_value(false);
+        }
+      }
 
       const int claw_wrist_power = pose_editor_active
           ? 0

@@ -95,7 +95,7 @@ constexpr double kFusedTurnToleranceDeg = 2.0;
 constexpr double kFusedTurnSettleMs = 100;
 constexpr double kFusedTurnKp = 0.95;
 constexpr double kFusedTurnKd = 0.08;
-constexpr double kFusedTurnMinPower = 18.0;
+constexpr double kFusedTurnMinPower = 30.0;
 // Do not leave a 2-4 degree dead zone where the controller is outside settle
 // tolerance but below the minimum-static-friction command threshold.
 constexpr double kFusedTurnMinPowerErrorDeg = kFusedTurnToleranceDeg;
@@ -930,8 +930,10 @@ double apply_slew(double target, double current, double max_delta) {
 }
 
 void set_physical_drive_power(int forward_power, int turn_power) {
-  const int left_power = clamp_power(forward_power - turn_power);
-  const int right_power = clamp_power(forward_power + turn_power);
+  // Positive field-math turn is CCW. On this drivetrain that requires the
+  // left side forward and right side backward.
+  const int left_power = clamp_power(forward_power + turn_power);
+  const int right_power = clamp_power(forward_power - turn_power);
   for (auto& motor : chassis.left_motors) {
     motor.move(left_power);
   }
@@ -1603,6 +1605,213 @@ void fusion_test_auton() {
                    return_heading_error_deg,
                    pose.x,
                    pose.y);
+}
+
+void gps_obstacle_aware_route_test() {
+  constexpr double kInchesPerMeter = 39.37007874015748;
+  constexpr double kGoalClearanceIn = 16.0;
+  constexpr double kWallClearanceIn = 14.0;
+  constexpr int kDrivePower = 40;
+  constexpr int kTurnPower = 45;
+  constexpr std::array<Waypoint, 9> kGoals = {{
+      {0.0, 0.0},
+      {-48.0, -24.0}, {-48.0, 24.0},
+      {-24.0, -48.0}, {-24.0, 48.0},
+      {24.0, -48.0}, {24.0, 48.0},
+      {48.0, -24.0}, {48.0, 24.0},
+  }};
+  pros::Gps gps(localization::kGpsPort);
+
+  auto sample_robot_pose = [&]() {
+    constexpr int kSamples = 20;
+    double sensor_x_in = 0.0;
+    double sensor_y_in = 0.0;
+    double heading_sin = 0.0;
+    double heading_cos = 0.0;
+    double error_in = 0.0;
+    for (int i = 0; i < kSamples; ++i) {
+      const auto position = gps.get_position();
+      sensor_x_in += position.x * kInchesPerMeter;
+      sensor_y_in += position.y * kInchesPerMeter;
+      const double heading_rad = deg_to_rad(gps.get_heading());
+      heading_sin += std::sin(heading_rad);
+      heading_cos += std::cos(heading_rad);
+      error_in += gps.get_error() * kInchesPerMeter;
+      pros::delay(50);
+    }
+    sensor_x_in /= kSamples;
+    sensor_y_in /= kSamples;
+    error_in /= kSamples;
+    double sensor_heading_cw_deg =
+        rad_to_deg(std::atan2(heading_sin, heading_cos));
+    sensor_heading_cw_deg = normalize_deg(sensor_heading_cw_deg);
+    const double robot_heading_cw_deg = normalize_deg(
+        sensor_heading_cw_deg - localization::kGpsSensorHeadingOffsetCwDeg);
+    const double robot_heading_cw_rad = deg_to_rad(robot_heading_cw_deg);
+    const double forward_x = std::sin(robot_heading_cw_rad);
+    const double forward_y = std::cos(robot_heading_cw_rad);
+    const double right_x = std::cos(robot_heading_cw_rad);
+    const double right_y = -std::sin(robot_heading_cw_rad);
+    const double center_x = sensor_x_in -
+        (localization::kGpsRightOffsetIn * right_x +
+         localization::kGpsForwardOffsetIn * forward_x);
+    const double center_y = sensor_y_in -
+        (localization::kGpsRightOffsetIn * right_y +
+         localization::kGpsForwardOffsetIn * forward_y);
+    const double field_heading_ccw_deg = normalize_deg(90.0 - robot_heading_cw_deg);
+    return std::array<double, 4>{center_x, center_y, field_heading_ccw_deg, error_in};
+  };
+
+  auto point_segment_distance = [](Waypoint point, Waypoint a, Waypoint b) {
+    const double dx = b.x - a.x;
+    const double dy = b.y - a.y;
+    const double length_sq = dx * dx + dy * dy;
+    if (length_sq <= 1e-9) return std::hypot(point.x - a.x, point.y - a.y);
+    const double t = clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) /
+                               length_sq,
+                           0.0, 1.0);
+    return std::hypot(point.x - (a.x + t * dx),
+                      point.y - (a.y + t * dy));
+  };
+  auto point_inside_walls = [](Waypoint point) {
+    const double limit = localization::kPhysicalWallHalfSpanIn - kWallClearanceIn;
+    return std::fabs(point.x) <= limit && std::fabs(point.y) <= limit;
+  };
+  double required_goal_clearance = kGoalClearanceIn;
+  auto segment_is_safe = [&](Waypoint a, Waypoint b, double& minimum_clearance) {
+    if (!point_inside_walls(a) || !point_inside_walls(b)) return false;
+    minimum_clearance = std::numeric_limits<double>::infinity();
+    for (const Waypoint goal : kGoals) {
+      minimum_clearance = std::min(
+          minimum_clearance, point_segment_distance(goal, a, b));
+    }
+    return minimum_clearance >= required_goal_clearance;
+  };
+
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  chassis.drive_sensor_reset();
+  horizontal_odom.reset_position();
+  if (!gps.is_installed() || !chassis.imu.is_installed()) {
+    printf("GPS_ROUTE abort=sensor_missing gps=%d imu=%d\n",
+           static_cast<int>(gps.is_installed()),
+           static_cast<int>(chassis.imu.is_installed()));
+    fflush(stdout);
+    pros::lcd::set_text(6, "GPS route SENSOR FAIL");
+    return;
+  }
+
+  chassis.imu.reset();
+  const std::uint32_t imu_calibration_started = pros::millis();
+  while (chassis.imu.is_calibrating() &&
+         pros::millis() - imu_calibration_started < 5000) {
+    pros::delay(20);
+  }
+  if (chassis.imu.is_calibrating() ||
+      chassis.imu.get_status() == pros::ImuStatus::error) {
+    printf("GPS_ROUTE abort=imu_calibration status=%d\n",
+           static_cast<int>(chassis.imu.get_status()));
+    fflush(stdout);
+    pros::lcd::set_text(6, "GPS route IMU FAIL");
+    return;
+  }
+  chassis.drive_imu_reset(0.0);
+
+  const auto start_reading = sample_robot_pose();
+  const localization::FieldPose start_pose{
+      start_reading[0], start_reading[1], start_reading[2]};
+  const Waypoint start{start_pose.x_in, start_pose.y_in};
+  double start_goal_clearance = std::numeric_limits<double>::infinity();
+  for (const Waypoint goal : kGoals) {
+    start_goal_clearance = std::min(
+        start_goal_clearance, std::hypot(goal.x - start.x, goal.y - start.y));
+  }
+  required_goal_clearance = std::min(
+      kGoalClearanceIn, std::max(12.0, start_goal_clearance - 0.5));
+  const std::array<Waypoint, 4> route = {{
+      start,
+      {-22.0, -10.0},
+      {-22.0, 20.0},
+      start,
+  }};
+  printf("GPS_ROUTE start x=%.2f y=%.2f heading=%.2f gps_error=%.2f nearest_goal=%.2f required_clearance=%.2f\n",
+         start_pose.x_in, start_pose.y_in, start_pose.heading_deg,
+         start_reading[3], start_goal_clearance, required_goal_clearance);
+
+  bool safe = start_reading[3] <= 2.0;
+  double planned_distance = 0.0;
+  for (std::size_t i = 1; i < route.size(); ++i) {
+    double clearance = 0.0;
+    const bool segment_safe = segment_is_safe(route[i - 1], route[i], clearance);
+    const double distance = std::hypot(route[i].x - route[i - 1].x,
+                                       route[i].y - route[i - 1].y);
+    planned_distance += distance;
+    printf("GPS_ROUTE plan segment=%u from=%.2f,%.2f to=%.2f,%.2f distance=%.2f goal_clearance=%.2f safe=%d\n",
+           static_cast<unsigned>(i), route[i - 1].x, route[i - 1].y,
+           route[i].x, route[i].y, distance, clearance,
+           static_cast<int>(segment_safe));
+    safe = safe && segment_safe;
+  }
+  printf("GPS_ROUTE plan total_distance=%.2f safe=%d\n",
+         planned_distance, static_cast<int>(safe));
+  fflush(stdout);
+  if (!safe) {
+    pros::lcd::set_text(6, "GPS route PLAN ABORT");
+    stop_drive_motors();
+    return;
+  }
+
+  PoseEstimate pose;
+  init_pose(pose, start_pose);
+  sample_fusion_for(pose, "gps_route_start", 200, LidarFusionMode::kDisabled);
+  bool route_ok = true;
+  for (std::size_t i = 1; i < route.size() && route_ok; ++i) {
+    const double bearing_deg = normalize_deg(
+        rad_to_deg(std::atan2(route[i].y - pose.y, route[i].x - pose.x)));
+    char turn_phase[24];
+    char drive_phase[24];
+    std::snprintf(turn_phase, sizeof(turn_phase), "gps_turn_%u",
+                  static_cast<unsigned>(i));
+    std::snprintf(drive_phase, sizeof(drive_phase), "gps_drive_%u",
+                  static_cast<unsigned>(i));
+    route_ok = fused_turn_to_heading(
+        pose, turn_phase, bearing_deg, kTurnPower, 6000);
+    if (route_ok) {
+      route_ok = fused_drive_to_point(
+          pose, drive_phase, route[i], bearing_deg, kDrivePower, 12000);
+    }
+    stop_drive_motors();
+    const auto gps_reading = sample_robot_pose();
+    const double odom_gps_error = std::hypot(
+        pose.x - gps_reading[0], pose.y - gps_reading[1]);
+    printf("GPS_ROUTE checkpoint=%u ok=%d odom_x=%.2f odom_y=%.2f gps_x=%.2f gps_y=%.2f disagreement=%.2f gps_error=%.2f\n",
+           static_cast<unsigned>(i), static_cast<int>(route_ok),
+           pose.x, pose.y, gps_reading[0], gps_reading[1],
+           odom_gps_error, gps_reading[3]);
+    fflush(stdout);
+    if (gps_reading[3] <= 2.0 && odom_gps_error <= 6.0) {
+      pose.x = gps_reading[0];
+      pose.y = gps_reading[1];
+    } else {
+      route_ok = false;
+    }
+  }
+
+  stop_drive_motors();
+  const auto final_reading = sample_robot_pose();
+  const double return_error = std::hypot(
+      final_reading[0] - start_pose.x_in,
+      final_reading[1] - start_pose.y_in);
+  const double heading_error = std::fabs(signed_angle_diff_deg(
+      final_reading[2], start_pose.heading_deg));
+  printf("GPS_ROUTE done ok=%d final_x=%.2f final_y=%.2f final_heading=%.2f return_error=%.2f heading_error=%.2f\n",
+         static_cast<int>(route_ok), final_reading[0], final_reading[1],
+         final_reading[2], return_error, heading_error);
+  fflush(stdout);
+  pros::lcd::print(6, "Route %s e%.1f h%.1f",
+                   route_ok ? "OK" : "FAIL", return_error, heading_error);
 }
 
 void localization_slow_rotation_calibration() {

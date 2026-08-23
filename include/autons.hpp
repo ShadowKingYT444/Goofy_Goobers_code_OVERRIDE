@@ -9,3 +9,4 @@ void localization_slow_rotation_calibration();
 void localization_slow_forward_calibration();
 void simple_goal_avoidance_auton();
 void fusion_test_auton();
+void gps_obstacle_aware_route_test();

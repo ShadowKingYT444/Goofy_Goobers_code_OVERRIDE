@@ -51,6 +51,16 @@ inline constexpr int kDriveRpm = 450;
 inline constexpr double kDriveExternalRatio = 1.0;
 inline constexpr double kDriveTrackWidthIn = 12.0086;
 
+// Current navigation sensor geometry. The forward Distance sensor measures
+// along the robot's +forward axis. The GPS lens points robot-right, 90 degrees
+// clockwise from forward, and is mounted 6 inches right and 6 inches behind
+// the robot's rotation center.
+inline constexpr std::uint8_t kForwardDistancePort = 1;
+inline constexpr std::uint8_t kGpsPort = 7;
+inline constexpr double kGpsRightOffsetIn = 6.0;
+inline constexpr double kGpsForwardOffsetIn = -6.0;
+inline constexpr double kGpsSensorHeadingOffsetCwDeg = 90.0;
+
 // Confirmed 2-inch VEX omni tracking wheel at the rear center, mounted like a
 // centered rear license plate and oriented to roll with sideways displacement.
 // It is passive: it measures lateral slide/push but does not make the robot

@@ -4,9 +4,7 @@
 #include "api.h"
 
 extern Drive chassis;
-extern pros::Distance distance_6;
-extern pros::Distance distance_7;
-extern pros::Distance distance_8;
+extern pros::Distance distance_1;
 extern pros::Rotation horizontal_odom;
 
 inline pros::Motor slider_right(2);
@@ -19,4 +17,3 @@ inline pros::adi::DigitalOut clamp_piston('H');
 
 inline pros::Motor claw_arm(4);
 inline pros::Motor upper_intake(15);
-inline pros::Motor counter_rollers(3);
