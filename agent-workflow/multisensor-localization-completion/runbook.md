@@ -3,8 +3,8 @@
 ## Tournament startup
 
 1. Place the robot at the measured start and keep it still while the IMU calibrates.
-2. On the V5 controller, hold `Y` to enter pose-edit mode. While holding `Y`, D-pad left/right changes X by 0.5 inch, down/up changes Y by 0.5 inch, L1/R1 changes heading by 1 degree, and L2/R2 changes heading by 15 degrees.
-3. Press `A` while holding `Y` to save and re-anchor the encoder/IMU state. Release `Y`; the controller rumbles after a successful save.
+2. On the V5 controller, hold `X+Y` to enter pose-edit mode. While holding `X+Y`, D-pad left/right changes X by 0.5 inch, down/up changes Y by 0.5 inch, L1/R1 changes heading by 1 degree, and L2/R2 changes heading by 15 degrees.
+3. Press `A` while holding `X+Y` to save and re-anchor the encoder/IMU state. Release the buttons; the controller rumbles after a successful save. Y alone commands intake outtake.
 
 Coordinates use field center `(0,0)` in inches, +X right, +Y up, and 0 degrees along +X.
 

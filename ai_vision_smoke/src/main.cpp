@@ -45,10 +45,10 @@ void ai_vision_init() {
       ai_vision.set_tag_family(pros::AivisionTagFamily::tag_21H7, true);
   int32_t disable_result =
       ai_vision.disable_detection_types(pros::AivisionModeType::colors,
-                                        pros::AivisionModeType::objects,
                                         pros::AivisionModeType::color_merge);
   int32_t enable_result =
-      ai_vision.enable_detection_types(pros::AivisionModeType::tags);
+      ai_vision.enable_detection_types(pros::AivisionModeType::tags,
+                                       pros::AivisionModeType::objects);
   int32_t overlay_result =
       pros::c::aivision_set_usb_bounding_box_overlay(AIVISION_PORT, true);
   int32_t awb_result = ai_vision.start_awb();
@@ -81,11 +81,26 @@ void apriltag_status_log() {
 
   for (std::size_t i = 0; i < objects.size(); ++i) {
     const auto& object = objects[i];
+    if (pros::AIVision::is_type(object, pros::AivisionDetectType::object)) {
+      const auto& element = object.object.element;
+      char class_name[21] = {};
+      const int32_t class_result = pros::c::aivision_get_class_name(
+          AIVISION_PORT, object.id, reinterpret_cast<std::uint8_t*>(class_name));
+      const double center_x = element.xoffset + 0.5 * element.width;
+      const double fx = (IMAGE_WIDTH_PX * 0.5) /
+                        std::tan(deg_to_rad(HORIZONTAL_FOV_DEG * 0.5));
+      const double bearing_deg =
+          rad_to_deg(std::atan((center_x - IMAGE_WIDTH_PX * 0.5) / fx));
+      printf("DETECT type=object id=%d class=%s class_ok=%ld x=%u y=%u w=%u h=%u score=%u bearing=%.2f\n",
+             static_cast<int>(object.id),
+             class_result == 1 ? class_name : "unknown",
+             static_cast<long>(class_result), element.xoffset, element.yoffset,
+             element.width, element.height, element.score, bearing_deg);
+      continue;
+    }
     if (!pros::AIVision::is_type(object, pros::AivisionDetectType::tag)) {
-      printf("[%d] non-tag type=%d id=%d\n",
-             static_cast<int>(i),
-             static_cast<int>(object.type),
-             static_cast<int>(object.id));
+      printf("DETECT type=other raw_type=%d id=%d\n",
+             static_cast<int>(object.type), static_cast<int>(object.id));
       continue;
     }
 
@@ -139,7 +154,7 @@ void apriltag_status_log() {
 void initialize() {
   pros::lcd::initialize();
   pros::lcd::set_text(0, "AI Vision smoke");
-  pros::lcd::set_text(1, "Port 20 Circle21h7");
+  pros::lcd::set_text(1, "Port 1 tags+objects");
   ai_vision_init();
 }
 

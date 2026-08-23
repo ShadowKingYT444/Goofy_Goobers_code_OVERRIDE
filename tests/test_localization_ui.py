@@ -96,7 +96,7 @@ class TournamentUiIsolationTests(unittest.TestCase):
         self.assertIn("horizontalOdometerOffsetBackIn = 5.18", html)
         self.assertIn("START 30.2,34.7", html)
         self.assertIn("Start Pose Help", html)
-        self.assertIn("hold Y to edit the exact start pose", html)
+        self.assertIn("hold X+Y to edit the exact start pose", html)
         self.assertIn("Effective Track", html)
         self.assertIn("Rear Wheel at 15 deg", html)
         self.assertIn("L+1 / R-1 Turn", html)
@@ -165,10 +165,29 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kRequiredConsistentLidarFits", source)
         self.assertIn("kMaxLidarAxisStepIn = 2.0", source)
 
-    def test_distance_port_nine_is_not_also_a_motor(self):
+    def test_port_nine_is_exclusively_the_slider_motor(self):
         subsystems = (ROOT / "include" / "subsystems.hpp").read_text(encoding="utf-8")
         main = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
-        self.assertNotIn("slider_left(-9)", subsystems)
+        autons = (ROOT / "src" / "autons.cpp").read_text(encoding="utf-8")
+        self.assertIn("slider_left(2)", subsystems)
+        self.assertIn("slider_right(-9)", subsystems)
+        self.assertNotIn("distance_9", subsystems)
+        self.assertNotIn("pros::Distance distance_9", main)
+        self.assertIn("slider_left.move(slider_power)", main)
+        self.assertIn("slider_right.move(slider_power)", main)
+        self.assertIn("LiDAR correction remains fail-closed", autons)
+
+    def test_claw_controls_use_adi_h_and_are_pose_editor_safe(self):
+        subsystems = (ROOT / "include" / "subsystems.hpp").read_text(encoding="utf-8")
+        main = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
+        self.assertIn("clamp_piston('H')", subsystems)
+        self.assertIn("E_CONTROLLER_DIGITAL_L1", main)
+        self.assertIn("clamp_piston.set_value(true)", main)
+        self.assertIn("E_CONTROLLER_DIGITAL_L2", main)
+        self.assertIn("clamp_piston.set_value(false)", main)
+        self.assertIn("const int claw_arm_power = pose_editor_active", main)
+        self.assertIn("E_CONTROLLER_DIGITAL_RIGHT", main)
+        self.assertIn("E_CONTROLLER_DIGITAL_DOWN", main)
 
     def test_ai_vision_retries_after_slow_device_startup(self):
         source = (ROOT / "src" / "ai_vision_localization.cpp").read_text(encoding="utf-8")

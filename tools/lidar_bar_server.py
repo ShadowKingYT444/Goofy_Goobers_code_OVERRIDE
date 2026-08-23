@@ -496,7 +496,7 @@ HTML = """<!doctype html>
 
       async function requestRuntimeStartPose() {
         window.alert(
-          "On the V5 controller, hold Y to edit the exact start pose. " +
+          "On the V5 controller, hold X+Y to edit the exact start pose. " +
           "D-pad changes X/Y by 0.5 in; L1/R1 changes heading by 1 deg; " +
           "L2/R2 changes heading by 15 deg; press A while holding Y to save."
         );

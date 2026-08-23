@@ -9,11 +9,11 @@
 #include <cstdint>
 #include <cstdio>
 
-// The mirrored left drivetrain motors must be reversed here so EZ-Template's
-// logical left/right outputs produce real forward motion and in-place turns.
-Drive chassis({-17, -18},
-              {11, 13},
-              3,
+// Drivetrain directions are calibrated so positive controller commands move
+// the robot forward.
+Drive chassis({17, 18},
+              {-11, -13},
+              0,
               localization::kDriveWheelDiameterIn,
               localization::kDriveRpm,
               localization::kDriveExternalRatio);
@@ -55,7 +55,9 @@ double normalized_heading(double heading_deg) {
 }
 
 bool update_runtime_pose_editor(pros::Controller& master) {
-  const bool active = master.get_digital(pros::E_CONTROLLER_DIGITAL_Y);
+  const bool active =
+      master.get_digital(pros::E_CONTROLLER_DIGITAL_X) &&
+      master.get_digital(pros::E_CONTROLLER_DIGITAL_Y);
   if (active && !runtime_pose_editor.was_active) {
     localization_get_runtime_start_pose(runtime_pose_editor.x_in,
                                         runtime_pose_editor.y_in,
@@ -97,7 +99,7 @@ bool update_runtime_pose_editor(pros::Controller& master) {
   }
   const std::uint32_t now = pros::millis();
   if (now - runtime_pose_editor.last_display_ms >= 100) {
-    master.print(0, 0, "POSE EDIT Y held   ");
+    master.print(0, 0, "POSE EDIT X+Y held ");
     master.print(1, 0, "X%5.1f Y%5.1f    ", runtime_pose_editor.x_in,
                  runtime_pose_editor.y_in);
     master.print(2, 0, "H%5.1f A=SAVE    ", runtime_pose_editor.heading_deg);
@@ -106,38 +108,12 @@ bool update_runtime_pose_editor(pros::Controller& master) {
   return true;
 }
 
-std::array<pros::Distance*, DISTANCE_PORTS.size()> distance_sensors = {
+std::array<pros::Distance*, 3> distance_sensors = {
     &distance_6,
     &distance_7,
     &distance_8,
 };
 
-struct IntakeStats {
-  double upper_rpm;
-  double counter_rpm;
-  double upper_current_ma;
-  double counter_current_ma;
-  double upper_torque_nm;
-  double counter_torque_nm;
-};
-
-struct IntakeAntiJam {
-  bool calibrating = false;
-  bool unjamming = false;
-  bool last_up = false;
-  std::uint32_t calibration_start_ms = 0;
-  std::uint32_t unjam_start_ms = 0;
-  std::uint32_t jam_started_ms = 0;
-  std::uint32_t samples = 0;
-  double current_sum_ma = 0.0;
-  double torque_sum_nm = 0.0;
-  double rpm_sum = 0.0;
-  double current_threshold_ma = 1200.0;
-  double torque_threshold_nm = 0.8;
-  double rpm_threshold = 20.0;
-};
-
-IntakeAntiJam intake_jam;
 volatile bool opcontrol_auton_running = false;
 
 int apply_controller_deadband(int value) {
@@ -172,103 +148,8 @@ DistanceReading read_sensor(pros::Distance& sensor) {
   return reading;
 }
 
-IntakeStats read_intake_stats() {
-  return IntakeStats{
-      std::fabs(upper_intake.get_actual_velocity()),
-      std::fabs(counter_rollers.get_actual_velocity()),
-      static_cast<double>(upper_intake.get_current_draw()),
-      static_cast<double>(counter_rollers.get_current_draw()),
-      std::fabs(upper_intake.get_torque()),
-      std::fabs(counter_rollers.get_torque()),
-  };
-}
-
 void move_intake(int power) {
   upper_intake.move(-power);
-  counter_rollers.move(-power);
-}
-
-void begin_intake_calibration() {
-  intake_jam.calibrating = true;
-  intake_jam.unjamming = false;
-  intake_jam.calibration_start_ms = pros::millis();
-  intake_jam.samples = 0;
-  intake_jam.current_sum_ma = 0.0;
-  intake_jam.torque_sum_nm = 0.0;
-  intake_jam.rpm_sum = 0.0;
-  intake_jam.jam_started_ms = 0;
-  pros::lcd::set_text(5, "Intake calibration...");
-}
-
-int update_intake_control(int driver_power, pros::Controller& master) {
-  const std::uint32_t now = pros::millis();
-  const bool up_pressed = master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT);
-  if (up_pressed && !intake_jam.last_up) {
-    begin_intake_calibration();
-  }
-  intake_jam.last_up = up_pressed;
-
-  const IntakeStats stats = read_intake_stats();
-  const double max_current_ma = std::max(stats.upper_current_ma, stats.counter_current_ma);
-  const double max_torque_nm = std::max(stats.upper_torque_nm, stats.counter_torque_nm);
-  const double min_rpm = std::min(stats.upper_rpm, stats.counter_rpm);
-
-  if (intake_jam.calibrating) {
-    intake_jam.samples++;
-    intake_jam.current_sum_ma += max_current_ma;
-    intake_jam.torque_sum_nm += max_torque_nm;
-    intake_jam.rpm_sum += min_rpm;
-
-    if (now - intake_jam.calibration_start_ms >= 2000) {
-      const double avg_current_ma = intake_jam.current_sum_ma / intake_jam.samples;
-      const double avg_torque_nm = intake_jam.torque_sum_nm / intake_jam.samples;
-      const double avg_rpm = intake_jam.rpm_sum / intake_jam.samples;
-
-      intake_jam.current_threshold_ma = avg_current_ma * 1.5;
-      intake_jam.torque_threshold_nm = avg_torque_nm * 1.5;
-      intake_jam.rpm_threshold = std::max(25.0, avg_rpm * 0.65);
-      intake_jam.calibrating = false;
-
-      pros::lcd::print(5, "Jam I>%4.0fmA T>%.2f", intake_jam.current_threshold_ma,
-                       intake_jam.torque_threshold_nm);
-      pros::lcd::print(6, "Jam rpm<%4.0f", intake_jam.rpm_threshold);
-    }
-
-    return 127;
-  }
-
-  if (intake_jam.unjamming) {
-    const std::uint32_t elapsed = now - intake_jam.unjam_start_ms;
-    if (elapsed >= 1000) {
-      intake_jam.unjamming = false;
-      intake_jam.jam_started_ms = 0;
-      return driver_power;
-    }
-
-    const int phase = static_cast<int>(elapsed / 50);
-    return (phase % 2 == 0) ? -127 : 127;
-  }
-
-  const bool intake_running = driver_power != 0;
-  const bool high_load =
-      max_current_ma > intake_jam.current_threshold_ma || max_torque_nm > intake_jam.torque_threshold_nm;
-  const bool barely_moving = min_rpm < intake_jam.rpm_threshold;
-
-  if (intake_running && high_load && barely_moving) {
-    if (intake_jam.jam_started_ms == 0) {
-      intake_jam.jam_started_ms = now;
-    } else if (now - intake_jam.jam_started_ms >= 250) {
-      intake_jam.unjamming = true;
-      intake_jam.unjam_start_ms = now;
-      intake_jam.jam_started_ms = 0;
-      pros::lcd::set_text(5, "Intake anti-jam");
-      return -127;
-    }
-  } else {
-    intake_jam.jam_started_ms = 0;
-  }
-
-  return driver_power;
 }
 
 void print_distance_frame() {
@@ -277,15 +158,15 @@ void print_distance_frame() {
   const std::uint32_t now = pros::millis();
   if (last_frame_ms != 0 && now - last_frame_ms < TELEMETRY_PERIOD_MS) return;
   last_frame_ms = now;
-  std::array<DistanceReading, DISTANCE_PORTS.size()> readings{};
+  std::array<DistanceReading, 3> readings{};
 
   for (std::size_t i = 0; i < distance_sensors.size(); ++i) {
     readings[i] = read_sensor(*distance_sensors[i]);
   }
 
   printf(
-      "D3 s=%lu t=%lu "
-      "p6=%ld,%ld,%d p7=%ld,%ld,%d p8=%ld,%ld,%d "
+      "D4 s=%lu t=%lu "
+      "p6=%ld,%ld,%d p7=%ld,%ld,%d p8=%ld,%ld,%d p9=%ld,%ld,%d "
       "m17=%.1f m18=%.1f m11=%.1f m13=%.1f h5=%ld "
       "imu=%.2f rawimu=%.2f imust=%d errno=%d\n",
       static_cast<unsigned long>(sample++),
@@ -299,6 +180,9 @@ void print_distance_frame() {
       readings[2].mm,
       readings[2].confidence,
       static_cast<int>(readings[2].installed),
+      -1L,
+      0L,
+      0,
       chassis.left_motors[0].get_position(),
       chassis.left_motors[1].get_position(),
       chassis.right_motors[0].get_position(),
@@ -317,6 +201,7 @@ void print_distance_frame() {
                      readings[1].installed ? "ok" : "no");
     pros::lcd::print(2, "P8 %4ldmm c%2ld %s", readings[2].mm, readings[2].confidence,
                      readings[2].installed ? "ok" : "no");
+    pros::lcd::set_text(3, "P9 right slider");
     const auto& vision = ai_vision_shadow_snapshot();
     pros::lcd::print(4, "AI P%u tag=%d %s",
                      static_cast<unsigned>(vision.port),
@@ -617,7 +502,7 @@ void initialize() {
   ai_vision_shadow_initialize();
   pros::delay(500);
 
-  printf("D3 init ports=6,7,8 period_ms=%lu installed=%d,%d,%d\n",
+  printf("D4 init ports=6,7,8 period_ms=%lu installed=%d,%d,%d\n",
          static_cast<unsigned long>(TELEMETRY_PERIOD_MS),
          static_cast<int>(distance_6.is_installed()),
          static_cast<int>(distance_7.is_installed()),
@@ -723,10 +608,21 @@ void opcontrol() {
     pid_tune_combo_was_pressed = pid_tune_combo_pressed;
 
     if (!opcontrol_auton_running) {
-      const int left_drive_power = pose_editor_active ? 0 :
-          apply_controller_deadband(master.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y));
-      const int right_drive_power = pose_editor_active ? 0 :
-          apply_controller_deadband(master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_Y));
+      constexpr double kOpcontrolDriveScale = 0.70;
+      const int forward_power = pose_editor_active
+          ? 0
+          : apply_controller_deadband(
+                master.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y));
+      const int turn_power = pose_editor_active
+          ? 0
+          : -apply_controller_deadband(
+                master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_X));
+      const int left_drive_power = static_cast<int>(
+          std::clamp(forward_power + turn_power, -127, 127) *
+          kOpcontrolDriveScale);
+      const int right_drive_power = static_cast<int>(
+          std::clamp(forward_power - turn_power, -127, 127) *
+          kOpcontrolDriveScale);
       for (auto& motor : chassis.left_motors) {
         motor.move(left_drive_power);
       }
@@ -735,10 +631,10 @@ void opcontrol() {
       }
 
       const int requested_intake_power = pose_editor_active ? 0 :
-          (master.get_digital(pros::E_CONTROLLER_DIGITAL_A)
-               ? 127
-               : (master.get_digital(pros::E_CONTROLLER_DIGITAL_B) && !auton_combo_pressed ? -127 : 0));
-      move_intake(update_intake_control(requested_intake_power, master));
+          master.get_digital(pros::E_CONTROLLER_DIGITAL_Y)
+              ? 127
+              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_B) && !auton_combo_pressed ? -127 : 0);
+      move_intake(requested_intake_power);
 
       const int slider_power =
           master.get_digital(pros::E_CONTROLLER_DIGITAL_R1)
@@ -747,17 +643,19 @@ void opcontrol() {
       slider_right.move(!pose_editor_active ? slider_power : 0);
       slider_left.move(!pose_editor_active ? slider_power : 0);
 
-      const int claw_power =
-          master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)
+      const int claw_arm_power = pose_editor_active
+          ? 0
+          : master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)
               ? 127
               : (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2) ? -127 : 0);
-      claw_intake.move(!pose_editor_active ? claw_power : 0);
+      counter_rollers.move(claw_arm_power);
 
-      const int claw_rotater_power =
-          master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN)
+      const int claw_wrist_power = pose_editor_active
+          ? 0
+          : master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN)
               ? 40
               : (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) ? -40 : 0);
-      claw_rotater.move(!pose_editor_active ? claw_rotater_power : 0);
+      claw_arm.move(claw_wrist_power);
     }
 
     print_distance_frame();

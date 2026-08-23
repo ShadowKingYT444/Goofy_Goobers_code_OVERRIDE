@@ -1,7 +1,7 @@
 {
     "py/object": "pros.conductor.project.Project",
     "py/state": {
-        "project_name": "Goofy_Goobers",
+        "project_name": "MoreVex",
         "target": "v5",
         "templates": {
             "EZ-Template": {
@@ -30,7 +30,7 @@
                 "version": "3.2.2"
             },
             "kernel": {
-                "location": "C:\\Users\\nsun8\\AppData\\Roaming\\PROS\\templates\\kernel@4.2.2",
+                "location": "C:\\Users\\terry\\Downloads\\MoreVex\\.pros-appdata\\PROS\\templates\\kernel@4.2.2",
                 "metadata": {
                     "cold_addr": "58720256",
                     "cold_output": "bin/cold.package.bin",
@@ -425,7 +425,7 @@
             }
         },
         "upload_options": {
-            "description": "Goofy_Goobers"
+            "description": "MoreVex"
         },
         "use_early_access": false
     }

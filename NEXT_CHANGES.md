@@ -9,19 +9,9 @@ NIS, recovery, or AI-Vision portions.
 
 The current robot has useful deterministic fusion, not the final uncertainty-weighted system.
 
-## Hardware mapping update (requested)
-
-- Right slider remains on Smart Port 2.
-- Added left slider declaration on Smart Port 9.
-- Intake motor updated to Smart Port 15.
-- Counter-roller/claw-intake motor set to Smart Port 3.
-- `claw_arm_rotation_sensor` now explicitly aliases the existing Smart Port 5 rotation device used by localization.
-- Lift/slider rotation encoder remains on Smart Port 16.
-- Distance bar currently uses only Smart Ports 6, 7, and 8 (Port 9 removed to eliminate the conflict).
-
 - Pose prediction runs from drivetrain encoders, the horizontal tracking wheel,
   and the IMU.
-- The remaining three distance sensors can correct the software IMU bias and the coordinate
+- The four distance sensors can correct the software IMU bias and the coordinate
   perpendicular to a selected wall when an observation passes the current gates.
 - The pose loop runs every 20 ms, but accepted LiDAR bias corrections are
   evaluated at most every 100 ms. Three consistent fits are required; coarse
@@ -125,7 +115,7 @@ represented explicitly rather than hidden in controller code.
 | IMU | Fast heading plus software bias | Short-term noise and long-term drift |
 | Drive encoders | Robot-forward displacement | Driven wheels report rotation during slip |
 | Horizontal wheel | Robot-sideways displacement | Offset and wheel scale require calibration |
-| Three-sensor LiDAR wall | Conditional heading-bias correction | A clean line does not prove field-wall identity |
+| Four-sensor LiDAR wall | Conditional heading-bias correction | A clean line does not prove field-wall identity |
 | AI Vision | Smoke tests only | Not connected to active localization |
 
 There is no independent forward tracking wheel and no room to add one.
@@ -238,7 +228,7 @@ constants.
 
 ### Measurement
 
-Keep the active-sensor line fit (now 3 sensors by design). Use the measured physical sensor positions, not
+Keep the four-sensor line fit. Use the measured physical sensor positions, not
 assumed indices, to fit:
 
 ```text
@@ -246,8 +236,8 @@ distance_along_beam = intercept + slope * sensor_baseline_position
 theta_relative = atan(slope)
 ```
 
-All active points contribute to the least-squares slope. The endpoint formula is
-useful as a cross-check, but it must not replace the multi-point fit.
+All four points contribute to the least-squares slope. The endpoint formula is
+useful as a cross-check, but it must not replace the four-point fit.
 
 For each valid field-wall hypothesis, combine the known wall orientation with
 `theta_relative` to create an absolute heading observation. That observation
@@ -629,7 +619,7 @@ physical robot.
 
 The implementation is not accepted until it catches all of these:
 
-- another robot forms a clean three-point LiDAR line;
+- another robot forms a clean four-point LiDAR line;
 - a field element looks planar but is not the predicted wall;
 - duplicate AprilTag candidates have nearly equal scores;
 - a clipped or motion-blurred tag creates a bad centroid;
@@ -713,3 +703,13 @@ That is the practical definition of the master fusion system: high-rate
 prediction, every-fresh-sample comparison, uncertainty-weighted correction,
 strict outlier rejection, explicit degraded behavior, and evidence-based
 recovery.
+# 2026-07-19 hardware-map update
+
+- Smart Port 9 is now confirmed as the reversed right slider motor, not a
+  distance sensor. The left slider motor is Smart Port 2. R1/R2 command both.
+- Production distance telemetry now has sensors only on Ports 6-8 and reports
+  Port 9 unavailable for backward schema compatibility.
+- Four-point LiDAR wall correction is fail-closed until a fourth distance
+  sensor is assigned a non-conflicting port and its rigid geometry recalibrated.
+- The claw pneumatic is now confirmed on three-wire ADI port H. L1 opens it and
+  L2 closes it. Claw-arm motor rotation temporarily uses Right/Down arrows.

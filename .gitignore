@@ -15,3 +15,36 @@ temp.log
 temp.errors
 *.ini
 .d/
+
+# Local development environments and downloaded toolchains
+.venv/
+.pros-appdata/
+.pros-toolchain/
+.pros-toolchain-download/
+.pros-toolchain-linux/
+.pros-toolchain-linux-packages/
+.uv-cache/
+.tmp/
+
+# Local agent/indexing state
+.agents/
+.codex/
+.codex-remote-attachments/
+.graphify-bin/
+.graphify-corpus/
+.graphify-tools/
+graphify-out/
+.git-local/
+
+# Generated firmware and diagnostic output
+firmware/
+*.log
+*.err.log
+pros_terminal_capture.txt
+__pycache__/
+*.py[cod]
+
+# Large local test/research captures and archives
+agent-workflow/**/research/
+agent-workflow/**/*.mp4
+agent-workflow/**/*.zip

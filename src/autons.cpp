@@ -23,7 +23,7 @@ constexpr double kSideOdomCircumferenceIn = kSideOdomDiameterIn * kPi;
 constexpr double kSideOdomRawSign = localization::kSideOdomRawToRobotRightSign;
 constexpr double kSideOdomOffsetBackIn = localization::kSideOdomRearOffsetIn;
 constexpr double kSensorSpacingIn = 2.0;
-constexpr std::array<double, 3> kLidarDistanceCalibrationMm = {7.0, 0.0, -5.0};
+constexpr std::array<double, 4> kLidarDistanceCalibrationMm = {7.0, 0.0, -5.0, -2.0};
 constexpr double kLidarForwardOffsetIn = 0.0;
 constexpr double kLidarLeftOffsetIn = 5.29;
 constexpr double kMaxLidarDistanceIn = 50.0;
@@ -550,67 +550,9 @@ void init_pose(PoseEstimate& pose, const localization::FieldPose& start_pose) {
 }
 
 LidarFit read_lidar_fit() {
-  const std::array<pros::Distance*, 3> sensors = {&distance_6, &distance_7, &distance_8};
-  std::array<double, 3> distances{};
-  long min_confidence = 63;
-  for (std::size_t i = 0; i < sensors.size(); ++i) {
-    const long mm = static_cast<long>(sensors[i]->get_distance());
-    const long confidence = static_cast<long>(sensors[i]->get_confidence());
-    const bool installed = sensors[i]->is_installed();
-    if (!installed || mm < 0) return {};
-    if (mm > kConfidenceMeaningfulDistanceMm && confidence < kMinMeaningfulLidarConfidence) return {};
-    min_confidence = std::min(min_confidence, confidence);
-    distances[i] =
-        (static_cast<double>(mm) + kLidarDistanceCalibrationMm[i]) / 25.4;
-    if (distances[i] > kMaxLidarDistanceIn) return {};
-  }
-  if (min_confidence < kMinCorrectionLidarConfidence) return {};
-
-  double sum_x = 0.0;
-  double sum_y = 0.0;
-  for (std::size_t i = 0; i < distances.size(); ++i) {
-    sum_x += static_cast<double>(i) * kSensorSpacingIn;
-    sum_y += distances[i];
-  }
-  const double mean_x = sum_x / distances.size();
-  const double mean_y = sum_y / distances.size();
-
-  double ss_xx = 0.0;
-  double ss_xy = 0.0;
-  for (std::size_t i = 0; i < distances.size(); ++i) {
-    const double dx = static_cast<double>(i) * kSensorSpacingIn - mean_x;
-    const double dy = distances[i] - mean_y;
-    ss_xx += dx * dx;
-    ss_xy += dx * dy;
-  }
-  const double slope = ss_xx > 0.0 ? ss_xy / ss_xx : 0.0;
-  const double intercept = mean_y - slope * mean_x;
-
-  double sse = 0.0;
-  double max_error = 0.0;
-  for (std::size_t i = 0; i < distances.size(); ++i) {
-    const double x = static_cast<double>(i) * kSensorSpacingIn;
-    const double error = distances[i] - (slope * x + intercept);
-    sse += error * error;
-    max_error = std::max(max_error, std::fabs(error));
-  }
-
-  const double rmse = std::sqrt(sse / distances.size());
-  if (rmse > kMaxLidarRmseIn || max_error > kMaxLidarPointErrorIn) return {};
-
-  const double center_index = (distances.size() - 1) * 0.5;
-  const double center_distance = slope * (kSensorSpacingIn * center_index) + intercept;
-  const double wall_distance = center_distance / std::sqrt(1.0 + slope * slope);
-  if (!std::isfinite(wall_distance) || wall_distance <= 0.0 || wall_distance > kMaxLidarDistanceIn) return {};
-
-  return LidarFit{
-      true,
-      std::atan(slope) * 180.0 / kPi * localization::kLidarThetaScale,
-      wall_distance,
-      rmse,
-      max_error,
-      min_confidence,
-  };
+  // Port 9 is now the right slider motor. The calibrated wall fit requires
+  // all four rigidly aligned sensors, so LiDAR correction remains fail-closed.
+  return {};
 }
 
 void apply_lidar_fusion(PoseEstimate& pose,
