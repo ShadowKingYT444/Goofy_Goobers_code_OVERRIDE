@@ -17,3 +17,4 @@ inline pros::adi::DigitalOut clamp_piston('H');
 
 inline pros::Motor claw_arm(4);
 inline pros::Motor upper_intake(15);
+inline pros::Motor counter_rollers(3);

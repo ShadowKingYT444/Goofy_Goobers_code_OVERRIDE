@@ -1177,13 +1177,12 @@ void opcontrol() {
       slider_right.move(!pose_editor_active ? slider_power : 0);
       slider_left.move(!pose_editor_active ? slider_power : 0);
 
-      if (!pose_editor_active) {
-        if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)) {
-          clamp_piston.set_value(true);
-        } else if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2)) {
-          clamp_piston.set_value(false);
-        }
-      }
+      const int claw_arm_power = pose_editor_active
+          ? 0
+          : master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)
+              ? 127
+              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2) ? -127 : 0);
+      counter_rollers.move(claw_arm_power);
 
       const int claw_wrist_power = pose_editor_active
           ? 0
