@@ -1,4 +1,5 @@
 #include "main.h"
+#include "gps_frame.hpp"
 #include "localization_config.hpp"
 #include "pid_autotune.hpp"
 
@@ -28,6 +29,8 @@ constexpr bool RUN_STARTUP_LIDAR_CALIBRATION = false;
 constexpr bool RUN_STARTUP_FORWARD_CALIBRATION = false;
 // Diagnostic-only. Enable for one supervised boot, then restore false.
 constexpr bool RUN_STARTUP_AI_VISION_SCAN = false;
+// One supervised reversible heading sweep for live P8 characterization.
+constexpr bool RUN_STARTUP_AI_VISION_HEADING_SWEEP = false;
 // Diagnostic motion is opt-in for one supervised boot only. Tournament and
 // normal telemetry images must never move the robot during startup.
 constexpr bool RUN_STARTUP_SCAN_RECOVERY = false;
@@ -38,11 +41,78 @@ constexpr bool RUN_STARTUP_LONG_FUSION_ROUTE = false;
 constexpr bool RUN_STARTUP_DISTANCE_SWEEP_TEST = false;
 // One supervised diagnostic boot; restore false immediately after the test.
 constexpr bool RUN_STARTUP_ROTATION_SWEEP_TEST = false;
+// Short fused-estimator turn/return diagnostic. Enable for one supervised boot.
+constexpr bool RUN_STARTUP_FUSED_ROTATION_HEALTH_TEST = false;
+// One supervised curved relative endpoint acceptance route.
+constexpr bool RUN_STARTUP_FUSED_BOOMERANG_TEST = false;
+// One supervised public-API qualification route. It traces mirrored compact
+// curves and returns to the same anchor; restore false after the single boot.
+constexpr bool RUN_STARTUP_NAVIGATION_QUALIFICATION = false;
+// One supervised 3-degree, zero-translation public-API boundary diagnostic.
+constexpr bool RUN_STARTUP_NAVIGATION_API_BOUNDARY_TEST = false;
+// One supervised 1.5-inch live motion with a deterministic IMU-dropout hook.
+constexpr bool RUN_STARTUP_NAVIGATION_DROPOUT_TEST = false;
+// One supervised P1 stop test. Its harness refuses motion unless a target is
+// already inside the configured forward stop boundary.
+constexpr bool RUN_STARTUP_NAVIGATION_OBSTACLE_TEST = false;
+// Three supervised cumulative 3-inch public straight legs.
+constexpr bool RUN_STARTUP_NAVIGATION_STRAIGHT_QUALIFICATION = false;
+// Two forward/reverse pairs through the public signed-relative API.
+constexpr bool RUN_STARTUP_NAVIGATION_BIDIRECTIONAL_QUALIFICATION = false;
+// Reposition to open center, run paired public turns, then reverse home.
+constexpr bool RUN_STARTUP_NAVIGATION_TURN_QUALIFICATION = false;
+// From the open-center endpoint of a failed turn trial, retest and reverse home.
+constexpr bool RUN_STARTUP_NAVIGATION_TURN_RECOVERY = false;
+// Camera-safe shallow mirrored curves from a forward-repositioned center.
+constexpr bool RUN_STARTUP_NAVIGATION_MIRRORED_CURVE = false;
+// Bounded P1 approach to the visible forward Goal, then reverse by actual travel.
+constexpr bool RUN_STARTUP_NAVIGATION_OBSTACLE_APPROACH = false;
+// Camera-verified reverse-only recovery after the obstacle-approach trial.
+constexpr bool RUN_STARTUP_NAVIGATION_REVERSE_RECOVERY = false;
+// One 0.5-second, low-power mechanism-only slider test. Drivetrain stays off.
+constexpr bool RUN_STARTUP_SLIDER_SLOW_TEST = false;
+// Sequential low-power mechanism checkout with long camera snapshot pauses.
+constexpr bool RUN_STARTUP_ALL_MECHANISMS_TEST = false;
+// Dedicated ADI-H clamp state pictures; always finishes in the false state.
+constexpr bool RUN_STARTUP_CLAMP_PICTURE_TEST = false;
+// One supervised toggle-contact and far-Goal example route.
+constexpr bool RUN_STARTUP_TOGGLE_GOAL_EXAMPLE = false;
+// Resume-only leg from the measured fail-closed endpoint of the toggle route.
+constexpr bool RUN_STARTUP_TOGGLE_GOAL_CONTINUE = false;
+// One supervised end-to-end Up+A route trial. Enable only for a recorded
+// tuning boot, then restore false before the competition image is installed.
+constexpr bool RUN_STARTUP_TOGGLE_FAR_GOAL_TEST = false;
+constexpr bool RUN_STARTUP_FAR_GOAL_RECOVERY_TEST = false;
+// One supervised coordinate-to-coordinate pursuit trial. Restore false after
+// the recorded run and reinstall the hotkey-only image.
+constexpr bool RUN_STARTUP_PURE_PURSUIT_ENDPOINT_TEST = false;
+// One supervised recovery from the measured endpoint of a failed compact
+// qualification leg. Restore false after the single boot.
+constexpr bool RUN_STARTUP_NAVIGATION_RETURN = false;
+// One supervised two-inch straight response check. Restore false after boot.
+constexpr bool RUN_STARTUP_DRIVE_RESPONSE_TEST = false;
+// One supervised sub-inch incremental static-friction characterization.
+constexpr bool RUN_STARTUP_DRIVE_BREAKAWAY_TEST = false;
+// One supervised encoder/IMU propagation test with opportunistic stationary
+// GPS/P8 correction. Restore false immediately after the single run.
+constexpr bool RUN_STARTUP_FUSED_RELATIVE_MOTION_TEST = false;
+// One supervised bounded turn-autotune boot. Restore false immediately after
+// collecting the paired +/-45 degree trials.
+constexpr bool RUN_STARTUP_PID_AUTOTUNE = false;
 // One supervised obstacle-aware route; restore false immediately afterward.
 constexpr bool RUN_STARTUP_GPS_SAFE_ROUTE = false;
 // One-shot, pose-gated move away from the left wall. The pose gate prevents a
 // reboot from repeating the translation after a successful recovery.
 constexpr bool RUN_STARTUP_WALL_RECOVERY = false;
+// Never deploy a multi-foot diagnostic route as the competition callback.
+constexpr bool RUN_COMPETITION_DIAGNOSTIC_ROUTE = false;
+// Development routes and PID autotune must never be reachable from mechanism
+// button combinations in a competition image.
+constexpr bool ENABLE_CONTROLLER_MOTION_DIAGNOSTICS = false;
+// Temporary slot-2 boot isolator. It disables every opcontrol actuator write;
+// only initialize() progress markers run. Restore false after diagnosis.
+constexpr bool RUN_BOOT_DIAGNOSTIC_NO_ACTUATION = false;
+constexpr bool RUN_STARTUP_WRIST_HOLD_TEST = false;
 constexpr int CONTROLLER_DRIVE_DEADBAND = 5;
 
 struct RuntimePoseEditor {
@@ -80,11 +150,11 @@ bool update_runtime_pose_editor(pros::Controller& master) {
   constexpr double kWallIn = localization::kPhysicalWallHalfSpanIn;
   if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT))
     runtime_pose_editor.x_in -= kPositionStepIn;
-  if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_RIGHT))
+  if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_UP))
     runtime_pose_editor.x_in += kPositionStepIn;
   if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_DOWN))
     runtime_pose_editor.y_in -= kPositionStepIn;
-  if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_UP))
+  if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_RIGHT))
     runtime_pose_editor.y_in += kPositionStepIn;
   if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_L1))
     runtime_pose_editor.heading_deg -= kFineHeadingStepDeg;
@@ -121,6 +191,63 @@ int apply_controller_deadband(int value) {
   return std::abs(value) <= CONTROLLER_DRIVE_DEADBAND ? 0 : value;
 }
 
+constexpr double kWristHoldTargetDeg = 287.13;
+constexpr double kWristHoldKp = 2.20;
+constexpr double kWristHoldKi = 0.00;
+constexpr double kWristHoldKd = 0.50;
+constexpr double kWristHoldStaticPower = 0.0;
+constexpr double kWristGravityCompensationPower = -45.0;
+constexpr double kWristHoldMaxPower = 80.0;
+constexpr double kWristSeekMinPower = 70.0;
+constexpr double kWristHoldBrakeBandDeg = 1.5;
+
+double shortest_angle_error_deg(double target_deg, double current_deg) {
+  double error_deg = target_deg - current_deg;
+  while (error_deg > 180.0) error_deg -= 360.0;
+  while (error_deg < -180.0) error_deg += 360.0;
+  return error_deg;
+}
+
+void update_wrist_hold() {
+  static std::uint32_t previous_ms = pros::millis();
+  static double previous_error_deg = 0.0;
+  static double filtered_derivative = 0.0;
+  static double integral = 0.0;
+
+  const std::uint32_t now_ms = pros::millis();
+  const double dt_s = std::clamp(
+      static_cast<double>(now_ms - previous_ms) / 1000.0, 0.001, 0.100);
+  const double angle_deg =
+      static_cast<double>(horizontal_odom.get_angle()) / 100.0;
+  const double error_deg =
+      shortest_angle_error_deg(kWristHoldTargetDeg, angle_deg);
+
+  if (std::fabs(error_deg) < 25.0) {
+    integral = std::clamp(integral + error_deg * dt_s, -30.0, 30.0);
+  } else {
+    integral = 0.0;
+  }
+  const double raw_derivative = (error_deg - previous_error_deg) / dt_s;
+  filtered_derivative += 0.20 * (raw_derivative - filtered_derivative);
+  double output = std::clamp(
+      kWristHoldKp * error_deg + kWristHoldKi * integral +
+          kWristHoldKd * filtered_derivative,
+      -kWristHoldMaxPower, kWristHoldMaxPower);
+
+  claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+  if (std::fabs(error_deg) > kWristHoldBrakeBandDeg) {
+    output += std::copysign(kWristHoldStaticPower, error_deg);
+    if (std::fabs(output) < kWristSeekMinPower) {
+      output = std::copysign(kWristSeekMinPower, error_deg);
+    }
+  }
+  output = std::clamp(output + kWristGravityCompensationPower,
+                      -kWristHoldMaxPower, kWristHoldMaxPower);
+  claw_arm.move(static_cast<int>(std::lround(output)));
+  previous_ms = now_ms;
+  previous_error_deg = error_deg;
+}
+
 bool drive_positions_are_zeroed() {
   for (const auto& motor : chassis.left_motors) {
     const double position = motor.get_position();
@@ -133,15 +260,122 @@ bool drive_positions_are_zeroed() {
   return true;
 }
 
+void print_drive_motor_health(const char* phase) {
+  const std::array<int, 4> ports = {17, 18, 11, 13};
+  const std::array<pros::Motor*, 4> motors = {
+      &chassis.left_motors[0], &chassis.left_motors[1],
+      &chassis.right_motors[0], &chassis.right_motors[1]};
+  std::printf(
+      "DRIVE_POWER phase=%s battery_mv=%ld battery_ma=%ld capacity=%.1f\n",
+      phase, static_cast<long>(pros::battery::get_voltage()),
+      static_cast<long>(pros::battery::get_current()),
+      pros::battery::get_capacity());
+  for (std::size_t i = 0; i < motors.size(); ++i) {
+    std::printf(
+        "DRIVE_MOTOR phase=%s port=%d pos=%.2f velocity=%.2f current_ma=%ld "
+        "command_mv=%ld voltage_limit_mv=%ld temp_c=%.1f faults=%lu flags=%lu\n",
+        phase, ports[i], motors[i]->get_position(),
+        motors[i]->get_actual_velocity(),
+        static_cast<long>(motors[i]->get_current_draw()),
+        static_cast<long>(motors[i]->get_voltage()),
+        static_cast<long>(motors[i]->get_voltage_limit()),
+        motors[i]->get_temperature(),
+        static_cast<unsigned long>(motors[i]->get_faults()),
+        static_cast<unsigned long>(motors[i]->get_flags()));
+  }
+  std::fflush(stdout);
+}
+
+void run_drive_breakaway_test() {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kWheelCircumferenceIn =
+      kPi * localization::kDriveWheelDiameterIn;
+  constexpr std::array<int, 5> kPowerSteps{{18, 24, 30, 36, 42}};
+  constexpr double kBreakawayTravelIn = 0.15;
+  constexpr double kPerStepTravelLimitIn = 0.50;
+  constexpr std::uint32_t kStepTimeLimitMs = 300;
+  constexpr long kObstacleStopMm = static_cast<long>(
+      localization::kForwardObstacleStopIn * 25.4);
+
+  auto stop_and_brake = []() {
+    for (auto& motor : chassis.left_motors) {
+      motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+      motor.brake();
+    }
+    for (auto& motor : chassis.right_motors) {
+      motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+      motor.brake();
+    }
+  };
+  auto average_position_deg = []() {
+    return 0.25 * (
+        chassis.left_motors[0].get_position() +
+        chassis.left_motors[1].get_position() +
+        chassis.right_motors[0].get_position() +
+        chassis.right_motors[1].get_position());
+  };
+
+  stop_and_brake();
+  print_drive_motor_health("breakaway_start");
+  bool found = false;
+  int selected_power = 0;
+  double selected_travel_in = 0.0;
+  for (const int power : kPowerSteps) {
+    const long p1_mm = static_cast<long>(distance_1.get_distance());
+    if (!distance_1.is_installed() ||
+        (p1_mm != 9999 &&
+         (p1_mm < kObstacleStopMm ||
+          p1_mm > localization::kForwardObstacleMaxRangeMm))) {
+      std::printf("BREAKAWAY abort=forward_preflight power=%d p1_mm=%ld\n",
+                  power, p1_mm);
+      break;
+    }
+    pros::delay(200);
+    const double baseline_deg = average_position_deg();
+    double travel_in = 0.0;
+    const std::uint32_t started_ms = pros::millis();
+    for (auto& motor : chassis.left_motors) motor.move(power);
+    for (auto& motor : chassis.right_motors) motor.move(power);
+    while (pros::millis() - started_ms < kStepTimeLimitMs) {
+      travel_in = std::fabs(average_position_deg() - baseline_deg) / 360.0 *
+                  kWheelCircumferenceIn;
+      const long live_p1_mm = static_cast<long>(distance_1.get_distance());
+      if (travel_in >= kPerStepTravelLimitIn ||
+          (live_p1_mm != 9999 &&
+           live_p1_mm <= kObstacleStopMm)) {
+        break;
+      }
+      pros::delay(20);
+    }
+    stop_and_brake();
+    std::printf(
+        "BREAKAWAY power=%d elapsed_ms=%lu travel_in=%.4f p1_mm=%ld\n",
+        power, static_cast<unsigned long>(pros::millis() - started_ms),
+        travel_in, static_cast<long>(distance_1.get_distance()));
+    std::fflush(stdout);
+    print_drive_motor_health("breakaway_step_done");
+    if (travel_in >= kBreakawayTravelIn) {
+      found = true;
+      selected_power = power;
+      selected_travel_in = travel_in;
+      break;
+    }
+  }
+  stop_and_brake();
+  std::printf("BREAKAWAY complete found=%d selected_power=%d travel_in=%.4f\n",
+              static_cast<int>(found), selected_power, selected_travel_in);
+  std::fflush(stdout);
+}
+
 void run_distance_sweep_test() {
   constexpr double kPi = 3.14159265358979323846;
   constexpr double kWheelCircumferenceIn =
       kPi * localization::kDriveWheelDiameterIn;
-  constexpr double kVelocityRpm = 15.0;
+  constexpr std::array<double, 3> kVelocityRpm = {10.0, 20.0, 35.0};
   constexpr std::uint32_t kTimeoutPerInchMs = 1800;
   constexpr std::array<int, 3> kTargetsIn = {2, 5, 10};
-  pros::Gps gps(localization::kGpsPort);
-  pros::Imu imu6(6);
+  auto& gps = gps_7;
+  auto& imu6 = chassis.imu;
 
   struct GpsSample {
     double x_m;
@@ -185,6 +419,16 @@ void run_distance_sweep_test() {
     for (std::size_t i = 0; i < now.size(); ++i) total += now[i] - baseline[i];
     return total / static_cast<double>(now.size());
   };
+  auto side_delta_deg = [](const std::array<double, 4>& now,
+                           const std::array<double, 4>& baseline,
+                           std::size_t first) {
+    return ((now[first] - baseline[first]) +
+            (now[first + 1] - baseline[first + 1])) / 2.0;
+  };
+  auto tracking_delta_in = [](std::int32_t now, std::int32_t baseline) {
+    return (static_cast<double>(now - baseline) / 100.0 / 360.0) *
+           (kPi * localization::kSideOdomWheelDiameterIn);
+  };
   auto stop = [&]() {
     for (auto& motor : chassis.left_motors) motor.move_velocity(0);
     for (auto& motor : chassis.right_motors) motor.move_velocity(0);
@@ -207,21 +451,16 @@ void run_distance_sweep_test() {
     motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
   stop();
 
-  const bool imu_installed = imu6.is_installed();
-  if (imu_installed) {
-    imu6.reset();
-    const std::uint32_t calibration_started = pros::millis();
-    while (imu6.is_calibrating() && pros::millis() - calibration_started < 5000) {
-      pros::delay(20);
-    }
-  }
+  const bool imu_installed = imu6.is_installed() && !imu6.is_calibrating();
   printf("STRAIGHT_IMU_INIT port=6 installed=%d status=%d\n",
          static_cast<int>(imu_installed), static_cast<int>(imu6.get_status()));
   fflush(stdout);
 
+  for (double velocity_rpm : kVelocityRpm) {
   for (int target_in : kTargetsIn) {
-    pros::lcd::print(6, "Sweep %din: sampling", target_in);
+    pros::lcd::print(6, "Sweep %din @ %.0f", target_in, velocity_rpm);
     const auto baseline = motor_positions();
+    const std::int32_t baseline_h5 = horizontal_odom.get_position();
     const GpsSample start_gps = sample_gps();
     const double start_imu_deg = imu6.get_rotation();
     double max_abs_imu_delta_deg = 0.0;
@@ -233,7 +472,7 @@ void run_distance_sweep_test() {
     while (pros::millis() - back_started <
                kTimeoutPerInchMs * static_cast<std::uint32_t>(target_in) &&
            average_delta_deg(motor_positions(), baseline) > -target_deg) {
-      command(-kVelocityRpm);
+      command(-velocity_rpm);
       max_abs_imu_delta_deg = std::max(
           max_abs_imu_delta_deg, std::fabs(imu6.get_rotation() - start_imu_deg));
       pros::delay(10);
@@ -247,12 +486,19 @@ void run_distance_sweep_test() {
     const double gps_back_in =
         std::hypot(back_gps.x_m - start_gps.x_m,
                    back_gps.y_m - start_gps.y_m) * 39.37007874;
-    printf("SWEEP target_in=%d phase=back encoder_in=%.3f gps_in=%.3f difference_in=%.3f gps_heading_delta=%.3f gps_error_in=%.3f imu_delta_deg=%.3f imu_max_abs_deg=%.3f\n",
-           target_in, encoder_back_in, gps_back_in,
+    const std::int32_t back_h5 = horizontal_odom.get_position();
+    const double back_left_deg = side_delta_deg(back_motors, baseline, 0);
+    const double back_right_deg = side_delta_deg(back_motors, baseline, 2);
+    printf("SWEEP rpm=%.0f target_in=%d phase=back encoder_in=%.3f gps_in=%.3f difference_in=%.3f gps_heading_delta=%.3f gps_error_in=%.3f imu_delta_deg=%.3f imu_max_abs_deg=%.3f left_deg=%.2f right_deg=%.2f drive_side_diff_deg=%.2f h5_delta_cdeg=%ld h5_in=%.3f p1_mm=%ld p1_conf=%ld\n",
+           velocity_rpm, target_in, encoder_back_in, gps_back_in,
            gps_back_in - encoder_back_in,
            heading_delta(back_gps.heading_deg, start_gps.heading_deg),
            back_gps.error_m * 39.37007874,
-           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg);
+           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg,
+           back_left_deg, back_right_deg, back_left_deg - back_right_deg,
+           static_cast<long>(back_h5 - baseline_h5),
+           tracking_delta_in(back_h5, baseline_h5),
+           distance_1.get(), distance_1.get_confidence());
     fflush(stdout);
 
     pros::lcd::print(6, "Sweep %din: RETURN", target_in);
@@ -260,7 +506,7 @@ void run_distance_sweep_test() {
     while (pros::millis() - return_started <
                kTimeoutPerInchMs * static_cast<std::uint32_t>(target_in) &&
            average_delta_deg(motor_positions(), baseline) < -1.5) {
-      command(kVelocityRpm);
+      command(velocity_rpm);
       max_abs_imu_delta_deg = std::max(
           max_abs_imu_delta_deg, std::fabs(imu6.get_rotation() - start_imu_deg));
       pros::delay(10);
@@ -274,13 +520,21 @@ void run_distance_sweep_test() {
     const double gps_residual_in =
         std::hypot(final_gps.x_m - start_gps.x_m,
                    final_gps.y_m - start_gps.y_m) * 39.37007874;
-    printf("SWEEP target_in=%d phase=return encoder_residual_in=%.3f gps_residual_in=%.3f gps_heading_delta=%.3f gps_error_in=%.3f imu_residual_deg=%.3f imu_max_abs_deg=%.3f\n",
-           target_in, encoder_residual_in, gps_residual_in,
+    const std::int32_t final_h5 = horizontal_odom.get_position();
+    const double final_left_deg = side_delta_deg(final_motors, baseline, 0);
+    const double final_right_deg = side_delta_deg(final_motors, baseline, 2);
+    printf("SWEEP rpm=%.0f target_in=%d phase=return encoder_residual_in=%.3f gps_residual_in=%.3f gps_heading_delta=%.3f gps_error_in=%.3f imu_residual_deg=%.3f imu_max_abs_deg=%.3f left_deg=%.2f right_deg=%.2f drive_side_diff_deg=%.2f h5_delta_cdeg=%ld h5_in=%.3f p1_mm=%ld p1_conf=%ld\n",
+           velocity_rpm, target_in, encoder_residual_in, gps_residual_in,
            heading_delta(final_gps.heading_deg, start_gps.heading_deg),
            final_gps.error_m * 39.37007874,
-           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg);
+           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg,
+           final_left_deg, final_right_deg, final_left_deg - final_right_deg,
+           static_cast<long>(final_h5 - baseline_h5),
+           tracking_delta_in(final_h5, baseline_h5),
+           distance_1.get(), distance_1.get_confidence());
     fflush(stdout);
     pros::delay(500);
+  }
   }
   pros::lcd::set_text(6, "Distance sweep DONE");
 }
@@ -289,10 +543,10 @@ void run_rotation_sweep_test() {
   constexpr double kPi = 3.14159265358979323846;
   constexpr double kWheelCircumferenceIn =
       kPi * localization::kDriveWheelDiameterIn;
-  constexpr std::array<double, 5> kTargetsDeg = {15.0, 30.0, 45.0, 60.0, 90.0};
+  constexpr std::array<double, 1> kTargetsDeg = {15.0};
   constexpr double kVelocityRpm = 12.0;
-  pros::Gps gps(localization::kGpsPort);
-  pros::Imu imu6(6);
+  auto& gps = gps_7;
+  auto& imu6 = chassis.imu;
 
   struct HeadingSample {
     double gps_deg;
@@ -348,6 +602,10 @@ void run_rotation_sweep_test() {
     const double right = ((now[2] - baseline[2]) + (now[3] - baseline[3])) / 2.0;
     return (left - right) / 2.0;
   };
+  auto tracking_delta_in = [](std::int32_t now, std::int32_t baseline) {
+    return (static_cast<double>(now - baseline) / 100.0 / 360.0) *
+           (kPi * localization::kSideOdomWheelDiameterIn);
+  };
   auto stop = [&]() {
     for (auto& motor : chassis.left_motors) motor.move_velocity(0);
     for (auto& motor : chassis.right_motors) motor.move_velocity(0);
@@ -356,6 +614,22 @@ void run_rotation_sweep_test() {
     for (auto& motor : chassis.left_motors) motor.move_velocity(rpm);
     for (auto& motor : chassis.right_motors) motor.move_velocity(-rpm);
   };
+  auto print_motor_health = [&](const char* phase) {
+    const std::array<int, 4> ports = {17, 18, 11, 13};
+    const std::array<pros::Motor*, 4> motors = {
+        &chassis.left_motors[0], &chassis.left_motors[1],
+        &chassis.right_motors[0], &chassis.right_motors[1]};
+    for (std::size_t i = 0; i < motors.size(); ++i) {
+      printf("MOTOR_HEALTH phase=%s port=%d position_deg=%.2f velocity_rpm=%.2f current_ma=%ld temperature_c=%.1f faults=%lu flags=%lu\n",
+             phase, ports[i], motors[i]->get_position(),
+             motors[i]->get_actual_velocity(),
+             static_cast<long>(motors[i]->get_current_draw()),
+             motors[i]->get_temperature(),
+             static_cast<unsigned long>(motors[i]->get_faults()),
+             static_cast<unsigned long>(motors[i]->get_flags()));
+    }
+    fflush(stdout);
+  };
 
   chassis.drive_mode_set(ez::DISABLE, true);
   for (auto& motor : chassis.left_motors)
@@ -363,27 +637,23 @@ void run_rotation_sweep_test() {
   for (auto& motor : chassis.right_motors)
     motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
   stop();
-  const bool imu_installed = imu6.is_installed();
-  if (imu_installed) {
-    imu6.reset();
-    const std::uint32_t calibration_started = pros::millis();
-    while (imu6.is_calibrating() && pros::millis() - calibration_started < 5000) {
-      pros::delay(20);
-    }
-  }
+  const bool imu_installed = imu6.is_installed() && !imu6.is_calibrating();
   printf("ROTATION_SWEEP_INIT imu_port=6 installed=%d status=%d\n",
          static_cast<int>(imu_installed), static_cast<int>(imu6.get_status()));
   fflush(stdout);
+  print_motor_health("start");
 
   for (double target_deg : kTargetsDeg) {
     pros::lcd::print(6, "Turn %.0f: sampling", target_deg);
     const auto baseline = motor_positions();
+    const std::int32_t baseline_h5 = horizontal_odom.get_position();
     const HeadingSample start = sample_headings();
     const double side_arc_target_in =
         target_deg * kPi / 180.0 * localization::kDriveTrackWidthIn / 2.0;
     const double motor_target_deg = side_arc_target_in * 360.0 / kWheelCircumferenceIn;
 
-    pros::lcd::print(6, "Turn %.0f: CW", target_deg);
+    // Positive left / negative right is counterclockwise in the robot frame.
+    pros::lcd::print(6, "Turn %.0f: CCW", target_deg);
     const std::uint32_t turn_started = pros::millis();
     while (pros::millis() - turn_started < 8000 &&
            turn_motor_delta(motor_positions(), baseline) < motor_target_deg) {
@@ -405,11 +675,20 @@ void run_rotation_sweep_test() {
         ? (motor_turn_deg * kWheelCircumferenceIn / 360.0) * 2.0 /
               (std::fabs(gps_heading_deg) * kPi / 180.0)
         : NAN;
-    printf("ROT_SWEEP target_deg=%.0f phase=turn encoder_deg=%.3f gps_deg=%.3f imu_deg=%.3f encoder_minus_gps_deg=%.3f effective_track_in=%.3f gps_error_in=%.3f\n",
+    const std::int32_t peak_h5 = horizontal_odom.get_position();
+    const double peak_h5_in = tracking_delta_in(peak_h5, baseline_h5);
+    const double h5_offset_from_imu_in = std::fabs(imu_heading_deg) > 1.0
+        ? peak_h5_in / (imu_heading_deg * kPi / 180.0)
+        : NAN;
+    printf("ROT_SWEEP target_deg=%.0f phase=turn direction=ccw encoder_deg=%.3f gps_deg=%.3f imu_deg=%.3f encoder_minus_gps_deg=%.3f effective_track_in=%.3f gps_error_in=%.3f h5_delta_cdeg=%ld h5_in=%.3f h5_offset_from_imu_in=%.3f p1_mm=%ld p1_conf=%ld\n",
            target_deg, encoder_heading_deg, gps_heading_deg, imu_heading_deg,
            encoder_heading_deg - std::fabs(gps_heading_deg), effective_track_in,
-           peak.gps_error_m * 39.37007874);
+           peak.gps_error_m * 39.37007874,
+           static_cast<long>(peak_h5 - baseline_h5), peak_h5_in,
+           h5_offset_from_imu_in, distance_1.get(),
+           distance_1.get_confidence());
     fflush(stdout);
+    print_motor_health("peak");
 
     pros::lcd::print(6, "Turn %.0f: RETURN", target_deg);
     const std::uint32_t return_started = pros::millis();
@@ -425,12 +704,17 @@ void run_rotation_sweep_test() {
     const double gps_position_residual_in =
         std::hypot(final.gps_x_m - start.gps_x_m,
                    final.gps_y_m - start.gps_y_m) * 39.37007874;
-    printf("ROT_SWEEP target_deg=%.0f phase=return encoder_residual_motor_deg=%.3f gps_heading_residual_deg=%.3f imu_heading_residual_deg=%.3f gps_position_residual_in=%.3f\n",
+    const std::int32_t final_h5 = horizontal_odom.get_position();
+    printf("ROT_SWEEP target_deg=%.0f phase=return encoder_residual_motor_deg=%.3f gps_heading_residual_deg=%.3f imu_heading_residual_deg=%.3f gps_position_residual_in=%.3f h5_residual_cdeg=%ld h5_residual_in=%.3f p1_mm=%ld p1_conf=%ld\n",
            target_deg, turn_motor_delta(final_motors, baseline),
            angle_delta(final.gps_deg, start.gps_deg),
            imu_installed ? angle_delta(final.imu_deg, start.imu_deg) : NAN,
-           gps_position_residual_in);
+           gps_position_residual_in,
+           static_cast<long>(final_h5 - baseline_h5),
+           tracking_delta_in(final_h5, baseline_h5),
+           distance_1.get(), distance_1.get_confidence());
     fflush(stdout);
+    print_motor_health("return");
     pros::delay(500);
   }
   pros::lcd::set_text(6, "Rotation sweep DONE");
@@ -446,8 +730,11 @@ void run_wall_recovery() {
   constexpr double kDriveRpm = 15.0;
   constexpr double kWheelCircumferenceIn =
       kPi * localization::kDriveWheelDiameterIn;
-  pros::Gps gps(localization::kGpsPort);
-  pros::Imu imu(6);
+  // Reuse the single shared hardware owners. Constructing a second device on
+  // an occupied Smart Port makes diagnostic behavior dependent on object
+  // lifetime and can contend with normal telemetry.
+  auto& gps = gps_7;
+  auto& imu = chassis.imu;
 
   struct RobotPose {
     double x_in;
@@ -496,20 +783,14 @@ void run_wall_recovery() {
     error_in /= kSamples;
     const double sensor_heading_cw_deg = normalize(
         std::atan2(heading_sin, heading_cos) * 180.0 / kPi);
-    const double robot_heading_cw_deg = normalize(
-        sensor_heading_cw_deg - localization::kGpsSensorHeadingOffsetCwDeg);
-    const double heading_rad = robot_heading_cw_deg * kPi / 180.0;
-    const double forward_x = std::sin(heading_rad);
-    const double forward_y = std::cos(heading_rad);
-    const double right_x = std::cos(heading_rad);
-    const double right_y = -std::sin(heading_rad);
-    const double center_x = sensor_x_in -
-        (localization::kGpsRightOffsetIn * right_x +
-         localization::kGpsForwardOffsetIn * forward_x);
-    const double center_y = sensor_y_in -
-        (localization::kGpsRightOffsetIn * right_y +
-         localization::kGpsForwardOffsetIn * forward_y);
-    return RobotPose{center_x, center_y, robot_heading_cw_deg, error_in,
+    const auto project_pose = localization::vex_gps_to_project_robot_pose(
+        sensor_x_in / kInchesPerMeter,
+        sensor_y_in / kInchesPerMeter,
+        sensor_heading_cw_deg);
+    return RobotPose{project_pose.x_in,
+                     project_pose.y_in,
+                     project_pose.robot_heading_cw_deg,
+                     error_in,
                      std::hypot(max_x - min_x, max_y - min_y)};
   };
   auto stop = [&]() {
@@ -547,8 +828,8 @@ void run_wall_recovery() {
   }
 
   const RobotPose start = sample_pose();
-  const bool start_gate = start.x_in >= -53.0 && start.x_in <= -43.0 &&
-                          start.y_in >= -12.0 && start.y_in <= 5.0 &&
+  const bool start_gate = start.x_in >= -12.0 && start.x_in <= 5.0 &&
+                          start.y_in >= 43.0 && start.y_in <= 53.0 &&
                           start.heading_cw_deg >= 130.0 &&
                           start.heading_cw_deg <= 165.0 &&
                           start.error_in <= 2.0 &&
@@ -673,13 +954,18 @@ void print_distance_frame() {
   const auto gps_position = gps_7.get_position();
   const double gps_heading_deg = gps_7.get_heading();
   const double gps_error_m = gps_7.get_error();
+  const double gps_gyro_z = gps_7.get_gyro_rate_z();
+  const auto imu_gyro = chassis.imu.get_gyro_rate();
+  const auto imu_accel = chassis.imu.get_accel();
+  const int gps_errno = errno;
 
   printf(
       "D4 s=%lu t=%lu "
       "p1=%ld,%ld,%d "
-      "m17=%.1f m18=%.1f m11=%.1f m13=%.1f h5=%ld "
+      "m17=%.1f m18=%.1f m11=%.1f m13=%.1f h5=%ld h5abs=%.2f "
       "imu=%.2f rawimu=%.2f imust=%d "
-      "gps7=%.4f,%.4f,%.2f,%.4f,%d errno=%d\n",
+      "imugyro=%.4f,%.4f,%.4f imuacc=%.4f,%.4f,%.4f "
+      "gps7=%.4f,%.4f,%.2f,%.4f,%d errno=%d gpsgyro=%.2f\n",
       static_cast<unsigned long>(sample++),
       static_cast<unsigned long>(now),
       forward_distance.mm,
@@ -690,15 +976,23 @@ void print_distance_frame() {
       chassis.right_motors[0].get_position(),
       chassis.right_motors[1].get_position(),
       static_cast<long>(horizontal_odom.get_position()),
+      static_cast<double>(horizontal_odom.get_angle()) / 100.0,
       chassis.drive_imu_get(),
       chassis.imu.get_rotation(),
       static_cast<int>(chassis.imu.get_status()),
+      imu_gyro.x,
+      imu_gyro.y,
+      imu_gyro.z,
+      imu_accel.x,
+      imu_accel.y,
+      imu_accel.z,
       gps_position.x,
       gps_position.y,
       gps_heading_deg,
       gps_error_m,
       static_cast<int>(gps_7.is_installed()),
-      errno);
+      gps_errno,
+      gps_gyro_z);
   fflush(stdout);
 
   if (sample % 5 == 0) {
@@ -754,6 +1048,28 @@ void start_fusion_test_auton() {
   }, "fusion test");
 }
 
+void start_toggle_far_goal_auton() {
+  if (opcontrol_auton_running) return;
+
+  opcontrol_auton_running = true;
+  pros::Task::create([] {
+    pros::Controller controller(pros::E_CONTROLLER_MASTER);
+    pros::lcd::set_text(6, "Up+A: toggle -> (24,-48)");
+    controller.print(0, 0, "AUTON (24,-48)   ");
+    move_intake(0);
+    chassis.drive_set(0, 0);
+    const bool success = localization_toggle_far_goal_hotkey_auton();
+    chassis.drive_set(0, 0);
+    move_intake(0);
+    opcontrol_auton_running = false;
+    controller.rumble(success ? "." : "---");
+    pros::lcd::set_text(
+        6, success ? "Far Goal auton PASS" : "Far Goal auton FAIL");
+    controller.print(
+        0, 0, success ? "AUTON PASS        " : "AUTON FAILED      ");
+  }, "toggle far goal");
+}
+
 void start_pid_autotune() {
   if (opcontrol_auton_running) {
     return;
@@ -781,7 +1097,7 @@ void stop_drive_velocity() {
 }
 
 bool ai_vision_bounded_startup_scan() {
-  constexpr double kLimitFromStartDeg = 32.0;
+  constexpr double kLimitFromStartDeg = 36.0;
   constexpr double kTurnVelocityRpm = 8.0;
   constexpr double kTargetToleranceDeg = 1.2;
   constexpr std::uint32_t kLegTimeoutMs = 24000;
@@ -865,8 +1181,12 @@ bool ai_vision_bounded_startup_scan() {
         leg_done = true;
         break;
       }
-      const double command_rpm = error_deg > 0.0 ? kTurnVelocityRpm
-                                                 : -kTurnVelocityRpm;
+      // Positive IMU rotation on this calibrated drivetrain requires the
+      // left wheels backward and right wheels forward.
+      const double magnitude_rpm = std::clamp(
+          std::fabs(error_deg) * 0.50, 2.5, kTurnVelocityRpm);
+      const double command_rpm = error_deg > 0.0 ? -magnitude_rpm
+                                                 : magnitude_rpm;
       for (auto& motor : chassis.left_motors) motor.move_velocity(command_rpm);
       for (auto& motor : chassis.right_motors) motor.move_velocity(-command_rpm);
 
@@ -893,6 +1213,7 @@ bool ai_vision_bounded_startup_scan() {
       pros::delay(SAMPLE_PERIOD_MS);
     }
     stop_drive_velocity();
+    pros::delay(300);
     if (!leg_done) {
       std::printf("VISION_SCAN event=abort reason=leg_timeout target=%.1f\n",
                   target_delta_deg);
@@ -916,8 +1237,10 @@ bool ai_vision_bounded_startup_scan() {
         return false;
       }
       if (std::fabs(delta_deg) <= kTargetToleranceDeg) break;
-      const double command_rpm = delta_deg > 0.0 ? -kTurnVelocityRpm
-                                                 : kTurnVelocityRpm;
+      const double magnitude_rpm = std::clamp(
+          std::fabs(delta_deg) * 0.50, 2.5, kTurnVelocityRpm);
+      const double command_rpm = delta_deg > 0.0 ? magnitude_rpm
+                                                 : -magnitude_rpm;
       for (auto& motor : chassis.left_motors) motor.move_velocity(command_rpm);
       for (auto& motor : chassis.right_motors) motor.move_velocity(-command_rpm);
       ai_vision_shadow_update();
@@ -932,6 +1255,144 @@ bool ai_vision_bounded_startup_scan() {
       static_cast<int>(found), found_delta_deg, final_delta_deg);
   std::fflush(stdout);
   return found && std::fabs(final_delta_deg) <= 2.0;
+}
+
+bool ai_vision_heading_characterization() {
+  constexpr double kAngleGuardDeg = 70.0;
+  constexpr double kTurnVelocityRpm = 8.0;
+  constexpr double kToleranceDeg = 0.8;
+  constexpr std::uint32_t kLegTimeoutMs = 18000;
+  constexpr std::uint32_t kStallTimeoutMs = 2200;
+  constexpr std::uint32_t kHoldMs = 1000;
+  constexpr std::array<double, 24> kTargetsDeg{
+      -10.0, -15.0, -20.0, -25.0, -30.0, -35.0, -40.0, -45.0,
+      -50.0, -55.0, -60.0, -65.0, -60.0, -55.0, -50.0, -45.0,
+      -40.0, -35.0, -30.0, -25.0, -20.0, -15.0, -10.0, 0.0};
+
+  for (auto& motor : chassis.left_motors) {
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  }
+  for (auto& motor : chassis.right_motors) {
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  }
+  stop_drive_velocity();
+  if (!chassis.imu.is_installed() || chassis.imu.is_calibrating() ||
+      chassis.imu.get_status() == pros::ImuStatus::error) {
+    std::printf("P8_HEADING event=abort reason=imu_invalid\n");
+    std::fflush(stdout);
+    return false;
+  }
+  const double start_imu_deg = chassis.drive_imu_get();
+  if (!std::isfinite(start_imu_deg)) {
+    std::printf("P8_HEADING event=abort reason=imu_nonfinite\n");
+    std::fflush(stdout);
+    return false;
+  }
+  std::printf(
+      "P8_HEADING event=start start_imu=%.2f guard_deg=%.1f velocity_rpm=%.1f\n",
+      start_imu_deg, kAngleGuardDeg, kTurnVelocityRpm);
+  std::fflush(stdout);
+
+  int valid_samples = 0;
+  int changed_samples = 0;
+  int repeated_samples = 0;
+  int visible_legs = 0;
+  for (std::size_t target_index = 0; target_index < kTargetsDeg.size();
+       ++target_index) {
+    const double target_deg = kTargetsDeg[target_index];
+    const std::uint32_t leg_start_ms = pros::millis();
+    std::uint32_t last_motion_ms = leg_start_ms;
+    double last_delta_deg = chassis.drive_imu_get() - start_imu_deg;
+    bool reached = false;
+    while (pros::millis() - leg_start_ms < kLegTimeoutMs) {
+      const double delta_deg = chassis.drive_imu_get() - start_imu_deg;
+      if (!std::isfinite(delta_deg) || std::fabs(delta_deg) > kAngleGuardDeg) {
+        stop_drive_velocity();
+        std::printf("P8_HEADING event=abort reason=angle_guard delta=%.2f\n",
+                    delta_deg);
+        std::fflush(stdout);
+        return false;
+      }
+      ai_vision_shadow_update();
+      print_distance_frame();
+      const double error_deg = target_deg - delta_deg;
+      if (std::fabs(error_deg) <= kToleranceDeg) {
+        stop_drive_velocity();
+        reached = true;
+        break;
+      }
+      const double magnitude_rpm = std::clamp(
+          std::fabs(error_deg) * 0.50, 2.5, kTurnVelocityRpm);
+      const double command_rpm = error_deg > 0.0 ? -magnitude_rpm
+                                                 : magnitude_rpm;
+      for (auto& motor : chassis.left_motors) motor.move_velocity(command_rpm);
+      for (auto& motor : chassis.right_motors) motor.move_velocity(-command_rpm);
+      const std::uint32_t now = pros::millis();
+      if (std::fabs(delta_deg - last_delta_deg) >= 0.20) {
+        last_delta_deg = delta_deg;
+        last_motion_ms = now;
+      } else if (now - last_motion_ms > kStallTimeoutMs) {
+        stop_drive_velocity();
+        std::printf("P8_HEADING event=abort reason=stall target=%.1f delta=%.2f\n",
+                    target_deg, delta_deg);
+        std::fflush(stdout);
+        return false;
+      }
+      pros::delay(SAMPLE_PERIOD_MS);
+    }
+    stop_drive_velocity();
+    if (!reached) {
+      std::printf("P8_HEADING event=abort reason=timeout target=%.1f\n",
+                  target_deg);
+      std::fflush(stdout);
+      return false;
+    }
+
+    int leg_valid = 0;
+    int leg_changed = 0;
+    int leg_repeated = 0;
+    const std::uint32_t hold_start_ms = pros::millis();
+    while (pros::millis() - hold_start_ms < kHoldMs) {
+      ai_vision_shadow_update();
+      print_distance_frame();
+      const AiVisionShadowSnapshot vision = ai_vision_shadow_snapshot();
+      if (vision.tag_valid) {
+        ++leg_valid;
+        ++valid_samples;
+        if (vision.repeated_geometry) {
+          ++leg_repeated;
+          ++repeated_samples;
+        } else {
+          ++leg_changed;
+          ++changed_samples;
+        }
+      }
+      pros::delay(50);
+    }
+    const double achieved_deg = chassis.drive_imu_get() - start_imu_deg;
+    const AiVisionShadowSnapshot vision = ai_vision_shadow_snapshot();
+    if (leg_valid > 0) ++visible_legs;
+    std::printf(
+        "P8_HEADING event=hold target=%.1f achieved=%.2f valid=%d changed=%d "
+        "repeat=%d tag=%d bearing=%.2f horizontal=%.2f range=%.2f area=%.1f "
+        "reason=%s p1_mm=%ld p1_conf=%ld\n",
+        target_deg, achieved_deg, leg_valid, leg_changed, leg_repeated,
+        vision.tag_id, vision.bearing_deg, vision.horizontal_range_in,
+        vision.range_estimate_in, vision.area_px2, vision.reason,
+        static_cast<long>(distance_1.get()),
+        static_cast<long>(distance_1.get_confidence()));
+    std::fflush(stdout);
+  }
+  stop_drive_velocity();
+  const double final_delta_deg = chassis.drive_imu_get() - start_imu_deg;
+  const bool returned = std::fabs(final_delta_deg) <= 2.0;
+  std::printf(
+      "P8_HEADING event=done returned=%d final_delta=%.2f visible_legs=%d "
+      "valid=%d changed=%d repeat=%d\n",
+      static_cast<int>(returned), final_delta_deg, visible_legs,
+      valid_samples, changed_samples, repeated_samples);
+  std::fflush(stdout);
+  return returned && visible_legs >= 3;
 }
 
 bool recover_scan_start_heading() {
@@ -995,14 +1456,42 @@ bool recover_scan_start_heading() {
 }  // namespace
 
 void initialize() {
+  // Emit progress before each device call. A Smart Port driver must never be
+  // able to make a black Brain screen look like a dead user program.
+  std::printf("BOOT_STAGE t=%lu stage=entry\n",
+              static_cast<unsigned long>(pros::millis()));
+  for (std::uint8_t port = 1; port <= 21; ++port) {
+    const int type = static_cast<int>(pros::c::get_plugged_type(port));
+    if (type != 0) {
+      std::printf("DEVICE_PORT port=%u type=%d\n",
+                  static_cast<unsigned>(port), type);
+    }
+  }
+  std::fflush(stdout);
+
+  std::printf("BOOT_STAGE t=%lu stage=lcd_begin\n",
+              static_cast<unsigned long>(pros::millis()));
+  std::fflush(stdout);
   pros::lcd::initialize();
   pros::lcd::set_text(0, "Forward Distance P1");
   pros::lcd::set_text(1, "GPS P7 / IMU P6");
   pros::lcd::set_text(2, "IMU calibrating...");
+  std::printf("BOOT_STAGE t=%lu stage=drive_reset_begin\n",
+              static_cast<unsigned long>(pros::millis()));
+  std::fflush(stdout);
   chassis.drive_sensor_reset();
+  std::printf("BOOT_STAGE t=%lu stage=drive_reset_done\n",
+              static_cast<unsigned long>(pros::millis()));
+  std::fflush(stdout);
   bool imu_ready = false;
   if (chassis.imu.is_installed()) {
+    std::printf("BOOT_STAGE t=%lu stage=imu_reset_begin\n",
+                static_cast<unsigned long>(pros::millis()));
+    std::fflush(stdout);
     chassis.imu.reset();
+    std::printf("BOOT_STAGE t=%lu stage=imu_reset_returned\n",
+                static_cast<unsigned long>(pros::millis()));
+    std::fflush(stdout);
     const std::uint32_t imu_calibration_started = pros::millis();
     while (chassis.imu.is_calibrating() &&
            pros::millis() - imu_calibration_started < 5000) {
@@ -1012,10 +1501,23 @@ void initialize() {
                 chassis.imu.get_status() != pros::ImuStatus::error;
     if (imu_ready) chassis.drive_imu_reset(0.0);
   }
+  std::printf("BOOT_STAGE t=%lu stage=imu_done ready=%d\n",
+              static_cast<unsigned long>(pros::millis()),
+              static_cast<int>(imu_ready));
+  std::fflush(stdout);
   pros::lcd::set_text(2, imu_ready ? "IMU ready" : "IMU check failed");
+  std::printf("BOOT_STAGE t=%lu stage=aux_reset_begin\n",
+              static_cast<unsigned long>(pros::millis()));
+  std::fflush(stdout);
   horizontal_odom.reset_position();
   localization_telemetry_reset();
+  std::printf("BOOT_STAGE t=%lu stage=vision_init_begin\n",
+              static_cast<unsigned long>(pros::millis()));
+  std::fflush(stdout);
   ai_vision_shadow_initialize();
+  std::printf("BOOT_STAGE t=%lu stage=vision_init_done\n",
+              static_cast<unsigned long>(pros::millis()));
+  std::fflush(stdout);
   pros::delay(500);
 
   printf("D4 init distance_port=1 direction=forward period_ms=%lu installed=%d\n",
@@ -1024,41 +1526,81 @@ void initialize() {
   printf("IMU_INIT calibrated=%d raw_heading=%.2f\n",
          static_cast<int>(imu_ready),
          chassis.drive_imu_get());
-  // One boot-time inventory makes wiring changes explicit and prevents a
-  // stale configured port from silently disabling a localization sensor.
-  for (std::uint8_t port = 1; port <= 21; ++port) {
-    const int type = static_cast<int>(pros::c::get_plugged_type(port));
-    if (type != 0) {
-      printf("DEVICE_PORT port=%u type=%d\n", static_cast<unsigned>(port), type);
-    }
-  }
+  print_drive_motor_health("startup_stationary");
   fflush(stdout);
 }
 
-void disabled() {}
+void disabled() {
+  navigation::stop();
+}
 
 void competition_initialize() {}
 
 void autonomous() {
-  pros::Task telemetry_task([] {
-    while (true) {
-      print_distance_frame();
-      ai_vision_shadow_update();
-      pros::delay(SAMPLE_PERIOD_MS);
-    }
-  });
-
-  fusion_test_auton();
-
-  while (true) {
-    pros::delay(100);
+  if constexpr (RUN_COMPETITION_DIAGNOSTIC_ROUTE) {
+    fusion_test_auton();
+  } else {
+    // A competition path has not been specified yet. Fail closed instead of
+    // running the 240-inch sensor-development route when the field enables
+    // autonomous. User autonomous code can call navigation::init() followed
+    // by navigation::go_straight_to().
+    navigation::stop();
+    navigation::update();
   }
 }
 
 void opcontrol() {
+  if constexpr (RUN_BOOT_DIAGNOSTIC_NO_ACTUATION) {
+    while (true) {
+      std::printf("BOOT_HEARTBEAT t=%lu\n",
+                  static_cast<unsigned long>(pros::millis()));
+      std::fflush(stdout);
+      pros::delay(1000);
+    }
+  }
   pros::Controller master(pros::E_CONTROLLER_MASTER);
   if (drive_positions_are_zeroed()) {
     localization_telemetry_reset();
+  }
+  if (RUN_STARTUP_WRIST_HOLD_TEST) {
+    constexpr std::uint32_t kTestTimeoutMs = 3000;
+    constexpr std::int32_t kTestCurrentAbortMa = 2400;
+    const std::uint32_t test_started_ms = pros::millis();
+    std::uint32_t last_test_log_ms = 0;
+    while (pros::millis() - test_started_ms < kTestTimeoutMs) {
+      const double angle_deg =
+          static_cast<double>(horizontal_odom.get_angle()) / 100.0;
+      const double error_deg =
+          shortest_angle_error_deg(kWristHoldTargetDeg, angle_deg);
+      update_wrist_hold();
+      const std::int32_t current_ma = claw_arm.get_current_draw();
+      const std::uint32_t now_ms = pros::millis();
+      if (now_ms - last_test_log_ms >= 100) {
+        std::printf(
+            "WRIST_TEST elapsed_ms=%lu angle=%.2f error=%.2f voltage_mv=%ld "
+            "current_ma=%ld\n",
+            static_cast<unsigned long>(now_ms - test_started_ms), angle_deg,
+            error_deg, static_cast<long>(claw_arm.get_voltage()),
+            static_cast<long>(current_ma));
+        std::fflush(stdout);
+        last_test_log_ms = now_ms;
+      }
+      if (std::fabs(error_deg) <= kWristHoldBrakeBandDeg ||
+          current_ma >= kTestCurrentAbortMa) {
+        break;
+      }
+      pros::delay(20);
+    }
+    const double final_angle_deg =
+        static_cast<double>(horizontal_odom.get_angle()) / 100.0;
+    std::printf("WRIST_TEST complete angle=%.2f error=%.2f current_ma=%ld\n",
+                final_angle_deg,
+                shortest_angle_error_deg(kWristHoldTargetDeg,
+                                         final_angle_deg),
+                static_cast<long>(claw_arm.get_current_draw()));
+    std::fflush(stdout);
+    claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+    claw_arm.move(0);
   }
   if (RUN_STARTUP_WALL_RECOVERY) {
     pros::lcd::set_text(6, "Wall recovery in 10s");
@@ -1074,6 +1616,143 @@ void opcontrol() {
     pros::lcd::set_text(6, "Turns start in 3 sec");
     pros::delay(3000);
     run_rotation_sweep_test();
+  }
+  if (RUN_STARTUP_FUSED_ROTATION_HEALTH_TEST) {
+    pros::lcd::set_text(6, "Fused turns in 3 sec");
+    pros::delay(3000);
+    localization_fused_rotation_health_test();
+  }
+  if (RUN_STARTUP_FUSED_BOOMERANG_TEST) {
+    pros::lcd::set_text(6, "12,12 route in 5 sec");
+    pros::delay(5000);
+    localization_fused_boomerang_test();
+  }
+  if (RUN_STARTUP_NAVIGATION_QUALIFICATION) {
+    pros::lcd::set_text(6, "Nav route in 5 sec");
+    pros::delay(5000);
+    localization_navigation_qualification_route();
+  }
+  if (RUN_STARTUP_NAVIGATION_API_BOUNDARY_TEST) {
+    pros::lcd::set_text(6, "Nav API check in 5 sec");
+    pros::delay(5000);
+    localization_navigation_api_boundary_test();
+  }
+  if (RUN_STARTUP_NAVIGATION_DROPOUT_TEST) {
+    pros::lcd::set_text(6, "Dropout test in 5 sec");
+    pros::delay(5000);
+    localization_navigation_dropout_abort_test();
+  }
+  if (RUN_STARTUP_NAVIGATION_OBSTACLE_TEST) {
+    pros::lcd::set_text(6, "Obstacle test in 5 sec");
+    pros::delay(5000);
+    localization_navigation_obstacle_abort_test();
+  }
+  if (RUN_STARTUP_NAVIGATION_STRAIGHT_QUALIFICATION) {
+    pros::lcd::set_text(6, "Straight trial in 5 sec");
+    pros::delay(5000);
+    localization_navigation_straight_qualification();
+  }
+  if (RUN_STARTUP_NAVIGATION_BIDIRECTIONAL_QUALIFICATION) {
+    pros::lcd::set_text(6, "Fwd/rev trial in 5s");
+    pros::delay(5000);
+    localization_navigation_bidirectional_qualification();
+  }
+  if (RUN_STARTUP_NAVIGATION_TURN_QUALIFICATION) {
+    pros::lcd::set_text(6, "Turn trial in 5 sec");
+    pros::delay(5000);
+    localization_navigation_turn_qualification();
+  }
+  if (RUN_STARTUP_NAVIGATION_TURN_RECOVERY) {
+    pros::lcd::set_text(6, "Turn recovery in 5s");
+    pros::delay(5000);
+    localization_navigation_turn_recovery_qualification();
+  }
+  if (RUN_STARTUP_NAVIGATION_MIRRORED_CURVE) {
+    pros::lcd::set_text(6, "Mirror curves in 5s");
+    pros::delay(5000);
+    localization_navigation_mirrored_curve_qualification();
+  }
+  if (RUN_STARTUP_NAVIGATION_OBSTACLE_APPROACH) {
+    pros::lcd::set_text(6, "P1 approach in 5 sec");
+    pros::delay(5000);
+    localization_navigation_obstacle_approach_qualification();
+  }
+  if (RUN_STARTUP_NAVIGATION_REVERSE_RECOVERY) {
+    pros::lcd::set_text(6, "Reverse recovery in 5s");
+    pros::delay(5000);
+    localization_navigation_reverse_recovery();
+  }
+  if (RUN_STARTUP_SLIDER_SLOW_TEST) {
+    pros::lcd::set_text(6, "Slider test in 5 sec");
+    pros::delay(5000);
+    localization_slider_slow_picture_test();
+  }
+  if (RUN_STARTUP_ALL_MECHANISMS_TEST) {
+    pros::lcd::set_text(6, "Mechanisms in 5 sec");
+    pros::delay(5000);
+    localization_all_mechanisms_test();
+  }
+  if (RUN_STARTUP_CLAMP_PICTURE_TEST) {
+    pros::lcd::set_text(6, "Clamp pictures in 5s");
+    pros::delay(5000);
+    localization_clamp_picture_test();
+  }
+  if (RUN_STARTUP_TOGGLE_GOAL_EXAMPLE) {
+    pros::lcd::set_text(6, "Toggle route in 5s");
+    pros::delay(5000);
+    localization_toggle_goal_example_auton();
+  }
+  if (RUN_STARTUP_TOGGLE_GOAL_CONTINUE) {
+    pros::lcd::set_text(6, "Goal continuation in 5s");
+    pros::delay(5000);
+    localization_toggle_goal_continue_auton();
+  }
+  if (RUN_STARTUP_TOGGLE_FAR_GOAL_TEST) {
+    pros::lcd::set_text(6, "Far Goal trial in 5s");
+    pros::delay(5000);
+    const bool far_goal_ok = localization_toggle_far_goal_hotkey_auton();
+    pros::lcd::set_text(6, far_goal_ok ? "Far Goal trial PASS"
+                                      : "Far Goal trial FAIL");
+  }
+  if (RUN_STARTUP_FAR_GOAL_RECOVERY_TEST) {
+    pros::lcd::set_text(6, "Return to Toggle in 5s");
+    pros::delay(5000);
+    const bool recovery_ok = localization_far_goal_trial_recover_to_start();
+    pros::lcd::set_text(6, recovery_ok ? "Toggle return PASS"
+                                      : "Toggle return STOP");
+  }
+  if (RUN_STARTUP_PURE_PURSUIT_ENDPOINT_TEST) {
+    pros::delay(1500);
+    const bool pursuit_ok = localization_pure_pursuit_endpoint_test();
+    pros::lcd::set_text(6, pursuit_ok ? "Pursuit endpoint OK"
+                                     : "Pursuit endpoint FAIL");
+  }
+  if (RUN_STARTUP_NAVIGATION_RETURN) {
+    pros::lcd::set_text(6, "Return in 5 sec");
+    pros::delay(5000);
+    localization_navigation_return_route();
+  }
+  if (RUN_STARTUP_DRIVE_RESPONSE_TEST) {
+    pros::lcd::set_text(6, "2in response in 5s");
+    pros::delay(5000);
+    localization_drive_response_test();
+  }
+  if (RUN_STARTUP_DRIVE_BREAKAWAY_TEST) {
+    pros::lcd::set_text(6, "Breakaway in 5 sec");
+    pros::delay(5000);
+    run_drive_breakaway_test();
+  }
+  if (RUN_STARTUP_FUSED_RELATIVE_MOTION_TEST) {
+    pros::lcd::set_text(6, "12in test in 3 sec");
+    pros::delay(3000);
+    localization_fused_relative_motion_test();
+  }
+  if (RUN_STARTUP_PID_AUTOTUNE) {
+    pros::lcd::set_text(6, "PID tune in 5 sec");
+    pros::delay(5000);
+    const bool pid_tune_ok = pid_autotune_auton();
+    pros::lcd::set_text(6, pid_tune_ok ? "PID tune complete"
+                                      : "PID tune FAILED");
   }
   if (RUN_STARTUP_GPS_SAFE_ROUTE) {
     pros::lcd::set_text(6, "GPS route in 5 sec");
@@ -1102,6 +1781,13 @@ void opcontrol() {
     const bool vision_scan_ok = ai_vision_bounded_startup_scan();
     pros::lcd::set_text(6, vision_scan_ok ? "Vision tag found" : "Vision scan no tag");
   }
+  if (RUN_STARTUP_AI_VISION_HEADING_SWEEP) {
+    pros::lcd::set_text(6, "P8 sweep in 5 sec");
+    pros::delay(5000);
+    const bool p8_sweep_ok = ai_vision_heading_characterization();
+    pros::lcd::set_text(6, p8_sweep_ok ? "P8 heading sweep OK"
+                                      : "P8 heading sweep FAIL");
+  }
   if (RUN_STARTUP_LONG_FUSION_ROUTE) {
     pros::lcd::set_text(6, "Long fusion in 10 sec");
     pros::delay(10000);
@@ -1111,11 +1797,28 @@ void opcontrol() {
   bool auton_combo_was_pressed = false;
   bool fusion_test_combo_was_pressed = false;
   bool pid_tune_combo_was_pressed = false;
+  bool relative_motion_combo_was_pressed = false;
+  enum class WristActionState { idle, seeking, dwelling };
+  WristActionState wrist_action_state = WristActionState::idle;
+  std::uint32_t wrist_action_started_ms = 0;
+  std::uint32_t wrist_dwell_started_ms = 0;
+  std::uint32_t last_drive_health_ms = 0;
 
   while (true) {
     const bool pose_editor_active = update_runtime_pose_editor(master);
-    const bool auton_combo_pressed =
+    const bool relative_motion_combo_pressed =
         !pose_editor_active &&
+        master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) &&
+        master.get_digital(pros::E_CONTROLLER_DIGITAL_A);
+    if (relative_motion_combo_pressed &&
+        !relative_motion_combo_was_pressed) {
+      master.rumble(".-");
+      start_toggle_far_goal_auton();
+    }
+    relative_motion_combo_was_pressed = relative_motion_combo_pressed;
+
+    const bool auton_combo_pressed =
+        ENABLE_CONTROLLER_MOTION_DIAGNOSTICS && !pose_editor_active &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_B) &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN);
     if (auton_combo_pressed && !auton_combo_was_pressed) {
@@ -1124,7 +1827,7 @@ void opcontrol() {
     auton_combo_was_pressed = auton_combo_pressed;
 
     const bool fusion_test_combo_pressed =
-        !pose_editor_active &&
+        ENABLE_CONTROLLER_MOTION_DIAGNOSTICS && !pose_editor_active &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_X) &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN);
     if (fusion_test_combo_pressed && !fusion_test_combo_was_pressed) {
@@ -1133,16 +1836,28 @@ void opcontrol() {
     fusion_test_combo_was_pressed = fusion_test_combo_pressed;
 
     const bool pid_tune_combo_pressed =
-        !pose_editor_active &&
+        ENABLE_CONTROLLER_MOTION_DIAGNOSTICS && !pose_editor_active &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_X) &&
-        master.get_digital(pros::E_CONTROLLER_DIGITAL_UP);
+        master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT);
     if (pid_tune_combo_pressed && !pid_tune_combo_was_pressed) {
       start_pid_autotune();
     }
     pid_tune_combo_was_pressed = pid_tune_combo_pressed;
 
     if (!opcontrol_auton_running) {
-      constexpr double kOpcontrolDriveScale = 0.70;
+      constexpr double kOpcontrolDriveScale = 1.0;
+      constexpr int kMechanismPower = 127;
+      constexpr std::uint32_t kWristDwellMs = 500;
+      constexpr std::uint32_t kWristActionTimeoutMs = 2500;
+      const std::uint32_t control_now_ms = pros::millis();
+      const bool wrist_right_pressed =
+          !pose_editor_active &&
+          !master.get_digital(pros::E_CONTROLLER_DIGITAL_A) &&
+          master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_RIGHT);
+      if (wrist_right_pressed) {
+        wrist_action_state = WristActionState::seeking;
+        wrist_action_started_ms = control_now_ms;
+      }
       const int forward_power = pose_editor_active
           ? 0
           : apply_controller_deadband(
@@ -1166,33 +1881,65 @@ void opcontrol() {
 
       const int requested_intake_power = pose_editor_active ? 0 :
           master.get_digital(pros::E_CONTROLLER_DIGITAL_Y)
-              ? 127
-              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_B) && !auton_combo_pressed ? -127 : 0);
+              ? kMechanismPower
+              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_B) && !auton_combo_pressed
+                     ? -kMechanismPower
+                     : 0);
       move_intake(requested_intake_power);
 
       const int slider_power =
           master.get_digital(pros::E_CONTROLLER_DIGITAL_R1)
-              ? 127
-              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_R2) ? -127 : 0);
+              ? kMechanismPower
+              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_R2)
+                     ? -kMechanismPower
+                     : 0);
       slider_right.move(!pose_editor_active ? slider_power : 0);
       slider_left.move(!pose_editor_active ? slider_power : 0);
 
       const int claw_arm_power = pose_editor_active
           ? 0
           : master.get_digital(pros::E_CONTROLLER_DIGITAL_L1)
-              ? 127
-              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2) ? -127 : 0);
+              ? kMechanismPower
+              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2)
+                     ? -kMechanismPower
+                     : 0);
       counter_rollers.move(claw_arm_power);
 
-      const int claw_wrist_power = pose_editor_active
-          ? 0
-          : master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN)
-              ? 40
-              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) ? -40 : 0);
-      claw_arm.move(claw_wrist_power);
+      if (pose_editor_active ||
+          control_now_ms - wrist_action_started_ms >= kWristActionTimeoutMs) {
+        wrist_action_state = WristActionState::idle;
+      }
+      if (wrist_action_state == WristActionState::seeking) {
+        update_wrist_hold();
+        const double wrist_angle_deg =
+            static_cast<double>(horizontal_odom.get_angle()) / 100.0;
+        if (std::fabs(shortest_angle_error_deg(
+                kWristHoldTargetDeg, wrist_angle_deg)) <=
+            kWristHoldBrakeBandDeg) {
+          claw_arm.move(0);
+          wrist_action_state = WristActionState::dwelling;
+          wrist_dwell_started_ms = control_now_ms;
+        }
+      } else if (wrist_action_state == WristActionState::dwelling &&
+                 control_now_ms - wrist_dwell_started_ms < kWristDwellMs) {
+        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+        claw_arm.move(0);
+      } else {
+        wrist_action_state = WristActionState::idle;
+        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+        claw_arm.move(0);
+      }
     }
 
     print_distance_frame();
+    const std::uint32_t drive_health_now_ms = pros::millis();
+    if (drive_health_now_ms - last_drive_health_ms >= 5000) {
+      print_drive_motor_health("periodic_stationary_or_opcontrol");
+      std::printf("CLAW_ROTATION port=5 absolute_deg=%.2f\n",
+                  static_cast<double>(horizontal_odom.get_angle()) / 100.0);
+      std::fflush(stdout);
+      last_drive_health_ms = drive_health_now_ms;
+    }
     ai_vision_shadow_update();
     if (!opcontrol_auton_running) {
       localization_telemetry_update();

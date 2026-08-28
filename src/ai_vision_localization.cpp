@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 namespace {
 constexpr std::uint8_t kAiVisionPort = localization::kAiVisionPort;
@@ -20,12 +21,19 @@ constexpr double kMinQuadAreaPx2 = 40.0;
 constexpr int kImageEdgeMarginPx = 2;
 
 AiVisionShadowSnapshot snapshot;
+AiVisionShadowSnapshot published_snapshot;
+pros::Mutex snapshot_mutex;
 std::uint8_t active_ai_vision_port = kAiVisionPort;
 std::array<int, 9> last_geometry{};
 bool have_last_geometry = false;
 std::uint32_t last_poll_ms = 0;
 std::uint32_t last_geometry_change_ms = 0;
 std::uint32_t last_init_attempt_ms = 0;
+
+void publish_snapshot() {
+  std::lock_guard<pros::Mutex> lock(snapshot_mutex);
+  published_snapshot = snapshot;
+}
 
 double cross(int ax, int ay, int bx, int by, int cx, int cy) {
   return static_cast<double>(bx - ax) * static_cast<double>(cy - ay) -
@@ -70,6 +78,36 @@ bool convex_quad(const pros::aivision_object_tag_s_t& tag) {
   return all_positive || all_negative;
 }
 
+bool tag_geometry_usable(const pros::aivision_object_tag_s_t& tag,
+                         double area_px2) {
+  if (!corners_in_bounds(tag) || !convex_quad(tag) ||
+      area_px2 < kMinQuadAreaPx2) {
+    return false;
+  }
+  const std::array<double, 4> edges{
+      point_distance(tag.x0, tag.y0, tag.x1, tag.y1),
+      point_distance(tag.x1, tag.y1, tag.x2, tag.y2),
+      point_distance(tag.x2, tag.y2, tag.x3, tag.y3),
+      point_distance(tag.x3, tag.y3, tag.x0, tag.y0),
+  };
+  const auto [minimum_edge, maximum_edge] =
+      std::minmax_element(edges.begin(), edges.end());
+  if (*minimum_edge < localization::kAiMinTagEdgePx ||
+      *minimum_edge <= 0.0 ||
+      *maximum_edge / *minimum_edge > localization::kAiMaxTagEdgeRatio) {
+    return false;
+  }
+  const int minimum_x = std::min({tag.x0, tag.x1, tag.x2, tag.x3});
+  const int maximum_x = std::max({tag.x0, tag.x1, tag.x2, tag.x3});
+  const int minimum_y = std::min({tag.y0, tag.y1, tag.y2, tag.y3});
+  const int maximum_y = std::max({tag.y0, tag.y1, tag.y2, tag.y3});
+  const double bounding_area =
+      static_cast<double>(maximum_x - minimum_x) *
+      static_cast<double>(maximum_y - minimum_y);
+  return bounding_area > 0.0 &&
+         area_px2 / bounding_area >= localization::kAiMinTagFillRatio;
+}
+
 std::array<int, 9> geometry_key(const pros::aivision_object_s_t& object) {
   const auto& tag = object.object.tag;
   return {object.id, tag.x0, tag.y0, tag.x1, tag.y1,
@@ -77,10 +115,16 @@ std::array<int, 9> geometry_key(const pros::aivision_object_s_t& object) {
 }
 
 void emit_shadow_status() {
+  // Publish one internally consistent optical frame before any independent
+  // estimator/logger task can read it. Sensor I/O and serial printing remain
+  // outside the small copy critical section.
+  publish_snapshot();
   std::printf(
       "VISION_SHADOW t=%lu poll=%lu port=%u installed=%d configured=%d count=%d "
       "tag=%d corners=%d,%d,%d,%d,%d,%d,%d,%d center=%.1f,%.1f "
-      "area=%.1f mean_edge=%.2f range=%.2f edge_ratio=%.2f fill=%.2f bearing=%.2f repeat=%d geometry_age=%lu valid=%d reason=%s\n",
+      "area=%.1f mean_edge=%.2f depth=%.2f right=%.2f up=%.2f horizontal=%.2f range=%.2f "
+      "edge_ratio=%.2f fill=%.2f bearing=%.2f elevation=%.2f roll=%.2f "
+      "repeat=%d geometry_age=%lu valid=%d reason=%s\n",
       static_cast<unsigned long>(snapshot.brain_ms),
       static_cast<unsigned long>(snapshot.poll_id),
       static_cast<unsigned>(snapshot.port),
@@ -88,9 +132,12 @@ void emit_shadow_status() {
       snapshot.object_count, snapshot.tag_id, snapshot.x0, snapshot.y0,
       snapshot.x1, snapshot.y1, snapshot.x2, snapshot.y2, snapshot.x3,
       snapshot.y3, snapshot.center_x_px, snapshot.center_y_px,
-      snapshot.area_px2, snapshot.mean_edge_px, snapshot.range_estimate_in,
+      snapshot.area_px2, snapshot.mean_edge_px, snapshot.forward_depth_in,
+      snapshot.right_offset_in, snapshot.up_offset_in,
+      snapshot.horizontal_range_in,
+      snapshot.range_estimate_in,
       snapshot.edge_ratio, snapshot.fill_ratio,
-      snapshot.bearing_deg,
+      snapshot.bearing_deg, snapshot.elevation_deg, snapshot.image_roll_deg,
       static_cast<int>(snapshot.repeated_geometry),
       static_cast<unsigned long>(snapshot.geometry_age_ms),
       static_cast<int>(snapshot.tag_valid), snapshot.reason);
@@ -101,6 +148,11 @@ void emit_shadow_status() {
 void ai_vision_shadow_initialize() {
   last_init_attempt_ms = pros::millis();
   snapshot = {};
+  // A reconfigured or replacement camera starts a new optical history. Never
+  // compare its first corners with geometry cached before an unplug/reset.
+  last_geometry = {};
+  have_last_geometry = false;
+  last_geometry_change_ms = 0;
   snapshot.brain_ms = pros::millis();
   int detected_count = 0;
   std::uint8_t first_detected_port = 0;
@@ -121,6 +173,7 @@ void ai_vision_shadow_initialize() {
   snapshot.installed = detected_count > 0;
   if (!snapshot.installed) {
     snapshot.reason = "not_installed";
+    publish_snapshot();
     std::printf("VISION_INIT preferred_port=%u detected=0 reason=not_installed\n",
                 static_cast<unsigned>(kAiVisionPort));
     std::fflush(stdout);
@@ -149,6 +202,7 @@ void ai_vision_shadow_initialize() {
       static_cast<int>(snapshot.configured), reset, family, disable, enable,
       enabled, errno);
   std::fflush(stdout);
+  publish_snapshot();
 }
 
 void ai_vision_shadow_update() {
@@ -167,10 +221,16 @@ void ai_vision_shadow_update() {
   snapshot.center_y_px = 0.0;
   snapshot.area_px2 = 0.0;
   snapshot.mean_edge_px = 0.0;
+  snapshot.forward_depth_in = 0.0;
+  snapshot.right_offset_in = 0.0;
+  snapshot.up_offset_in = 0.0;
+  snapshot.horizontal_range_in = 0.0;
   snapshot.range_estimate_in = 0.0;
   snapshot.edge_ratio = 0.0;
   snapshot.fill_ratio = 0.0;
   snapshot.bearing_deg = 0.0;
+  snapshot.elevation_deg = 0.0;
+  snapshot.image_roll_deg = 0.0;
   snapshot.geometry_age_ms =
       last_geometry_change_ms == 0 ? 0 : now - last_geometry_change_ms;
 
@@ -191,7 +251,19 @@ void ai_vision_shadow_update() {
   errno = 0;
   const int count = pros::c::aivision_get_object_count(active_ai_vision_port);
   snapshot.object_count = count;
-  if (count < 0 || count > 24) {
+  if (count < 0) {
+    // Runtime unplug/read failure must re-enter the bounded rediscovery path.
+    // Leaving installed/configured latched true here made every later poll
+    // return count_error forever, even after the sensor was reconnected.
+    snapshot.installed =
+        static_cast<int>(pros::c::get_plugged_type(active_ai_vision_port)) ==
+        kAiVisionDeviceType;
+    snapshot.configured = false;
+    snapshot.reason = snapshot.installed ? "read_error" : "not_installed";
+    emit_shadow_status();
+    return;
+  }
+  if (count > 24) {
     snapshot.reason = "count_error";
     emit_shadow_status();
     return;
@@ -200,7 +272,12 @@ void ai_vision_shadow_update() {
   bool found_tag = false;
   pros::aivision_object_s_t best{};
   double best_area = -1.0;
-  for (int i = 0; i < count; ++i) {
+  bool found_usable_tag = false;
+  pros::aivision_object_s_t best_usable{};
+  double best_usable_area = -1.0;
+  for (std::uint32_t i = 0;
+       i < static_cast<std::uint32_t>(count);
+       ++i) {
     const auto object = pros::c::aivision_get_object(active_ai_vision_port, i);
     if (object.type != pros::E_AIVISION_DETECTED_TAG) continue;
     const double area = quad_area(object.object.tag);
@@ -209,11 +286,21 @@ void ai_vision_shadow_update() {
       best_area = area;
       found_tag = true;
     }
+    if (tag_geometry_usable(object.object.tag, area) &&
+        area > best_usable_area) {
+      best_usable = object;
+      best_usable_area = area;
+      found_usable_tag = true;
+    }
   }
   if (!found_tag) {
     snapshot.reason = count == 0 ? "no_tag" : "no_tag_type";
     emit_shadow_status();
     return;
+  }
+  if (found_usable_tag) {
+    best = best_usable;
+    best_area = best_usable_area;
   }
 
   const auto& tag = best.object.tag;
@@ -243,10 +330,10 @@ void ai_vision_shadow_update() {
   const double mean_vertical_edge_px = 0.5 * (edges[1] + edges[3]);
   if (mean_horizontal_edge_px > 0.0 && mean_vertical_edge_px > 0.0) {
     const double z_from_width =
-        localization::kAiFocalLengthXPx * localization::kAiTagOuterSizeIn /
+        localization::kAiFocalLengthXPx * localization::kAiTagDetectedSizeIn /
         mean_horizontal_edge_px;
     const double z_from_height =
-        localization::kAiFocalLengthYPx * localization::kAiTagOuterSizeIn /
+        localization::kAiFocalLengthYPx * localization::kAiTagDetectedSizeIn /
         mean_vertical_edge_px;
     const double normalized_x =
         (snapshot.center_x_px - localization::kAiImageWidthPx * 0.5) /
@@ -255,9 +342,19 @@ void ai_vision_shadow_update() {
         (snapshot.center_y_px - localization::kAiImageHeightPx * 0.5) /
         localization::kAiFocalLengthYPx;
     const double optical_axis_range = 0.5 * (z_from_width + z_from_height);
-    snapshot.range_estimate_in = optical_axis_range *
-        std::sqrt(1.0 + normalized_x * normalized_x +
-                  normalized_y * normalized_y);
+    snapshot.forward_depth_in = optical_axis_range;
+    snapshot.right_offset_in = optical_axis_range * normalized_x;
+    snapshot.up_offset_in = -optical_axis_range * normalized_y;
+    snapshot.horizontal_range_in = std::hypot(
+        snapshot.forward_depth_in, snapshot.right_offset_in);
+    snapshot.range_estimate_in = std::sqrt(
+        snapshot.forward_depth_in * snapshot.forward_depth_in +
+        snapshot.right_offset_in * snapshot.right_offset_in +
+        snapshot.up_offset_in * snapshot.up_offset_in);
+    snapshot.elevation_deg = std::atan2(
+        snapshot.up_offset_in,
+        snapshot.horizontal_range_in) *
+        180.0 / kPi;
   }
   snapshot.edge_ratio = *minimum_edge > 0.0 ? *maximum_edge / *minimum_edge : INFINITY;
   const int minimum_x = std::min({tag.x0, tag.x1, tag.x2, tag.x3});
@@ -274,6 +371,10 @@ void ai_vision_shadow_update() {
   snapshot.bearing_deg =
       std::atan((snapshot.center_x_px - kImageWidthPx * 0.5) / focal_x) *
       180.0 / kPi;
+  snapshot.image_roll_deg =
+      std::atan2(static_cast<double>(tag.y1 - tag.y0),
+                 static_cast<double>(tag.x1 - tag.x0)) *
+      180.0 / kPi;
 
   const auto key = geometry_key(best);
   snapshot.repeated_geometry = have_last_geometry && key == last_geometry;
@@ -285,9 +386,11 @@ void ai_vision_shadow_update() {
   snapshot.geometry_age_ms =
       last_geometry_change_ms == 0 ? 0 : now - last_geometry_change_ms;
 
-  if (best.id > 4) {
-    snapshot.reason = "unknown_id";
-  } else if (!corners_in_bounds(tag)) {
+  // Detection validity is independent of whether this robot has a field-map
+  // landmark for the ID. The fusion layer reports no_map_candidate for an
+  // unmapped but geometrically valid tag; raw diagnostics must retain IDs
+  // outside the legacy 0-4 Goal map (the live sensor saw ID 27).
+  if (!corners_in_bounds(tag)) {
     snapshot.reason = "clipped";
   } else if (!convex_quad(tag)) {
     snapshot.reason = "nonconvex";
@@ -307,4 +410,7 @@ void ai_vision_shadow_update() {
   emit_shadow_status();
 }
 
-const AiVisionShadowSnapshot& ai_vision_shadow_snapshot() { return snapshot; }
+AiVisionShadowSnapshot ai_vision_shadow_snapshot() {
+  std::lock_guard<pros::Mutex> lock(snapshot_mutex);
+  return published_snapshot;
+}

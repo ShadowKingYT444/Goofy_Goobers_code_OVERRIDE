@@ -1,5 +1,87 @@
 # Master Fusion System: Next Implementation
 
+## 2026-08-25 PID-tuning update
+
+- Live paired +/-45-degree tuning selected fused turn gains `kP=1.8`,
+  `kD=0.058514`, minimum power 14, and slew 800 power/s.
+- The production four-leg `+45/0/-45/0` acceptance passed with 1.464-degree
+  final heading residual and 0.022-in fused position loop closure.
+- The first continuous relative `(12,12)` curved route completed in 1.20 s at
+  `(12.730,10.488)` but missed final heading by 15.008 degrees. After tightening
+  steering and requiring final-heading settle, the second run passed in 1.30 s
+  at `(12.320,11.688)`, 0.447-in radial error and 0.679-degree heading error.
+- Slot 4 is back on the no-startup-motion `SafeTuned` image. See
+  `reports/pid_tuning_2026-08-25/report.md`.
+
+## 2026-08-25 live-resume update (supersedes the runtime blocker below)
+
+- A real Brain power cycle restored CPU1 and D4/FUSE/VISION telemetry, proving
+  the old user-runtime blocker resolved. After 19.28 min of a later stationary
+  soak, the complete VEX USB device disappeared. Reconnect it and aim the Brio
+  at the robot before any physical motion.
+- A ready first P6 calibration later drifted at 1.074 degrees/min with all four
+  drive encoders fixed and P7 heading nearly fixed. Warm stationary
+  recalibration held 0.02 degrees peak-to-peak for 11.89 min. Immediate work
+  now starts with a session-scoped stopped P6/P7/encoder calibration-quality
+  monitor, followed by live turn validation once the robot is visible.
+- D4 telemetry now includes P6 raw gyro X/Y/Z and acceleration X/Y/Z. Host
+  capture and dashboard parsers preserve those fields.
+- P7 raw Z gyro is diagnostic-only; stopped medians were approximately -0.61
+  to -0.40. Do not use it as an alternate heading integrator without bias and
+  motion validation.
+- P8 returned corners use the 0.625-in inner detected square, not the 0.875-in
+  printed outer black square. Field correction remains disabled.
+
+Authoritative current evidence is in
+`reports/sensor_campaign_2026-08-25/live_resume_addendum.md` and
+`reports/sensor_campaign_2026-08-25/goal_completion_audit.md`.
+
+## 2026-08-23 superseding current-state note
+
+The historical design text below predates the replacement robot and is not a
+hardware/deployment record. Current authoritative state:
+
+- drive: P17/P18 left and P11/P13 right, differential 2.75-in omnis, provisional
+  P7-referenced encoder scale `0.8847477281` (2.433-in effective rolling
+  diameter), still awaiting independent tape/laser truth;
+- P6 IMU is the primary heading source;
+- P7 GPS lens points robot-right and is mounted 6 in right / 6 in behind;
+- P1 is the only forward Distance sensor and provides an 8-in obstacle stop;
+- P8 AI Vision uses Circle21h7 and reports tag-relative PnP diagnostics;
+- P5 lateral tracking enumerates but moved at most 0.002 in during live tests,
+  so `kSideOdomEnabled=false`;
+- no four-sensor LiDAR array exists on this robot; P9 is a slider motor.
+
+Production is deterministic bounded fusion, not an EKF. The explicit entered
+start pose is the absolute anchor. GPS must pass 0.75-in RMS, spin, fixed
+12-sample temporal cluster, 3-in ordinary / 6-in 30-sample reacquisition, and
+5-degree heading-innovation gates; correction steps are bounded. Automatic
+GPS-first anchoring is deleted. AI field correction remains disabled until the
+P8 lens extrinsics and official Goal-face transforms are measured.
+
+Immediate work, in order:
+
+1. Add and validate the session-scoped stopped P6 calibration-quality monitor;
+   do not grant navigation motion from ready status alone.
+2. Live-qualify the revised `navigation::go_straight_to()` on a short out/return
+   path, including the new finish-window brake, P7 dropout/reappearance, and P1
+   obstacle abort. The offline 90,000-trial shadow sweep passed normal logic but
+   showed that unobserved slip/push can exceed 6 in while odometry looks good.
+3. Remount P7 rear-facing with a clear view of perimeter Field Code, per current
+   VEX best practices, then repeat the orientation sweep.
+4. Measure P8 forward/right/up/yaw/pitch, ground-truth 0.625-in detected-square PnP against
+   a tape, extract/validate tag-plane normal so the physical Goal face is
+   observed rather than inferred from a drifting prior, and enter official
+   Goal-face transforms before enabling AI position correction.
+   Existing Tag 4 PnP gives a plausible outward plane-normal mean but 21.2
+   degrees circular spread, so collect multiple known faces/ranges before
+   choosing its gate.
+5. Repair P5 mechanically if lateral slip measurement is desired.
+
+See `NAVIGATION.md` and
+`reports/sensor_campaign_2026-08-23/qualification_report.md` for the current API,
+measured errors, plots, and acceptance checklist.
+
 Status: future covariance-estimator plan. The active firmware now implements the
 bounded deterministic subset described below (prediction, health gates, four-wall
 LiDAR heading and perpendicular-axis correction), but not the proposed covariance,

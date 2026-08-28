@@ -25,13 +25,21 @@ struct AiVisionShadowSnapshot {
   double center_y_px = 0.0;
   double area_px2 = 0.0;
   double mean_edge_px = 0.0;
+  double forward_depth_in = 0.0;
+  double right_offset_in = 0.0;
+  double up_offset_in = 0.0;
+  double horizontal_range_in = 0.0;
   double range_estimate_in = 0.0;
   double edge_ratio = 0.0;
   double fill_ratio = 0.0;
   double bearing_deg = 0.0;
+  double elevation_deg = 0.0;
+  double image_roll_deg = 0.0;
   const char* reason = "not_initialized";
 };
 
 void ai_vision_shadow_initialize();
 void ai_vision_shadow_update();
-const AiVisionShadowSnapshot& ai_vision_shadow_snapshot();
+// Returns a whole published optical frame by value, safe for a separate
+// estimator/logger task while the sensor owner prepares the next poll.
+AiVisionShadowSnapshot ai_vision_shadow_snapshot();

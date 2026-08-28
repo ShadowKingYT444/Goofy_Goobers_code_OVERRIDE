@@ -19,7 +19,7 @@ from serial.tools import list_ports
 
 BAUD_RATE = 115200
 HTTP_PORT = 8774
-PORTS = (6, 7, 8, 9)
+PORTS = (1,)
 DRIVE_MOTORS = (17, 18, 11, 13)
 HORIZONTAL_ODOMETER_PORT = 5
 CAMERA_WIDTH = 1280
@@ -39,15 +39,19 @@ MOTOR_VALUE_RE = r"[-+]?(?:\d+(?:\.\d+)?|inf)|nan"
 INTEGER_VALUE_RE = r"[-+]?\d+"
 D4_RE = re.compile(
     r"D4 s=(?P<sample>\d+) t=(?P<brain_ms>\d+) "
-    r"p6=(?P<p6_mm>-?\d+),(?P<p6_conf>-?\d+),(?P<p6_inst>\d+) "
-    r"p7=(?P<p7_mm>-?\d+),(?P<p7_conf>-?\d+),(?P<p7_inst>\d+) "
-    r"p8=(?P<p8_mm>-?\d+),(?P<p8_conf>-?\d+),(?P<p8_inst>\d+) "
-    r"p9=(?P<p9_mm>-?\d+),(?P<p9_conf>-?\d+),(?P<p9_inst>\d+)"
+    r"p1=(?P<p1_mm>-?\d+),(?P<p1_conf>-?\d+),(?P<p1_inst>\d+)"
     rf"(?: m17=(?P<m17>{MOTOR_VALUE_RE}) m18=(?P<m18>{MOTOR_VALUE_RE}) "
     rf"m11=(?P<m11>{MOTOR_VALUE_RE}) m13=(?P<m13>{MOTOR_VALUE_RE}))?"
     rf"(?: h5=(?P<h5>{INTEGER_VALUE_RE}))?"
     rf"(?: imu=(?P<imu>{MOTOR_VALUE_RE}) rawimu=(?P<rawimu>{MOTOR_VALUE_RE}) "
     rf"imust=(?P<imust>{INTEGER_VALUE_RE}))?"
+    rf"(?: imugyro=(?P<imu_gyro_x>{MOTOR_VALUE_RE}),(?P<imu_gyro_y>{MOTOR_VALUE_RE}),"
+    rf"(?P<imu_gyro_z>{MOTOR_VALUE_RE}) imuacc=(?P<imu_acc_x>{MOTOR_VALUE_RE}),"
+    rf"(?P<imu_acc_y>{MOTOR_VALUE_RE}),(?P<imu_acc_z>{MOTOR_VALUE_RE}))?"
+    rf"(?: gps7=(?P<gps_x>{MOTOR_VALUE_RE}),(?P<gps_y>{MOTOR_VALUE_RE}),"
+    rf"(?P<gps_heading>{MOTOR_VALUE_RE}),(?P<gps_error>{MOTOR_VALUE_RE}),"
+    rf"(?P<gps_inst>{INTEGER_VALUE_RE}) errno=(?P<errno>{INTEGER_VALUE_RE}))?"
+    rf"(?: gpsgyro=(?P<gps_gyro_z>{MOTOR_VALUE_RE}))?"
 )
 FUSE_TEST_PREFIX = "FUSE_TEST"
 VISION_SHADOW_PREFIX = "VISION_SHADOW"
@@ -167,7 +171,7 @@ HTML = """<!doctype html>
   <body class="__BODY_CLASS__">
     <main>
       <header>
-        <h1>LiDAR Ports 6-9</h1>
+        <h1>VEX Multi-Sensor Localization</h1>
         <nav class="tabs" aria-label="Views">
           <a class="tab __DASHBOARD_TAB_CLASS__" href="/">Dashboard</a>
           <a class="tab __FIELD_TAB_CLASS__" href="/playing-field">Playing Field</a>
@@ -207,6 +211,18 @@ HTML = """<!doctype html>
               <div class="pose-value" id="pose-travel">--.- in</div>
             </div>
             <div>
+              <div class="theta-label">DR Since Fix</div>
+              <div class="pose-value" id="pose-dr-travel">--.- in</div>
+            </div>
+            <div>
+              <div class="theta-label">Error Envelope</div>
+              <div class="pose-value" id="pose-error-envelope">--.- in</div>
+            </div>
+            <div>
+              <div class="theta-label">Absolute Fix Age</div>
+              <div class="pose-value" id="pose-absolute-age">--.- s</div>
+            </div>
+            <div>
               <div class="theta-label">Left Wheel</div>
               <div class="pose-value" id="pose-left-wheel">--.- in</div>
             </div>
@@ -227,7 +243,7 @@ HTML = """<!doctype html>
               <div class="pose-value" id="pose-side-odom">--.- in</div>
             </div>
             <div>
-              <div class="theta-label">LiDAR Assist</div>
+              <div class="theta-label">Legacy Wall Fit</div>
               <div class="pose-value" id="pose-lidar-assist">off</div>
             </div>
             <div>
@@ -251,7 +267,7 @@ HTML = """<!doctype html>
               <div class="pose-value" id="cal-counterturn">--.-- deg</div>
             </div>
             <div>
-              <div class="theta-label">LiDAR Theta Scale</div>
+              <div class="theta-label">Legacy Fit Scale</div>
               <div class="pose-value" id="cal-lidar-scale">--.--- x</div>
             </div>
           </div>
@@ -260,7 +276,7 @@ HTML = """<!doctype html>
       <section class="theta-panel">
         <div class="theta-card primary-stats">
           <div class="stat">
-            <div class="theta-label">Wall Distance</div>
+            <div class="theta-label">Legacy Wall Range</div>
             <div class="theta-value" id="center-distance">--.-- in</div>
           </div>
           <div class="stat">
@@ -271,7 +287,7 @@ HTML = """<!doctype html>
             <div class="theta-label">RMSE</div>
             <div class="theta-value" id="rmse-value">--.-- in</div>
           </div>
-          <div class="theta-detail" id="theta-detail">Waiting for a clean straight-line fit.</div>
+          <div class="theta-detail" id="theta-detail">Legacy four-sensor wall fit is disabled on this robot.</div>
         </div>
       </section>
       <section class="motor-readouts" id="motor-readouts"></section>
@@ -283,7 +299,7 @@ HTML = """<!doctype html>
       </footer>
     </main>
     <script>
-      const ports = [6, 7, 8, 9];
+      const ports = [1];
       const driveMotors = [17, 18, 11, 13];
       const canvas = document.getElementById("line-chart");
       const ctx = canvas.getContext("2d");
@@ -307,6 +323,9 @@ HTML = """<!doctype html>
       const poseYEl = document.getElementById("pose-y");
       const poseHeadingEl = document.getElementById("pose-heading");
       const poseTravelEl = document.getElementById("pose-travel");
+      const poseDrTravelEl = document.getElementById("pose-dr-travel");
+      const poseErrorEnvelopeEl = document.getElementById("pose-error-envelope");
+      const poseAbsoluteAgeEl = document.getElementById("pose-absolute-age");
       const poseLeftWheelEl = document.getElementById("pose-left-wheel");
       const poseRightWheelEl = document.getElementById("pose-right-wheel");
       const poseLastDeltaEl = document.getElementById("pose-last-delta");
@@ -327,18 +346,23 @@ HTML = """<!doctype html>
       const physicalWallHalfSpanIn = 70.2;
       const goalTagLandmarks = [
         { name: "center", id: 0, color: "neutral", x: 0, y: 0 },
-        { name: "top red neutral", id: 2, color: "neutral", x: 47.10, y: 23.55 },
-        { name: "top blue alliance", id: 1, color: "blue", x: 47.10, y: -23.54 },
-        { name: "upper red neutral", id: 3, color: "neutral", x: 23.55, y: 47.10 },
-        { name: "upper blue alliance", id: 4, color: "blue", x: 23.55, y: -47.09 },
-        { name: "lower red alliance", id: 4, color: "red", x: -23.54, y: 47.10 },
-        { name: "lower blue neutral", id: 3, color: "neutral", x: -23.54, y: -47.09 },
-        { name: "bottom red alliance", id: 1, color: "red", x: -47.09, y: 23.55 },
-        { name: "bottom blue neutral", id: 2, color: "neutral", x: -47.09, y: -23.54 },
+        { name: "top red neutral", id: 4, color: "neutral", x: 47.10, y: 23.55 },
+        { name: "top blue alliance", id: 3, color: "blue", x: 47.10, y: -23.54 },
+        { name: "upper red neutral", id: 1, color: "neutral", x: 23.55, y: 47.10 },
+        { name: "upper blue alliance", id: 2, color: "blue", x: 23.55, y: -47.09 },
+        { name: "lower red alliance", id: 2, color: "red", x: -23.54, y: 47.10 },
+        { name: "lower blue neutral", id: 1, color: "neutral", x: -23.54, y: -47.09 },
+        { name: "bottom red alliance", id: 3, color: "red", x: -47.09, y: 23.55 },
+        { name: "bottom blue neutral", id: 4, color: "neutral", x: -47.09, y: -23.54 },
       ];
-      const wheelDiameterIn = 2.75;
-      const wheelCircumferenceIn = Math.PI * wheelDiameterIn;
-      const trackWidthIn = 12.0086;
+      // Encoder-distance calibration from the 2/5/10-inch straight trials.
+      // The physical wheels are 2.75 in, but their measured rolling distance
+      // is equivalent to a 2.433055-inch wheel on this drivetrain.
+      const effectiveWheelDiameterIn = 2.4330552523;
+      const wheelCircumferenceIn = Math.PI * effectiveWheelDiameterIn;
+      // Preserve the wheel-diameter/track-width ratio validated by the live
+      // turn trials when applying the straight-distance encoder scale.
+      const trackWidthIn = 10.6245815677;
       const leftEncoderSign = 1;
       const rightEncoderSign = 1;
       const horizontalOdometerPort = 5;
@@ -346,9 +370,13 @@ HTML = """<!doctype html>
       const horizontalOdometerCircumferenceIn = Math.PI * horizontalOdometerDiameterIn;
       const horizontalOdometerOffsetBackIn = 5.18;
       const horizontalOdometerSign = 1;
-      const aiCameraForwardOffsetIn = 6.75;
-      const aiCameraRightOffsetIn = -10.44;
-      const aiCameraYawRightDeg = 90;
+      const horizontalOdometerEnabled = false;
+      // Replacement robot: P8 translation/yaw has not been measured. Keep the
+      // overlay fail-closed rather than reusing the previous robot's mount.
+      const aiCameraForwardOffsetIn = 0;
+      const aiCameraRightOffsetIn = 0;
+      const aiCameraYawRightDeg = 0;
+      const aiCameraExtrinsicsQualified = false;
       const aiGoalFaceOffsetIn = 5.61 / 2;
       const lidarThetaScale = 0.926770;
       const minConfidence = 50;
@@ -387,6 +415,7 @@ HTML = """<!doctype html>
         travelIn: 0,
         path: [{ x: startPose.x, y: startPose.y }],
         ready: false,
+        requiresReset: false,
       };
 
       function fitLine(samples) {
@@ -427,20 +456,26 @@ HTML = """<!doctype html>
         };
       }
 
-      function averageAvailable(motors, motorPorts) {
+      function coupledSideReading(motors, motorPorts) {
         const values = motorPorts
           .map(port => motors[String(port)]?.position_deg)
           .filter(value => Number.isFinite(value));
-        if (!values.length) return null;
+        if (values.length !== motorPorts.length) return null;
+        if (Math.max(...values) - Math.min(...values) > 15) return null;
         return values.reduce((sum, value) => sum + value, 0) / values.length;
       }
 
       function driveSensorHealth(motors) {
         const side = (name, ports) => {
-          const present = ports.filter(port => Number.isFinite(motors[String(port)]?.position_deg));
+          const values = ports.map(port => motors[String(port)]?.position_deg);
+          const present = ports.filter((port, index) => Number.isFinite(values[index]));
           const missing = ports.filter(port => !present.includes(port));
+          const spread = present.length === ports.length
+            ? Math.max(...values) - Math.min(...values)
+            : null;
           return `${name} ${present.length}/${ports.length}` +
-            (missing.length ? ` missing ${missing.join("/")}` : "");
+            (missing.length ? ` missing ${missing.join("/")}` : ` spread ${spread.toFixed(1)} deg`) +
+            (Number.isFinite(spread) && spread > 15 ? " INVALID" : "");
         };
         return `${side("L", [17, 18])} | ${side("R", [11, 13])}`;
       }
@@ -448,9 +483,11 @@ HTML = """<!doctype html>
       function resetPoseBaseline(frame = latest?.latest) {
         const motors = frame?.motors || {};
         const odometer = frame?.odometer || {};
-        const leftDeg = averageAvailable(motors, [17, 18]);
-        const rightDeg = averageAvailable(motors, [11, 13]);
-        const sideCentideg = odometer[String(horizontalOdometerPort)]?.position_centideg;
+        const leftDeg = coupledSideReading(motors, [17, 18]);
+        const rightDeg = coupledSideReading(motors, [11, 13]);
+        const sideCentideg = horizontalOdometerEnabled
+          ? odometer[String(horizontalOdometerPort)]?.position_centideg
+          : null;
         pose.x = startPose.x;
         pose.y = startPose.y;
         pose.headingRad = startPose.headingRad;
@@ -474,6 +511,7 @@ HTML = """<!doctype html>
         pose.travelIn = 0;
         pose.path = [{ x: startPose.x, y: startPose.y }];
         pose.ready = Number.isFinite(leftDeg) && Number.isFinite(rightDeg);
+        pose.requiresReset = !pose.ready;
         onboardPath = [];
         lastOnboardPcTime = null;
         poseStatusEl.textContent = pose.ready
@@ -567,7 +605,13 @@ HTML = """<!doctype html>
       function displayPoseFromLatest() {
         const onboard = latest?.onboard_pose;
         const camera = latest?.camera_pose;
+        const d4 = latest?.latest;
         const nowSec = Date.now() / 1000;
+        const d4Fresh = Boolean(
+          latest?.connected &&
+          Number.isFinite(d4?.pc_time) &&
+          nowSec - d4.pc_time <= 1.5
+        );
         const cameraFresh = Boolean(
           camera?.available &&
           Number.isFinite(camera.field_y_in) &&
@@ -581,6 +625,7 @@ HTML = """<!doctype html>
           Number.isFinite(onboard.x) &&
           Number.isFinite(onboard.y) &&
           Number.isFinite(onboard.heading_deg) &&
+          onboard.pose_valid === 1 &&
           Number.isFinite(onboard.pc_time) &&
           nowSec - onboard.pc_time <= 2.5
         ) {
@@ -604,15 +649,35 @@ HTML = """<!doctype html>
             phase: onboard.phase || "--",
           };
         }
+        const onboardInvalid = Boolean(
+          onboard && onboard.pose_valid === 0 && onboard.estimator_valid === 0
+        );
+        const onboardUninitialized = Boolean(
+          onboard && onboard.pose_valid === 0 && onboard.estimator_valid === 1
+        );
         return {
           x: pose.x,
           y: pose.y,
           headingRad: pose.headingRad,
           path: pose.path,
-          ready: pose.ready,
+          ready: pose.ready && d4Fresh,
           source: "browser",
-          label: "Browser fallback odometry",
-          detail: pose.ready ? "D4 motor + side odom only; no onboard fused pose is fresh." : "Waiting for D4 motor telemetry.",
+          label: d4Fresh
+            ? "Browser fallback odometry"
+            : "Browser fallback odometry — STALE",
+          detail: pose.ready && !d4Fresh
+            ? "D4 TELEMETRY STALE/DISCONNECTED; frozen browser pose is diagnostic history only."
+            : (pose.ready
+              ? (onboardInvalid || onboardUninitialized
+                ? (onboardInvalid
+                    ? "ONBOARD ESTIMATOR INVALID; browser drive-encoder fallback is diagnostic only."
+                    : "ONBOARD POSE NOT INITIALIZED; call navigation::init() with a justified field pose.")
+                : "D4 drive-encoder fallback only; no onboard fused pose is fresh.")
+              : (onboardInvalid
+                ? "ONBOARD ESTIMATOR INVALID; waiting for a justified reinitialization."
+                : (onboardUninitialized
+                    ? "ONBOARD POSE NOT INITIALIZED; call navigation::init() with a justified field pose."
+                    : "Waiting for D4 motor telemetry."))),
           phase: "--",
         };
       }
@@ -622,11 +687,22 @@ HTML = """<!doctype html>
         pose.lastSample = frame.sample;
         const motors = frame.motors || {};
         const odometer = frame.odometer || {};
-        const leftDeg = averageAvailable(motors, [17, 18]);
-        const rightDeg = averageAvailable(motors, [11, 13]);
-        const sideCentideg = odometer[String(horizontalOdometerPort)]?.position_centideg;
+        const leftDeg = coupledSideReading(motors, [17, 18]);
+        const rightDeg = coupledSideReading(motors, [11, 13]);
+        const sideCentideg = horizontalOdometerEnabled
+          ? odometer[String(horizontalOdometerPort)]?.position_centideg
+          : null;
         if (!Number.isFinite(leftDeg) || !Number.isFinite(rightDeg)) {
-          poseStatusEl.textContent = "Waiting for m17/m18 and m11/m13 motor positions.";
+          pose.ready = false;
+          pose.requiresReset = true;
+          pose.leftDeg = null;
+          pose.rightDeg = null;
+          poseStatusEl.textContent = "Browser fallback invalid after coupled-encoder loss/spread; reset from a justified start pose.";
+          return;
+        }
+        if (pose.requiresReset) {
+          pose.ready = false;
+          poseStatusEl.textContent = "Drive encoders recovered, but movement during the gap is unknown; reset the start pose.";
           return;
         }
         if (pose.leftDeg === null || pose.rightDeg === null) {
@@ -653,7 +729,10 @@ HTML = """<!doctype html>
         pose.rightDeg = rightDeg;
         pose.sideCentideg = Number.isFinite(sideCentideg) ? sideCentideg : pose.sideCentideg;
 
-        const deltaCenterIn = (deltaLeftIn + deltaRightIn) / 2;
+        const inPlaceCounterRotation = deltaLeftIn * deltaRightIn < 0;
+        const deltaCenterIn = inPlaceCounterRotation
+          ? 0
+          : (deltaLeftIn + deltaRightIn) / 2;
         const deltaHeadingRad = (deltaRightIn - deltaLeftIn) / trackWidthIn;
         const deltaSideCenterIn = sideDeltaAccepted
           ? deltaSideWheelIn - horizontalOdometerOffsetBackIn * deltaHeadingRad
@@ -680,8 +759,10 @@ HTML = """<!doctype html>
           pose.path.push({ x: pose.x, y: pose.y });
           if (pose.path.length > 600) pose.path.shift();
         }
-        const sideStatus = Number.isFinite(sideCentideg) ? "port 5 side odom" : "waiting for port 5 side odom";
-        poseStatusEl.textContent = `Relative odometry with ${sideStatus}.`;
+        const sideStatus = horizontalOdometerEnabled && Number.isFinite(sideCentideg)
+          ? "port 5 side odom"
+          : "port 5 side odom disabled";
+        poseStatusEl.textContent = `Relative drive-encoder odometry; ${sideStatus}.`;
       }
 
       function drawLidarFieldEstimate(toScreen, fit, thetaGate, wallDistanceIn) {
@@ -900,10 +981,11 @@ HTML = """<!doctype html>
       }
 
       function drawAiVisionHypotheses(toScreen, displayPose) {
+        if (!aiCameraExtrinsicsQualified) return;
         const vision = latest?.vision || {};
         const onboard = latest?.onboard_pose || {};
-        if (!vision.valid || !Number.isFinite(vision.range_estimate_in) ||
-            vision.range_estimate_in <= 0 || !Number.isFinite(vision.bearing_deg)) return;
+        if (!vision.valid || !Number.isFinite(vision.horizontal_range_in) ||
+            vision.horizontal_range_in <= 0 || !Number.isFinite(vision.bearing_deg)) return;
 
         const headingRad = displayPose.headingRad;
         if (!Number.isFinite(headingRad)) return;
@@ -931,8 +1013,8 @@ HTML = """<!doctype html>
               y: goal.y + face.ny * aiGoalFaceOffsetIn,
             };
             const camera = {
-              x: tag.x - vision.range_estimate_in * ray.x,
-              y: tag.y - vision.range_estimate_in * ray.y,
+              x: tag.x - vision.horizontal_range_in * ray.x,
+              y: tag.y - vision.horizontal_range_in * ray.y,
             };
             if ((camera.x - tag.x) * face.nx + (camera.y - tag.y) * face.ny <= 0) continue;
             const robot = {
@@ -947,7 +1029,7 @@ HTML = """<!doctype html>
         for (const candidate of candidates) {
           const tagPoint = toScreen(candidate.tag);
           const radiusPoint = toScreen({
-            x: candidate.tag.x + vision.range_estimate_in,
+            x: candidate.tag.x + vision.horizontal_range_in,
             y: candidate.tag.y,
           });
           const radiusPx = Math.abs(radiusPoint.x - tagPoint.x);
@@ -963,7 +1045,7 @@ HTML = """<!doctype html>
           fieldCtx.restore();
 
           const point = toScreen(candidate.robot);
-          const sigmaIn = Math.max(1.0, vision.range_estimate_in * 0.08);
+          const sigmaIn = Math.max(1.0, vision.horizontal_range_in * 0.08);
           const sigmaPoint = toScreen({ x: candidate.robot.x + sigmaIn, y: candidate.robot.y });
           const sigmaPx = Math.abs(sigmaPoint.x - point.x);
           fieldCtx.fillStyle = selected ? "rgba(92,255,173,.28)" : "rgba(255,209,102,.18)";
@@ -1110,6 +1192,7 @@ HTML = """<!doctype html>
 
         const displayHeadingDeg = ((displayPose.headingRad * 180 / Math.PI + 360) % 360);
         const imuFrame = latest?.latest?.imu || {};
+        const gpsFrame = latest?.latest?.gps || {};
         const motorFrame = latest?.latest?.motors || {};
         const driveHealthLine = driveSensorHealth(motorFrame);
         const cameraFrame = latest?.camera_pose || {};
@@ -1125,11 +1208,13 @@ HTML = """<!doctype html>
           ? `AI Vision ${visionPortLabel} ${visionFrame.configured ? "configured" : "CONFIG ERROR"}` +
             (visionFrame.valid
               ? ` | tag ${visionFrame.tag_id} | bearing ${visionFrame.bearing_deg.toFixed(1)} deg` +
-                ` | ${Number.isFinite(visionFrame.range_estimate_in) ? visionFrame.range_estimate_in.toFixed(1) + " in" : "range --"}` +
+                ` | horizontal ${Number.isFinite(visionFrame.horizontal_range_in) ? visionFrame.horizontal_range_in.toFixed(1) + " in" : "--"}` +
+                ` | 3D ${Number.isFinite(visionFrame.range_estimate_in) ? visionFrame.range_estimate_in.toFixed(1) + " in" : "--"}` +
                 ` | edge ${Number.isFinite(visionFrame.mean_edge_px) ? visionFrame.mean_edge_px.toFixed(1) + " px" : "--"}` +
                 ` | shape ${Number.isFinite(visionFrame.edge_ratio) ? visionFrame.edge_ratio.toFixed(2) : "--"}/${Number.isFinite(visionFrame.fill_ratio) ? visionFrame.fill_ratio.toFixed(2) : "--"}` +
                 ` | age ${visionAgeSec === null ? "--" : visionAgeSec.toFixed(1)}s`
-              : ` | ${visionFrame.reason || "no observation"} | age ${visionAgeSec === null ? "--" : visionAgeSec.toFixed(1)}s`)
+              : ` | ${visionFrame.reason || "no observation"} | age ${visionAgeSec === null ? "--" : visionAgeSec.toFixed(1)}s`) +
+            ` | mount ${aiCameraExtrinsicsQualified ? "qualified" : "UNMEASURED"}`
           : `AI Vision ${visionPortLabel} | ${visionFrame.message || "waiting"}`;
         const visionCandidateLine = Number.isFinite(visionCandidate.ai_id) && visionCandidate.ai_id >= 0
           ? `AI candidate ${visionCandidate.ai_goal || "--"}/${visionCandidate.ai_face || "--"}` +
@@ -1147,6 +1232,18 @@ HTML = """<!doctype html>
         const imuLine = Number.isFinite(imuFrame.ez_rotation_deg)
           ? `IMU EZ ${imuFrame.ez_rotation_deg.toFixed(1)} deg | raw ${Number.isFinite(imuFrame.raw_rotation_deg) ? imuFrame.raw_rotation_deg.toFixed(1) : "--"} deg | st ${Number.isFinite(imuFrame.status) ? imuFrame.status : "--"}`
           : "IMU waiting";
+        const gpsLine = gpsFrame.installed
+          ? `GPS P7 raw ${Number.isFinite(gpsFrame.x_m) ? gpsFrame.x_m.toFixed(3) : "--"},${Number.isFinite(gpsFrame.y_m) ? gpsFrame.y_m.toFixed(3) : "--"} m` +
+            ` | RMS ${Number.isFinite(gpsFrame.error_m) ? (gpsFrame.error_m * 39.3701).toFixed(2) : "--"} in` +
+            ` | gyro-z ${Number.isFinite(gpsFrame.gyro_z) ? gpsFrame.gyro_z.toFixed(2) : "--"}` +
+            ` | fusion ${visionCandidate.gps_reject || "waiting"}`
+          : "GPS P7 missing/waiting";
+        const onboardConfidence = latest?.onboard_pose || {};
+        const confidenceLine = Number.isFinite(onboardConfidence.pos_envelope)
+          ? `DR ${Number.isFinite(onboardConfidence.dr_travel) ? onboardConfidence.dr_travel.toFixed(1) : "--"} in since fix` +
+            ` | empirical envelope +/-${onboardConfidence.pos_envelope.toFixed(1)} in` +
+            ` | fix age ${Number.isFinite(onboardConfidence.abs_age) ? (onboardConfidence.abs_age / 1000).toFixed(1) : "--"}s`
+          : "DR confidence waiting";
         poseXEl.textContent = `${displayPose.x.toFixed(1)} in`;
         poseYEl.textContent = `${displayPose.y.toFixed(1)} in`;
         poseHeadingEl.textContent = `${displayHeadingDeg.toFixed(1)} deg`;
@@ -1157,11 +1254,22 @@ HTML = """<!doctype html>
           `L ${pose.leftTravelIn.toFixed(1)} in | R ${pose.rightTravelIn.toFixed(1)} in | L-R ${(pose.leftTravelIn - pose.rightTravelIn).toFixed(1)} in<br>` +
            `Drive sensors ${driveHealthLine}<br>` +
            `${visionLine}<br>` +
-          `${visionCandidateLine}<br>` +
+           `${visionCandidateLine}<br>` +
           `${cameraLine}<br>` +
           `${imuLine}<br>` +
+          `${gpsLine}<br>` +
+          `${confidenceLine}<br>` +
           `<span>${displayPose.detail}</span>`;
         poseTravelEl.textContent = `${pose.travelIn.toFixed(1)} in`;
+        poseDrTravelEl.textContent = Number.isFinite(onboardConfidence.dr_travel)
+          ? `${onboardConfidence.dr_travel.toFixed(1)} in`
+          : "--.- in";
+        poseErrorEnvelopeEl.textContent = Number.isFinite(onboardConfidence.pos_envelope)
+          ? `+/-${onboardConfidence.pos_envelope.toFixed(1)} in est.`
+          : "--.- in";
+        poseAbsoluteAgeEl.textContent = Number.isFinite(onboardConfidence.abs_age)
+          ? `${(onboardConfidence.abs_age / 1000).toFixed(1)} s`
+          : "--.- s";
         poseLeftWheelEl.textContent = `${pose.leftTravelIn.toFixed(1)} in`;
         poseRightWheelEl.textContent = `${pose.rightTravelIn.toFixed(1)} in`;
         poseLastDeltaEl.textContent = `L ${pose.lastLeftDeltaIn.toFixed(2)} / R ${pose.lastRightDeltaIn.toFixed(2)}`;
@@ -1199,6 +1307,7 @@ HTML = """<!doctype html>
       }
 
       function evaluateThetaGate(points, fit, centerDistanceIn) {
+        if (ports.length < 2) return { ok: false, reason: "legacy wall fit disabled; current robot has forward P1 only" };
         if (!fit) return { ok: false, reason: "need at least two valid sensors" };
         if (points.length !== ports.length || points.some(point => point.missing)) {
           return { ok: false, reason: "need all four LiDARs installed and returning distance" };
@@ -1227,7 +1336,7 @@ HTML = """<!doctype html>
         const sensor = document.createElement("article");
         sensor.className = "label";
         sensor.innerHTML = `
-          <div class="port">LiDAR ${ports.indexOf(port) + 1} / Port ${port}</div>
+          <div class="port">Forward Distance / Port ${port}</div>
           <div class="mm" id="mm-${port}">---- mm</div>
           <div class="inch" id="in-${port}">--.-- in</div>
           <div class="conf" id="conf-${port}">conf -- / 63</div>`;
@@ -1293,7 +1402,10 @@ HTML = """<!doctype html>
           const reading = sensors[String(port)];
           const missing = !reading || !reading.installed || reading.mm < 0;
           const arrayXIn = index * sensorSpacingIn;
-          const x = padLeft + (arrayXIn / ((ports.length - 1) * sensorSpacingIn)) * plotW;
+          const sensorSpanIn = (ports.length - 1) * sensorSpacingIn;
+          const x = sensorSpanIn > 0
+            ? padLeft + (arrayXIn / sensorSpanIn) * plotW
+            : padLeft + plotW / 2;
           const y = padTop + (1 - Math.max(0, Math.min(reading?.mm || 0, maxScale)) / Math.max(1, maxScale)) * plotH;
           return {
             port,
@@ -1387,7 +1499,9 @@ HTML = """<!doctype html>
             centerDistanceEl.textContent = "--.-- in";
             rmseValueEl.textContent = "--.-- in";
             thetaValueEl.textContent = "--.- deg";
-            thetaDetailEl.textContent = "Hidden: not enough valid points for a line fit.";
+            thetaDetailEl.textContent = ports.length < 2
+              ? "Legacy four-sensor wall fit is disabled; current P1 is forward obstacle range only."
+              : "Hidden: not enough valid points for a line fit.";
           }
         }
 
@@ -1403,8 +1517,8 @@ HTML = """<!doctype html>
           ctx.stroke();
           ctx.fill();
           ctx.fillStyle = "rgba(244,251,248,.78)";
-          ctx.fillText(`L${ports.indexOf(point.port) + 1}`, point.x, padTop + plotH + 14);
-          ctx.fillText(`${point.arrayXIn}"`, point.x, padTop + plotH + 28);
+          ctx.fillText(`P${point.port}`, point.x, padTop + plotH + 14);
+          ctx.fillText("forward", point.x, padTop + plotH + 28);
         }
 
         for (const port of ports) {
@@ -1525,6 +1639,32 @@ def parse_d4(line):
         imu["raw_rotation_deg"] = raw_imu
     if imu_status is not None:
         imu["status"] = int(imu_status)
+    for axis in ("x", "y", "z"):
+        gyro = parse_number(match.group(f"imu_gyro_{axis}"))
+        accel = parse_number(match.group(f"imu_acc_{axis}"))
+        if gyro is not None:
+            imu[f"gyro_{axis}_dps"] = gyro
+        if accel is not None:
+            imu[f"accel_{axis}_g"] = accel
+    gps = {}
+    gps_x = parse_number(match.group("gps_x"))
+    gps_y = parse_number(match.group("gps_y"))
+    gps_heading = parse_number(match.group("gps_heading"))
+    gps_error = parse_number(match.group("gps_error"))
+    gps_installed = match.group("gps_inst")
+    gps_gyro_z = parse_number(match.group("gps_gyro_z"))
+    if gps_x is not None:
+        gps["x_m"] = gps_x
+    if gps_y is not None:
+        gps["y_m"] = gps_y
+    if gps_heading is not None:
+        gps["heading_deg"] = gps_heading
+    if gps_error is not None:
+        gps["error_m"] = gps_error
+    if gps_installed is not None:
+        gps["installed"] = bool(int(gps_installed))
+    if gps_gyro_z is not None:
+        gps["gyro_z"] = gps_gyro_z
     return {
         "sample": int(match.group("sample")),
         "brain_ms": int(match.group("brain_ms")),
@@ -1533,6 +1673,7 @@ def parse_d4(line):
         "motors": motors,
         "odometer": odometer,
         "imu": imu,
+        "gps": gps,
     }
 
 
@@ -1605,6 +1746,18 @@ def parse_fuse_test(line):
         "track",
         "rear",
         "lidar_scale",
+        "gps_x",
+        "gps_y",
+        "gps_heading",
+        "gps_error",
+        "gps_innovation",
+        "gps_pos_step",
+        "gps_heading_step",
+        "dr_travel",
+        "pos_envelope",
+        "abs_age",
+        "pose_valid",
+        "estimator_valid",
     ):
         value = parse_number(fields.get(key))
         if value is not None:
@@ -1613,6 +1766,7 @@ def parse_fuse_test(line):
     if ai_id is not None:
         pose["ai_id"] = int(ai_id)
     for source_key, pose_key in (
+        ("gps_reject", "gps_reject"),
         ("ai_goal", "ai_goal"),
         ("ai_face", "ai_face"),
         ("ai_reject", "ai_reject"),
@@ -1653,10 +1807,22 @@ def parse_vision_shadow(line):
             "center_px": center,
             "area_px2": float(fields["area"]),
             "mean_edge_px": float(fields.get("mean_edge", "0")),
+            "forward_depth_in": float(fields.get("depth", "0")),
+            "right_offset_in": float(fields.get("right", "0")),
+            "up_offset_in": float(fields.get("up", "0")),
+            "horizontal_range_in": float(fields.get(
+                "horizontal",
+                str(math.hypot(
+                    float(fields.get("depth", "0")),
+                    float(fields.get("right", "0")),
+                )),
+            )),
             "range_estimate_in": float(fields.get("range", "0")),
             "edge_ratio": float(fields["edge_ratio"]),
             "fill_ratio": float(fields["fill"]),
             "bearing_deg": float(fields["bearing"]),
+            "elevation_deg": float(fields.get("elevation", "0")),
+            "image_roll_deg": float(fields.get("roll", "0")),
             "repeated_geometry": bool(int(fields["repeat"])),
             "geometry_age_ms": int(fields["geometry_age"]),
             "valid": bool(int(fields["valid"])),
@@ -1689,7 +1855,7 @@ def update_latest(frame, serial_port):
                 "connected": True,
                 "serial_port": serial_port,
                 "latest": frame,
-                "message": f"Live on {serial_port}: ports 6, 7, 8, 9",
+                "message": f"Live on {serial_port}: P1 Distance, P6 IMU, P7 GPS, P8 AI Vision",
                 "rate_hz": rate_hz,
                 "last_sample": frame["sample"],
                 "last_sample_time": now,
@@ -1900,6 +2066,7 @@ def read_serial():
                         state["message"] = f"Reading {port}; waiting for D4 frames..."
                     buffer = ""
                     packet_buffer = bytearray()
+                    last_recognized_time = time.monotonic()
                     while True:
                         chunk = ser.read(4096)
                         if not chunk:
@@ -1907,6 +2074,10 @@ def read_serial():
                                 latest = state["latest"]
                                 if latest and time.time() - latest["pc_time"] > 1.5:
                                     state["message"] = f"{port} connected, but D4 data is stale."
+                            if time.monotonic() - last_recognized_time > 6.0:
+                                raise serial.SerialException(
+                                    "no recognized D4/FUSE_TEST/VISION_SHADOW telemetry for 6 s"
+                                )
                             continue
                         decoded_chunks, packet_buffer = decode_serial_packets(
                             packet_buffer, chunk
@@ -1915,15 +2086,25 @@ def read_serial():
                         lines = buffer.splitlines()
                         buffer = lines.pop() if lines else ""
                         for line in lines:
+                            recognized = False
                             frame = parse_d4(line)
                             if frame:
                                 update_latest(frame, port)
+                                recognized = True
                             fused_pose = parse_fuse_test(line)
                             if fused_pose:
                                 update_onboard_pose(fused_pose, port)
+                                recognized = True
                             vision = parse_vision_shadow(line)
                             if vision:
                                 update_vision(vision, port)
+                                recognized = True
+                            if recognized:
+                                last_recognized_time = time.monotonic()
+                        if time.monotonic() - last_recognized_time > 6.0:
+                            raise serial.SerialException(
+                                "bytes received but no recognized robot telemetry for 6 s"
+                            )
             except serial.SerialException as exc:
                 with state_lock:
                     state["connected"] = False
@@ -1975,7 +2156,7 @@ def view_for_path(raw_path):
 def render_html(view):
     field_only = view == "field"
     return (
-        HTML.replace("__PAGE_TITLE__", "Localization Tracker" if field_only else "4x LiDAR Current Line")
+        HTML.replace("__PAGE_TITLE__", "Localization Tracker" if field_only else "Localization Sensor Dashboard")
         .replace("__BODY_CLASS__", "field-only" if field_only else "")
         .replace("__DASHBOARD_TAB_CLASS__", "" if field_only else "active")
         .replace("__FIELD_TAB_CLASS__", "active" if field_only else "")

@@ -2,6 +2,74 @@
 
 Append durable technical facts here whenever new hardware behavior, calibration, API behavior, failure mode, or operating procedure is learned. Use ISO timestamps and distinguish measured facts from provisional assumptions.
 
+## 2026-08-25T20:46:32-07:00 - Live power-cycle recovery and P6 calibration variability
+
+- A real Brain power cycle restored CPU1/user telemetry and proved the former
+  runtime-silence diagnosis obsolete. Slot 4 streamed with all startup motion
+  disabled, then the complete VEX USB device disappeared at 20:56:52 during a
+  long stationary soak. The Brio also does not show the robot. Reconnect and
+  visual coverage are both required before motion.
+- P6 `installed` + non-calibrating + non-error/finite output does not prove a
+  usable calibration. One ready calibration drifted 4.25 to 15.10 degrees over
+  ten stationary minutes at 1.074 degrees/min while all four drive encoders
+  stayed fixed and P7 heading spanned 0.17 degrees. A warm stationary
+  recalibration then held a 0.02-degree span over 11.89 min. Treat earlier P6
+  precision claims as conditional on a good calibration.
+- A candidate stopped cross-sensor gate detects the recorded drift by comparing
+  relative P6/P7 heading only while both encoder sides and P7 XY/heading remain
+  stable. It must be estimator-session scoped and reset on every deliberate
+  tare/recalibration; old diagnostics prove otherwise it can misclassify an
+  intentional zero as a fault. It is not deployed pending live turn testing.
+- Current P8 returned corners scale to the 0.625-in inner five-cell detection
+  square, not the medium print's 0.875-in outer black square. The corrected
+  separate 18-in tape view solves to 18.60 in; angular estimates are unchanged.
+  Absolute field correction remains disabled.
+- Current P1 view produced a stable approximately 29.3-in return at roughly
+  39-46/63 confidence, whereas a prior roughly 40-in scene returned only 13.5%
+  of frames at 6/63 median confidence. Availability and quality are strongly
+  scene/target dependent; P1 remains a forward stop, not localization truth.
+
+## 2026-08-23T06:25:00-07:00 - Replacement robot (current; supersedes 2026-07 hardware below)
+
+- Current drivetrain is P17/P18 left and P11/P13 right; P6 is its IMU, P7 GPS,
+  P1 forward Distance, P8 AI Vision, and P5 the inactive lateral tracker. The
+  July P20 camera/P6-P9 LiDAR layout is historical and must not be used.
+- P7 lens is measured 6 in right and 6 in behind the rotation center, facing
+  robot-right. It is position-only, stopped-only bounded correction. Live
+  rotation produced a false 15.63-in displacement and corrected-frame
+  innovations up to 27.85 in despite excellent stationary precision.
+- The nine-trial encoder scale `0.8847477281` and paired effective wheel/track
+  values 2.433055/10.624582 in are provisional because P7, not tape/laser
+  truth, was the translation reference.
+- P6 stationary standard deviation was 0.00463 degrees over 120 s. A
+  0.91-degree commanded return residual is not externally measured accuracy;
+  the production outage model uses a provisional 2.0-degree heading/controller
+  allowance. Together with 2.1554% P7-referenced scale variation, its minimum
+  envelope grows by 4.1037% of dead-reckoned travel, excluding systematic
+  scale-reference bias, slip/push, collision, braking, and excess placement
+  error.
+- P8 uses official medium Circle21h7 prints with a 0.875-in outer black square;
+  returned corners were later proved to span the 0.625-in inner detected square
+  (see the 2026-08-25 superseding note above).
+  Field correction is disabled: mount translation/attitude and Goal-face
+  transforms are unmeasured, and the onboard edge/focal range approximation
+  has deterministic obliquity bias (+7.7% at 30-degree tag yaw, +20.7% at 45).
+- P1 stops forward public motion on detected returns at or inside 8 in and on
+  device/API/malformed-range faults. A real obstacle returned as the documented
+  9999-mm/no-target value remains indistinguishable from clear space; P1 is not
+  certified collision perception.
+- P5 enumerated but moved only 0-0.002 in through live motion, so lateral-slip
+  correction is disabled. Hidden slip or pushing is unobservable.
+- Public map safety includes walls and nine Goals with Override T5's one-inch
+  tolerance plus the reported pose envelope. It omits official Pins, Loaders,
+  Toggles, movable Blocks, other robots, and the unmeasured swept footprint;
+  arbitrary navigation is therefore not competition-safe.
+- The latest no-startup-motion image passes 50 host tests and builds at SHA-256
+  `192c4adc4f16805a4a3fb8c26d82867ed26b546c1070fafc21e8fefd143554a1`
+  and is uploaded to slot 1. The system channel is healthy, but the user
+  runtime/channel emits no telemetry after run; the program is stopped. Do not
+  navigate until that failure is repaired and live boot inventory is verified.
+
 ## 2026-07-11T01:44:06.8027063-07:00 - Current system map
 
 - Drivetrain is differential/tank and cannot strafe. It uses eight 2.75-inch omni wheels: four per side, driven by two gear-coupled motors per side.
@@ -16,7 +84,10 @@ Append durable technical facts here whenever new hardware behavior, calibration,
 ## 2026-07-11T01:44:06.8027063-07:00 - Measured localization calibration
 
 - Normalized drive encoder signs are left +1 and right +1.
-- Effective drive track width is 12.0086 inches.
+- Effective drive track width is 10.624582 inches at the calibrated
+  2.433055-inch encoder wheel scale. This preserves the same turn ratio as the
+  earlier 12.0086-inch track expressed at the physical 2.75-inch wheel scale;
+  it is not a claim about tape-measured chassis width.
 - Rear tracking-wheel raw sign is +1 and effective rear-center lever is 5.18 inches.
 - LiDAR theta scale is 0.926770.
 - AI effective tag outer size is provisionally 1.05 inches from live parallax/range trials; it is not a manufacturer-supplied distance field.

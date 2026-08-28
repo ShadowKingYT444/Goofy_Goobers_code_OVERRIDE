@@ -8,13 +8,15 @@
 
 namespace {
 // Turn autotune experiment.
-constexpr double kTurnKp = 3.0;
+constexpr double kTurnKp = 1.8;
 constexpr double kTurnKi = 0.0;
 constexpr double kTurnStartI = 0.0;
 constexpr double kKdLow = 0.0;
-constexpr double kKdHigh = 80.0;
+constexpr double kKdHigh = 0.35;
 constexpr double kTurnTargetDeg = 45.0;
 constexpr int kTurnSpeed = 70;
+constexpr double kTurnMinimumPower = 14.0;
+constexpr double kTurnSlewPowerPerSec = 800.0;
 constexpr int kGoldenReductions = 10;
 constexpr int kCandidateCount = kGoldenReductions + 2;
 constexpr double kInversePhi = 0.6180339887498948482;
@@ -107,7 +109,7 @@ struct CandidateResult {
 };
 
 bool tuned_turn_ready = false;
-Gains tuned_turn = {kTurnKp, kTurnKi, 20.0, kTurnStartI};
+Gains tuned_turn = {kTurnKp, kTurnKi, 0.08, kTurnStartI};
 
 const char* reject_reason_name(RejectReason reason) {
   switch (reason) {
@@ -189,6 +191,14 @@ void hard_stop() {
   chassis.pid_targets_reset();
 }
 
+void command_turn_power(double turn_power) {
+  const int power = static_cast<int>(std::clamp(turn_power, -127.0, 127.0));
+  // Positive field-math turn is CCW. The raw V5 IMU rotation used below is
+  // clockwise-positive, so a positive response makes raw rotation decrease.
+  for (auto& motor : chassis.left_motors) motor.move(power);
+  for (auto& motor : chassis.right_motors) motor.move(-power);
+}
+
 RejectReason wait_until_quiescent() {
   hard_stop();
   if (field_control_connected()) return RejectReason::field_control;
@@ -229,16 +239,6 @@ RejectReason wait_until_quiescent() {
   return RejectReason::not_quiescent;
 }
 
-void prime_turn_pid(double measurement) {
-  // EZ-Template 3.2.2 variables_reset() intentionally leaves measurement
-  // history untouched, so explicitly prime it to prevent derivative kick.
-  chassis.turnPID.variables_reset();
-  chassis.turnPID.timers_reset();
-  chassis.turnPID.cur = measurement;
-  chassis.turnPID.prev_current = measurement;
-  chassis.turnPID.derivative = 0.0;
-}
-
 int hysteretic_sign(double value) {
   if (value > kCrossingHysteresisDeg) return 1;
   if (value < -kCrossingHysteresisDeg) return -1;
@@ -263,11 +263,6 @@ TrialResult run_turn_trial(double kd, int direction) {
     return result;
   }
 
-  chassis.pid_turn_constants_set(kTurnKp, kTurnKi, kd, kTurnStartI);
-  prime_turn_pid(baseline_deg);
-
-  const double absolute_target_deg =
-      baseline_deg + static_cast<double>(direction) * kTurnTargetDeg;
   const std::uint32_t start_ms = pros::millis();
   std::uint32_t previous_ms = start_ms;
   double previous_measurement_deg = baseline_deg;
@@ -283,15 +278,14 @@ TrialResult run_turn_trial(double kd, int direction) {
   double tail_velocity_integral = 0.0;
   double tail_duration_sec = 0.0;
   int previous_error_side = 1;
+  double turn_command = 0.0;
 
-  // Raw behavior plus an absolute live-IMU target produces one true relative
-  // experiment without zeroing the sensor or chaining from an old PID target.
   if (field_control_connected()) {
     result.reason = RejectReason::field_control;
     hard_stop();
     return result;
   }
-  chassis.pid_turn_set(absolute_target_deg, kTurnSpeed, ez::raw, false);
+  chassis.drive_mode_set(ez::DISABLE, true);
   result.reason = RejectReason::none;
 
   while (true) {
@@ -336,10 +330,10 @@ TrialResult run_turn_trial(double kd, int direction) {
         previous_measurement_deg + effective_step_deg;
     const double response_deg =
         static_cast<double>(direction) *
-        (effective_measurement_deg - baseline_deg);
+        (baseline_deg - effective_measurement_deg);
     const double error_deg = kTurnTargetDeg - response_deg;
     const double raw_velocity_deg_per_sec =
-        static_cast<double>(direction) * effective_step_deg / dt_sec;
+        -static_cast<double>(direction) * effective_step_deg / dt_sec;
     const double velocity_alpha =
         dt_sec / (kVelocityFilterTimeConstantSec + dt_sec);
     filtered_velocity_deg_per_sec +=
@@ -413,6 +407,24 @@ TrialResult run_turn_trial(double kd, int direction) {
       result.reason = RejectReason::oscillatory;
       break;
     }
+
+    double requested_effort =
+        kTurnKp * error_deg - kd * filtered_velocity_deg_per_sec;
+    requested_effort = std::clamp(
+        requested_effort,
+        -static_cast<double>(kTurnSpeed),
+        static_cast<double>(kTurnSpeed));
+    if (std::fabs(error_deg) > kSettlingErrorDeg &&
+        std::fabs(requested_effort) < kTurnMinimumPower) {
+      requested_effort = requested_effort >= 0.0
+                             ? kTurnMinimumPower
+                             : -kTurnMinimumPower;
+    }
+    const double maximum_command_step = kTurnSlewPowerPerSec * dt_sec;
+    turn_command = std::clamp(requested_effort,
+                              turn_command - maximum_command_step,
+                              turn_command + maximum_command_step);
+    command_turn_power(static_cast<double>(direction) * turn_command);
 
     previous_measurement_deg = effective_measurement_deg;
     previous_response_deg = response_deg;
@@ -574,10 +586,11 @@ void print_abort(RejectReason reason) {
 }  // namespace
 
 bool pid_autotune_apply_if_ready() {
-  if (!tuned_turn_ready) return false;
-  chassis.pid_turn_constants_set(
-      tuned_turn.kp, tuned_turn.ki, tuned_turn.kd, tuned_turn.start_i);
-  return true;
+  // The measured controller is the fused-navigation controller in autons.cpp,
+  // not EZ-Template's differently-signed turn PID. Gains are printed for a
+  // deliberate source update after the supervised run; never apply them to
+  // the wrong controller at runtime.
+  return false;
 }
 
 bool pid_autotune_auton() {
@@ -594,12 +607,8 @@ bool pid_autotune_auton() {
     return false;
   }
 
-  const ez::PID::Constants original = chassis.pid_turn_constants_get();
-  const bool original_slew_enabled = chassis.slew_turn_get();
-  chassis.slew_turn_set(false);
-
   pros::lcd::set_text(4, "PID TURN AUTOTUNE");
-  pros::lcd::set_text(5, "kP 3.000 kI 0");
+  pros::lcd::set_text(5, "fused kP 1.800");
   pros::lcd::set_text(6, "24 turns maximum");
   std::printf(
       "PID_TUNE START kP=%.3f kI=%.3f kD_low=%.3f kD_high=%.3f "
@@ -686,16 +695,12 @@ bool pid_autotune_auton() {
   }
 
   hard_stop();
-  chassis.slew_turn_set(original_slew_enabled);
-
   if (field_control_connected()) {
     abort_reason = RejectReason::field_control;
     keep_searching = false;
   }
 
   if (!keep_searching || !best.valid) {
-    chassis.pid_turn_constants_set(
-        original.kp, original.ki, original.kd, original.start_i);
     if (abort_reason == RejectReason::none) {
       abort_reason = RejectReason::no_valid_candidate;
     }
@@ -705,8 +710,6 @@ bool pid_autotune_auton() {
 
   tuned_turn = {kTurnKp, kTurnKi, best.kd, kTurnStartI};
   tuned_turn_ready = true;
-  pid_autotune_apply_if_ready();
-
   std::printf(
       "PID_TUNE COMPLETE kP=%.3f kI=%.3f kD=%.6f start_i=%.1f "
       "cost=%.3f interval=[%.6f,%.6f] evaluated=%d\n",
@@ -719,12 +722,14 @@ bool pid_autotune_auton() {
       high,
       candidate_number);
   std::printf(
-      "PID_TUNE PASTE chassis.pid_turn_constants_set(%.3f, %.3f, "
-      "%.6f, %.1f);\n",
+      "PID_TUNE PASTE fused kP=%.3f kI=%.3f kD=%.6f start_i=%.1f "
+      "min_power=%.1f slew=%.1f\n",
       tuned_turn.kp,
       tuned_turn.ki,
       tuned_turn.kd,
-      tuned_turn.start_i);
+      tuned_turn.start_i,
+      kTurnMinimumPower,
+      kTurnSlewPowerPerSec);
   std::fflush(stdout);
 
   pros::lcd::set_text(4, "TUNING COMPLETE");

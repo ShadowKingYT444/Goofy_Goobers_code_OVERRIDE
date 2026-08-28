@@ -1,5 +1,13 @@
 # Localization Completion Report
 
+> **SUPERSEDED — different robot/chassis.** This July report describes the
+> prior robot with a mechanically active rear tracker and multi-LiDAR setup. It
+> is not a competition-readiness claim for the current P1/P6/P7/P8 robot. The
+> current authoritative status is
+> [reports/sensor_campaign_2026-08-25/goal_completion_audit.md](reports/sensor_campaign_2026-08-25/goal_completion_audit.md),
+> with live-resume evidence in
+> [reports/sensor_campaign_2026-08-25/live_resume_addendum.md](reports/sensor_campaign_2026-08-25/live_resume_addendum.md).
+
 The fused localization system now propagates continuously from drive encoders, the rear horizontal tracking wheel, and IMU, with independently gated LiDAR-wall and AI Vision/AprilTag corrections. The supervised long-route session covered approximately 120 inches (10 feet). After correcting a safely detected low-power turn stall, the continuation route completed with `1.54 in` raw return-position error and `4.93 deg` raw return-heading error. Tag 3 then reacquired with `0.09 in` range residual and `0.00 deg` bearing residual and bounded the pose to `(22.91,41.15,144.18 deg)`.
 
 Repeated tag IDs remain explicit competing hypotheses: measured range creates candidate circles around matching tag faces, while bearing plus fused heading yields implied robot-position distributions. Corrections require physical-goal separation and temporal consistency. The UI now shows the selected hypothesis in green and alternate paired-prop hypotheses in amber.

@@ -46,6 +46,7 @@
 
 // More includes here...
 #include "autons.hpp"
+#include "navigation.hpp"
 #include "subsystems.hpp"
 #include "ai_vision_localization.hpp"
 

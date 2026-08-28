@@ -5,6 +5,7 @@
 
 extern Drive chassis;
 extern pros::Distance distance_1;
+extern pros::Gps gps_7;
 extern pros::Rotation horizontal_odom;
 
 inline pros::Motor slider_right(2);
