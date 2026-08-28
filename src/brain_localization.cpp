@@ -40,7 +40,7 @@ pros::Rotation side_odom(5);
 pros::Imu imu(3);
 pros::Distance lidar_8(8);
 pros::Distance lidar_9(9);
-pros::Gps gps_12(12);
+pros::Gps gps_7(7);
 
 using Pose = brainloc::Pose;
 using Waypoint = brainloc::Waypoint;
@@ -575,7 +575,7 @@ void draw_gps_dashboard(const pros::gps_status_s_t& gps_status,
     pros::screen::set_pen(kPanel);
     pros::screen::fill_rect(0, 0, 479, 39);
     pros::screen::set_pen(kWhite);
-    pros::screen::print(TEXT_MEDIUM, 34, 10, "GPS 12  LIVE POSITION");
+    pros::screen::print(TEXT_MEDIUM, 34, 10, "GPS 7  LIVE POSITION");
     dashboard_initialized = true;
   }
   pros::screen::set_pen(kBackground);
@@ -687,10 +687,10 @@ void localization_loop() {
       last_telemetry_ms = now;
       record_pose(now);
       emit_telemetry(now);
-      const auto gps_status = gps_12.get_position_and_orientation();
-      const double gps_error_m = gps_12.get_error();
+      const auto gps_status = gps_7.get_position_and_orientation();
+      const double gps_error_m = gps_7.get_error();
       const bool gps_valid =
-          gps_12.is_installed() && std::isfinite(gps_status.x) &&
+          gps_7.is_installed() && std::isfinite(gps_status.x) &&
           std::isfinite(gps_status.y) && std::isfinite(gps_status.yaw) &&
           std::isfinite(gps_error_m) && gps_error_m >= 0.0 &&
           gps_error_m < 1.0;
