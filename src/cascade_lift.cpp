@@ -15,13 +15,18 @@ namespace {
 // lift, so expose upward travel as positive throughout the lift subsystem.
 constexpr double kSensorDirection = -1.0;
 constexpr double kPmvPerDeg = 30.0;
+// Lowering needs a more decisive response than raising: gravity/load friction
+// made the old 30 mV/deg, 5 V-capped controller take several seconds to home.
+// Keep the proven upward profile while using a separately damped down profile.
+constexpr double kDownPmvPerDeg = 60.0;
 constexpr double kImvPerDegS = 0.0;
-constexpr double kDmvPerDegPerS = 3.0;
+constexpr double kDmvPerDegPerS = 10.0;
+constexpr double kDownDmvPerDegPerS = 14.0;
 constexpr double kGravityMv = 0.0;  // Tune after the five heights are validated.
-constexpr double kMinimumUpwardPidMv = 2500.0;
-constexpr double kMinimumDownwardPidMv = 3000.0;
+constexpr double kMinimumUpwardPidMv = 2000.0;
+constexpr double kMinimumDownwardPidMv = 2500.0;
 constexpr double kPidVoltageLimitMv = 12000.0;
-constexpr double kPidDownwardVoltageLimitMv = 5000.0;
+constexpr double kPidDownwardVoltageLimitMv = 9000.0;
 constexpr double kShortStageUpwardLimitMv = 6000.0;
 constexpr double kVelocityFilterAlpha = 0.20;
 constexpr double kIntegralZoneDeg = 40.0;
@@ -93,8 +98,8 @@ void reset_controller_terms() {
 }  // namespace
 
 void initialize_at_rest() {
-  slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
-  slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+  slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
   command_power(0);
   slider_rotation_sensor.reset_position();
 
@@ -294,10 +299,21 @@ void update() {
   // changes do not create a derivative kick.
   const double derivative = -state.data.velocity_deg_s;
   state.previous_error = state.data.error_deg;
+  if (std::fabs(state.data.error_deg) <= kPositionToleranceDeg &&
+      std::fabs(state.data.velocity_deg_s) <= kVelocityToleranceDegS) {
+    state.integral = 0.0;
+    state.data.output_mv = 0.0;
+    command_voltage(0.0);
+    return;
+  }
+  const bool lowering = state.data.error_deg < 0.0;
+  const double active_kp = lowering ? kDownPmvPerDeg : kPmvPerDeg;
+  const double active_kd = lowering
+      ? kDownDmvPerDegPerS : kDmvPerDegPerS;
   state.data.output_mv =
-      kPmvPerDeg * state.data.error_deg +
+      active_kp * state.data.error_deg +
       kImvPerDegS * state.integral +
-      kDmvPerDegPerS * derivative + kGravityMv;
+      active_kd * derivative + kGravityMv;
   const double upward_voltage_limit =
       state.data.target_deg <= state.stages[1]
           ? kShortStageUpwardLimitMv

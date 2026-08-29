@@ -36,7 +36,6 @@ void localization_toggle_goal_continue_auton();
 bool localization_toggle_far_goal_hotkey_auton();
 bool localization_simple_red_goal_hotkey_auton();
 bool localization_simple_red_goal_finish_correction();
-bool localization_two_cup_red_auton();
 bool localization_pure_pursuit_endpoint_test();
 bool localization_far_goal_trial_recover_to_start();
 void localization_navigation_return_route();

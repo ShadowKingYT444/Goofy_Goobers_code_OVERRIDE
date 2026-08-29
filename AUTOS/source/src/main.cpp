@@ -101,8 +101,6 @@ constexpr bool RUN_STARTUP_TOGGLE_GOAL_CONTINUE = false;
 // One supervised end-to-end Up+A route trial. Enable only for a recorded
 // tuning boot, then restore false before the competition image is installed.
 constexpr bool RUN_STARTUP_TOGGLE_FAR_GOAL_TEST = false;
-// Temporary supervised full-route trace. Must be false in the normal image.
-constexpr bool RUN_STARTUP_SIMPLE_RED_TRACE = false;
 constexpr bool RUN_STARTUP_FAR_GOAL_RECOVERY_TEST = false;
 // One supervised coordinate-to-coordinate pursuit trial. Restore false after
 // the recorded run and reinstall the hotkey-only image.
@@ -215,72 +213,11 @@ bool update_runtime_pose_editor(pros::Controller& master) {
 
 volatile bool opcontrol_auton_running = false;
 
-enum class RedAutonSelection : int {
-  kOnePin = 0,
-  kTwoCup = 1,
-};
-
-std::atomic<int> selected_red_auton{
-    static_cast<int>(RedAutonSelection::kTwoCup)};
-std::atomic<bool> auton_selection_locked{false};
-
-const char* selected_red_auton_name() {
-  return selected_red_auton.load(std::memory_order_acquire) ==
-                 static_cast<int>(RedAutonSelection::kTwoCup)
-             ? "2 Cup Auto Red"
-             : "1 Pin Auto Red";
-}
-
-void render_auton_selection() {
-  pros::screen::set_eraser(pros::Color::black);
-  pros::screen::erase_rect(0, 0, 479, 239);
-  pros::screen::set_pen(pros::Color::white);
-  pros::screen::print(pros::E_TEXT_LARGE_CENTER, 1, "AUTON SELECT");
-  pros::screen::set_pen(pros::Color::red);
-  pros::screen::print(pros::E_TEXT_LARGE_CENTER, 3, "%s",
-                      selected_red_auton_name());
-  pros::screen::set_pen(pros::Color::white);
-  pros::screen::print(pros::E_TEXT_MEDIUM_CENTER, 5,
-                      "< LEFT       RIGHT >");
-  if (selected_red_auton.load(std::memory_order_acquire) ==
-      static_cast<int>(RedAutonSelection::kTwoCup)) {
-    pros::screen::print(pros::E_TEXT_MEDIUM_CENTER, 7,
-                        "TEST LIMIT: THROUGH 2ND SCORE");
-  } else {
-    pros::screen::print(pros::E_TEXT_MEDIUM_CENTER, 7,
-                        "FULL 1-PIN ROUTE");
-  }
-}
-
-void select_red_auton(int direction) {
-  if (auton_selection_locked.load(std::memory_order_acquire)) return;
-  const int selected = direction > 0
-      ? static_cast<int>(RedAutonSelection::kTwoCup)
-      : static_cast<int>(RedAutonSelection::kOnePin);
-  selected_red_auton.store(selected, std::memory_order_release);
-  render_auton_selection();
-  std::printf("AUTON_SELECTOR selected=%d name=%s\n",
-              selected, selected_red_auton_name());
-  std::fflush(stdout);
-}
-
-bool run_selected_red_auton() {
-  const auto selected = static_cast<RedAutonSelection>(
-      selected_red_auton.load(std::memory_order_acquire));
-  std::printf("AUTON_SELECTOR run=%d name=%s\n",
-              static_cast<int>(selected), selected_red_auton_name());
-  std::fflush(stdout);
-  return selected == RedAutonSelection::kTwoCup
-      ? localization_two_cup_red_auton()
-      : localization_simple_red_goal_hotkey_auton();
-}
-
 int apply_controller_deadband(int value) {
   return std::abs(value) <= CONTROLLER_DRIVE_DEADBAND ? 0 : value;
 }
 
 constexpr double kWristHoldTargetDeg = 287.13;
-constexpr double kWristDefaultTargetDeg = 330.00;
 constexpr double kWristHoldKp = 2.20;
 constexpr double kWristHoldKi = 0.00;
 constexpr double kWristHoldKd = 0.50;
@@ -289,11 +226,6 @@ constexpr double kWristGravityCompensationPower = -45.0;
 constexpr double kWristHoldMaxPower = 80.0;
 constexpr double kWristSeekMinPower = 70.0;
 constexpr double kWristHoldBrakeBandDeg = 1.5;
-constexpr double kWristDefaultKp = 3.0;
-constexpr double kWristDefaultKd = 0.08;
-constexpr double kWristDefaultMaxPower = 45.0;
-constexpr double kWristDefaultMinPower = 0.0;
-constexpr double kWristDefaultBrakeBandDeg = 1.5;
 
 double shortest_angle_error_deg(double target_deg, double current_deg) {
   double error_deg = target_deg - current_deg;
@@ -302,37 +234,19 @@ double shortest_angle_error_deg(double target_deg, double current_deg) {
   return error_deg;
 }
 
-void update_wrist_hold(double target_deg = kWristHoldTargetDeg,
-                       bool strong_default_return = false) {
+void update_wrist_hold() {
   static std::uint32_t previous_ms = pros::millis();
   static double previous_error_deg = 0.0;
   static double filtered_derivative = 0.0;
   static double integral = 0.0;
-  static double previous_target_deg = target_deg;
-  static bool previous_strong_default_return = strong_default_return;
 
   const std::uint32_t now_ms = pros::millis();
   const double dt_s = std::clamp(
       static_cast<double>(now_ms - previous_ms) / 1000.0, 0.001, 0.100);
   const double angle_deg =
       static_cast<double>(horizontal_odom.get_angle()) / 100.0;
-  // The wrist has hard mechanical stops and cannot use a circular shortest
-  // path. Down therefore returns through the raw 0..360 sensor range toward
-  // 330 degrees instead of trying to cross the 0-degree boundary.
-  const double error_deg = strong_default_return
-      ? target_deg - angle_deg
-      : shortest_angle_error_deg(target_deg, angle_deg);
-
-  if (std::fabs(shortest_angle_error_deg(
-          target_deg, previous_target_deg)) > 0.1 ||
-      strong_default_return != previous_strong_default_return) {
-    previous_error_deg = error_deg;
-    filtered_derivative = 0.0;
-    integral = 0.0;
-    previous_ms = now_ms;
-    previous_target_deg = target_deg;
-    previous_strong_default_return = strong_default_return;
-  }
+  const double error_deg =
+      shortest_angle_error_deg(kWristHoldTargetDeg, angle_deg);
 
   if (std::fabs(error_deg) < 25.0) {
     integral = std::clamp(integral + error_deg * dt_s, -30.0, 30.0);
@@ -341,41 +255,20 @@ void update_wrist_hold(double target_deg = kWristHoldTargetDeg,
   }
   const double raw_derivative = (error_deg - previous_error_deg) / dt_s;
   filtered_derivative += 0.20 * (raw_derivative - filtered_derivative);
-  const bool default_hold = !strong_default_return &&
-      std::fabs(shortest_angle_error_deg(
-          target_deg, kWristDefaultTargetDeg)) <= 0.1;
-  const double kp = (default_hold || strong_default_return)
-      ? kWristDefaultKp : kWristHoldKp;
-  const double kd = (default_hold || strong_default_return)
-      ? kWristDefaultKd : kWristHoldKd;
-  const double max_power = strong_default_return
-      ? kWristHoldMaxPower
-      : (default_hold ? kWristDefaultMaxPower : kWristHoldMaxPower);
-  const double minimum_power = strong_default_return
-      ? 45.0
-      : (default_hold ? kWristDefaultMinPower : kWristSeekMinPower);
-  const double gravity_power = (default_hold || strong_default_return)
-      ? 0.0 : kWristGravityCompensationPower;
-  const double brake_band = (default_hold || strong_default_return)
-      ? kWristDefaultBrakeBandDeg : kWristHoldBrakeBandDeg;
   double output = std::clamp(
-      kp * error_deg + kWristHoldKi * integral + kd * filtered_derivative,
-      -max_power, max_power);
+      kWristHoldKp * error_deg + kWristHoldKi * integral +
+          kWristHoldKd * filtered_derivative,
+      -kWristHoldMaxPower, kWristHoldMaxPower);
 
   claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-  if (std::fabs(error_deg) <= brake_band) {
-    claw_arm.move(0);
-    previous_ms = now_ms;
-    previous_error_deg = error_deg;
-    return;
-  }
-  if (std::fabs(error_deg) > brake_band) {
+  if (std::fabs(error_deg) > kWristHoldBrakeBandDeg) {
     output += std::copysign(kWristHoldStaticPower, error_deg);
-    if (minimum_power > 0.0 && std::fabs(output) < minimum_power) {
-      output = std::copysign(minimum_power, error_deg);
+    if (std::fabs(output) < kWristSeekMinPower) {
+      output = std::copysign(kWristSeekMinPower, error_deg);
     }
   }
-  output = std::clamp(output + gravity_power, -max_power, max_power);
+  output = std::clamp(output + kWristGravityCompensationPower,
+                      -kWristHoldMaxPower, kWristHoldMaxPower);
   claw_arm.move(static_cast<int>(std::lround(output)));
   previous_ms = now_ms;
   previous_error_deg = error_deg;
@@ -1184,24 +1077,14 @@ void start_fusion_test_auton() {
 void start_toggle_far_goal_auton() {
   if (opcontrol_auton_running) return;
 
-  // Cancel the last operator lift write before handing control to the new
-  // autonomous task. Without this synchronous handoff, an R1/upward command
-  // from the preceding opcontrol cycle can remain latched until the spawned
-  // task is scheduled.
-  cascade_lift::set_manual_power(0);
-  cascade_lift::update();
-  slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-  slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-  slider_right.brake();
-  slider_left.brake();
   opcontrol_auton_running = true;
   pros::Task::create([] {
     pros::Controller controller(pros::E_CONTROLLER_MASTER);
-    pros::lcd::print(6, "Run: %s", selected_red_auton_name());
-    controller.print(0, 0, "%-18s", selected_red_auton_name());
+    pros::lcd::set_text(6, "Up+A: full red auton");
+    controller.print(0, 0, "FULL RED AUTON   ");
     move_intake(0);
     chassis.drive_set(0, 0);
-    const bool success = run_selected_red_auton();
+    const bool success = localization_simple_red_goal_hotkey_auton();
     chassis.drive_set(0, 0);
     move_intake(0);
     opcontrol_auton_running = false;
@@ -1663,8 +1546,6 @@ void initialize() {
               static_cast<unsigned long>(pros::millis()));
   std::fflush(stdout);
   pros::delay(500);
-  auton_selection_locked.store(false, std::memory_order_release);
-  render_auton_selection();
 
   printf("D4 init distance_port=1 direction=forward period_ms=%lu installed=%d\n",
          static_cast<unsigned long>(TELEMETRY_PERIOD_MS),
@@ -1674,105 +1555,19 @@ void initialize() {
          chassis.drive_imu_get());
   print_drive_motor_health("startup_stationary");
   fflush(stdout);
-
-  // Keep the autonomous hotkey independent of the competition callback state.
-  // This listener is the single owner of Up+A and remains alive whenever the
-  // user program is running, even if opcontrol() is restarted.
-  pros::Task::create([] {
-    pros::Controller controller(pros::E_CONTROLLER_MASTER);
-    bool armed = true;
-    bool last_up = false;
-    bool last_a = false;
-    std::uint32_t chord_started_ms = 0;
-    while (true) {
-      const bool up = controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_UP);
-      const bool a = controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_A);
-      if (up != last_up || a != last_a) {
-        std::printf("HOTKEY_INPUT up=%d a=%d connected=%d\n",
-                    static_cast<int>(up), static_cast<int>(a),
-                    static_cast<int>(controller.is_connected()));
-        std::fflush(stdout);
-        last_up = up;
-        last_a = a;
-      }
-      if (up && a) {
-        if (chord_started_ms == 0) chord_started_ms = pros::millis();
-        if (armed && pros::millis() - chord_started_ms >= 100) {
-          armed = false;
-          std::printf("SIMPLE_RED event=hotkey_up_a_listener\n");
-          std::fflush(stdout);
-          controller.rumble(".-");
-          start_toggle_far_goal_auton();
-        }
-      } else {
-        chord_started_ms = 0;
-        if (!up && !a) armed = true;
-      }
-      pros::delay(20);
-    }
-  }, "up a auton listener");
-
-  // During field-disabled time, controller Left/Right mirrors the Brain's
-  // bottom Left/Right buttons. Selection locks when autonomous begins.
-  pros::Task::create([] {
-    pros::Controller controller(pros::E_CONTROLLER_MASTER);
-    bool last_left = false;
-    bool last_right = false;
-    bool last_brain_left = false;
-    bool last_brain_right = false;
-    bool last_touch_pressed = false;
-    std::uint32_t last_render_ms = 0;
-    while (!auton_selection_locked.load(std::memory_order_acquire)) {
-      const bool selectable = pros::competition::is_disabled();
-      const bool left = selectable && controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_LEFT);
-      const bool right = selectable && controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_RIGHT);
-      const std::uint8_t brain_buttons = pros::lcd::read_buttons();
-      const bool brain_left = (brain_buttons & LCD_BTN_LEFT) != 0;
-      const bool brain_right = (brain_buttons & LCD_BTN_RIGHT) != 0;
-      const auto touch = pros::screen::touch_status();
-      const bool touch_pressed =
-          touch.touch_status == pros::E_TOUCH_PRESSED ||
-          touch.touch_status == pros::E_TOUCH_HELD;
-      if (left && !last_left) select_red_auton(-1);
-      if (right && !last_right) select_red_auton(+1);
-      if (brain_left && !last_brain_left) select_red_auton(-1);
-      if (brain_right && !last_brain_right) select_red_auton(+1);
-      if (touch_pressed && !last_touch_pressed) {
-        select_red_auton(touch.x < 240 ? -1 : +1);
-      }
-      last_left = left;
-      last_right = right;
-      last_brain_left = brain_left;
-      last_brain_right = brain_right;
-      last_touch_pressed = touch_pressed;
-      if (pros::millis() - last_render_ms >= 250) {
-        render_auton_selection();
-        last_render_ms = pros::millis();
-      }
-      if (selectable) {
-        controller.print(1, 0, "< %-15s >", selected_red_auton_name());
-      }
-      pros::delay(20);
-    }
-  }, "auton selector");
 }
 
 void disabled() {
   navigation::stop();
 }
 
-void competition_initialize() { render_auton_selection(); }
+void competition_initialize() {}
 
 void autonomous() {
-  auton_selection_locked.store(true, std::memory_order_release);
   if constexpr (RUN_COMPETITION_DIAGNOSTIC_ROUTE) {
     fusion_test_auton();
   } else {
-    run_selected_red_auton();
+    localization_simple_red_goal_hotkey_auton();
   }
 }
 
@@ -1786,21 +1581,8 @@ void opcontrol() {
     }
   }
   pros::Controller master(pros::E_CONTROLLER_MASTER);
-  master.print(0, 0, "READY: UP+A AUTON ");
-  pros::lcd::set_text(6, "Ready: press Up + A");
   if (drive_positions_are_zeroed()) {
     localization_telemetry_reset();
-  }
-  if (RUN_STARTUP_SIMPLE_RED_TRACE) {
-    pros::lcd::set_text(6, "Simple red trace in 5s");
-    std::printf("SIMPLE_RED_TRACE event=countdown duration_ms=5000\n");
-    std::fflush(stdout);
-    pros::delay(5000);
-    const bool trace_ok = localization_simple_red_goal_hotkey_auton();
-    std::printf("SIMPLE_RED_TRACE event=done ok=%d\n",
-                static_cast<int>(trace_ok));
-    std::fflush(stdout);
-    pros::lcd::set_text(6, trace_ok ? "Trace PASS" : "Trace FAIL");
   }
   if (RUN_STARTUP_CASCADE_SEQUENCE_TEST) {
     constexpr double kDipDeg = 75.0;
@@ -2220,12 +2002,8 @@ void opcontrol() {
   bool auton_combo_was_pressed = false;
   bool fusion_test_combo_was_pressed = false;
   bool pid_tune_combo_was_pressed = false;
-  enum class WristActionState {
-    idle,
-    seeking,
-    dwelling,
-    returning_default
-  };
+  bool relative_motion_combo_was_pressed = false;
+  enum class WristActionState { idle, seeking, dwelling };
   WristActionState wrist_action_state = WristActionState::idle;
   std::uint32_t wrist_action_started_ms = 0;
   std::uint32_t wrist_dwell_started_ms = 0;
@@ -2233,6 +2011,19 @@ void opcontrol() {
 
   while (true) {
     const bool pose_editor_active = update_runtime_pose_editor(master);
+    const bool relative_motion_combo_pressed =
+        !pose_editor_active &&
+        master.get_digital(pros::E_CONTROLLER_DIGITAL_UP) &&
+        master.get_digital(pros::E_CONTROLLER_DIGITAL_A);
+    if (relative_motion_combo_pressed &&
+        !relative_motion_combo_was_pressed) {
+      std::printf("SIMPLE_RED event=hotkey_up_a\n");
+      std::fflush(stdout);
+      master.rumble(".-");
+      start_toggle_far_goal_auton();
+    }
+    relative_motion_combo_was_pressed = relative_motion_combo_pressed;
+
     const bool auton_combo_pressed =
         ENABLE_CONTROLLER_MOTION_DIAGNOSTICS && !pose_editor_active &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_B) &&
@@ -2270,25 +2061,9 @@ void opcontrol() {
           !pose_editor_active &&
           !master.get_digital(pros::E_CONTROLLER_DIGITAL_A) &&
           master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_RIGHT);
-      const bool wrist_up_manual_negative =
-          !pose_editor_active &&
-          !master.get_digital(pros::E_CONTROLLER_DIGITAL_A) &&
-          master.get_digital(pros::E_CONTROLLER_DIGITAL_UP);
-      const bool wrist_down_return_default =
-          !pose_editor_active &&
-          !master.get_digital(pros::E_CONTROLLER_DIGITAL_A) &&
-          !master.get_digital(pros::E_CONTROLLER_DIGITAL_B) &&
-          !master.get_digital(pros::E_CONTROLLER_DIGITAL_X) &&
-          master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN);
       if (wrist_right_pressed) {
         wrist_action_state = WristActionState::seeking;
         wrist_action_started_ms = control_now_ms;
-      }
-      if (wrist_up_manual_negative) {
-        wrist_action_state = WristActionState::idle;
-      }
-      if (wrist_down_return_default) {
-        wrist_action_state = WristActionState::returning_default;
       }
       const int forward_power = pose_editor_active
           ? 0
@@ -2338,33 +2113,11 @@ void opcontrol() {
                      : 0);
       counter_rollers.move(claw_arm_power);
 
-      if (wrist_up_manual_negative) {
-        // Up+A remains reserved for autonomous. Up by itself directly rotates
-        // the wrist in the negative direction so a new default angle can be
-        // positioned and recorded without the old PID fighting the operator.
-        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-        claw_arm.move(-kMechanismPower);
-      } else if (pose_editor_active) {
+      if (pose_editor_active ||
+          control_now_ms - wrist_action_started_ms >= kWristActionTimeoutMs) {
         wrist_action_state = WristActionState::idle;
-        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
-        claw_arm.move(0);
-      } else {
-        if (wrist_action_state == WristActionState::seeking &&
-            control_now_ms - wrist_action_started_ms >=
-                kWristActionTimeoutMs) {
-          wrist_action_state = WristActionState::idle;
-        }
-        if (wrist_action_state == WristActionState::returning_default) {
-          update_wrist_hold(kWristDefaultTargetDeg, true);
-          const double wrist_angle_deg =
-              static_cast<double>(horizontal_odom.get_angle()) / 100.0;
-          if (std::fabs(shortest_angle_error_deg(
-                  kWristDefaultTargetDeg, wrist_angle_deg)) <=
-              kWristDefaultBrakeBandDeg) {
-            claw_arm.brake();
-            wrist_action_state = WristActionState::idle;
-          }
-        } else if (wrist_action_state == WristActionState::seeking) {
+      }
+      if (wrist_action_state == WristActionState::seeking) {
         update_wrist_hold();
         const double wrist_angle_deg =
             static_cast<double>(horizontal_odom.get_angle()) / 100.0;
@@ -2375,13 +2128,14 @@ void opcontrol() {
           wrist_action_state = WristActionState::dwelling;
           wrist_dwell_started_ms = control_now_ms;
         }
-        } else if (wrist_action_state == WristActionState::dwelling &&
-                   control_now_ms - wrist_dwell_started_ms < kWristDwellMs) {
-          update_wrist_hold();
-        } else {
-          wrist_action_state = WristActionState::idle;
-          update_wrist_hold(kWristDefaultTargetDeg);
-        }
+      } else if (wrist_action_state == WristActionState::dwelling &&
+                 control_now_ms - wrist_dwell_started_ms < kWristDwellMs) {
+        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+        claw_arm.move(0);
+      } else {
+        wrist_action_state = WristActionState::idle;
+        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
+        claw_arm.move(0);
       }
     }
 
