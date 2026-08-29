@@ -89,37 +89,37 @@ constexpr double kFusionTestTurnKd = 0.08;
 constexpr double kFusionTestTurnMinPower = 12.0;
 constexpr double kFusionTestTurnMinPowerErrorDeg = 4.0;
 constexpr double kFusionTestTurnSlewPowerPerSec = 360.0;
-constexpr double kFusedDriveToleranceIn = 1.0;
+constexpr double kFusedDriveToleranceIn = 0.35;
 constexpr double kFusedDriveSettleMs = 80;
-constexpr double kFusedDriveKp = 7.5;
+constexpr double kFusedDriveKp = 10.5;
 // Live 2026-08-25 breakaway: 18/127 moved 0.096 in in 300 ms; 24/127
 // moved 0.430 in with all four motors tracking. Keep a modest margin for
 // battery/carpet variation while relying on finish-window braking near target.
-constexpr double kFusedDriveMinPower = 28.0;
+constexpr double kFusedDriveMinPower = 34.0;
 constexpr double kFusedDriveHeadingKp = 1.15;
 constexpr double kFusedDriveFinalHeadingKp = 1.0;
 constexpr double kFusedDriveMaxTurnPower = 45.0;
 constexpr double kFusedDriveCrossTrackLookaheadIn = 10.0;
 constexpr double kFusedDriveMaxCrossTrackHeadingDeg = 15.0;
 constexpr double kFusedDriveMaxFinishCrossTrackIn = 2.0;
-constexpr double kFusedDriveForwardSlewPowerPerSec = 280.0;
+constexpr double kFusedDriveForwardSlewPowerPerSec = 420.0;
 constexpr double kFusedDriveTurnSlewPowerPerSec = 420.0;
 constexpr double kFusedDriveStallProgressIn = 0.10;
 constexpr std::uint32_t kFusedDriveStallTimeoutMs = 1000;
-constexpr double kFusedTurnToleranceDeg = 2.0;
-constexpr double kFusedTurnSettleMs = 100;
-constexpr double kFusedTurnKp = 1.8;
-constexpr double kFusedTurnKd = 0.058514;
-// Live four-turn qualification on this heavier replacement robot held both
-// encoder sides fixed for >1 s at 14/127 with 2.50 deg remaining. Earlier
-// breakaway work bounded useful chassis motion at 18-24/127; 20 clears static
-// friction without changing the high-error proportional/derivative response.
-constexpr double kFusedTurnMinPower = 28.0;
-constexpr double kFusedTurnBreakawayPower = 36.0;
-constexpr std::uint32_t kFusedTurnBreakawayDelayMs = 200;
-// Do not leave a 2-4 degree dead zone where the controller is outside settle
-// tolerance but below the minimum-static-friction command threshold.
-constexpr double kFusedTurnMinPowerErrorDeg = kFusedTurnToleranceDeg;
+constexpr double kFusedTurnToleranceDeg = 1.5;
+constexpr double kFusedTurnSettleMs = 120;
+constexpr double kFusedTurnSettleRateDegPerSec = 14.0;
+constexpr double kFusedTurnKp = 2.2;
+constexpr double kFusedTurnKd = 0.22;
+// Static power is only applied when the chassis is nearly stationary. Applying
+// a hard floor while it is already approaching the target prevents braking and
+// was the source of the slow cross-target oscillation seen in every turn.
+constexpr double kFusedTurnMinPower = 30.0;
+constexpr double kFusedTurnBreakawayPower = 44.0;
+constexpr std::uint32_t kFusedTurnBreakawayDelayMs = 250;
+constexpr double kFusedTurnStaticRateDegPerSec = 6.0;
+constexpr double kFusedTurnBrakeZoneDeg = 12.0;
+constexpr double kFusedTurnBrakeZoneMaxPower = 55.0;
 constexpr double kFusedTurnSlewPowerPerSec = 800.0;
 constexpr std::uint32_t kFusedTurnStallTimeoutMs = 1000;
 constexpr std::uint32_t kNavigationInitSettleMs = 250;
@@ -1973,7 +1973,8 @@ bool fused_drive_to_point(PoseEstimate& pose,
                               std::numeric_limits<double>::infinity(),
                           int drive_direction = 1,
                           LidarFusionMode lidar_mode =
-                              LidarFusionMode::kBiasOnly) {
+                              LidarFusionMode::kBiasOnly,
+                          bool stop_for_forward_obstacle = true) {
   const std::uint32_t start = pros::millis();
   std::uint32_t last_loop_ms = start;
   std::uint32_t settled_since = 0;
@@ -2152,7 +2153,8 @@ bool fused_drive_to_point(PoseEstimate& pose,
     turn_command = clamp(turn_command, -std::fabs(forward_command),
                          std::fabs(forward_command));
 
-    if (motion_sign > 0.0 && forward_command > 0.0 &&
+    if (stop_for_forward_obstacle && motion_sign > 0.0 &&
+        forward_command > 0.0 &&
         forward_obstacle_requires_stop(phase)) {
       return false;
     }
@@ -2361,9 +2363,9 @@ bool fused_turn_to_heading(PoseEstimate& pose,
   std::uint32_t last_log = 0;
   double turn_command = 0.0;
   double last_error_deg = signed_angle_diff_deg(target_heading_deg, pose_heading_deg(pose));
+  double filtered_error_rate_deg_s = 0.0;
   double last_motion_heading_deg = pose_heading_deg(pose);
   std::uint32_t last_motion_ms = start;
-  int stall_breakaway_kicks = 0;
 
   printf("FUSE_TEST command=%s type=fused_turn_to target_heading=%.2f max_power=%d\n",
          phase,
@@ -2381,49 +2383,35 @@ bool fused_turn_to_heading(PoseEstimate& pose,
 
     const double heading_deg = pose_heading_deg(pose);
     const double error_deg = signed_angle_diff_deg(target_heading_deg, heading_deg);
-    const double error_rate_deg_s = signed_angle_diff_deg(error_deg, last_error_deg) / dt_s;
+    const double raw_error_rate_deg_s =
+        signed_angle_diff_deg(error_deg, last_error_deg) / dt_s;
+    // Heading quantization makes a raw derivative noisy at the 20 ms loop
+    // rate. Filtering keeps the damping term useful instead of alternating
+    // between full acceleration and full braking.
+    filtered_error_rate_deg_s +=
+        0.30 * (raw_error_rate_deg_s - filtered_error_rate_deg_s);
+    const double error_rate_deg_s = filtered_error_rate_deg_s;
+    const bool crossed_target = error_deg * last_error_deg < 0.0;
     last_error_deg = error_deg;
 
+    if (crossed_target) {
+      // Do not slew for several cycles in the old direction after crossing.
+      // Brake immediately, then let the next loop make a fresh correction.
+      stop_drive_motors();
+      turn_command = 0.0;
+      filtered_error_rate_deg_s = 0.0;
+      settled_since = 0;
+      pros::delay(20);
+      continue;
+    }
+
     if (std::fabs(signed_angle_diff_deg(heading_deg,
-                                        last_motion_heading_deg)) >= 0.20) {
+                                        last_motion_heading_deg)) >= 0.50) {
       last_motion_heading_deg = heading_deg;
       last_motion_ms = now;
     } else if (std::fabs(error_deg) > kFusedTurnToleranceDeg &&
                now - last_motion_ms >= kFusedTurnStallTimeoutMs) {
       log_drive_health("fused_turn_stall");
-      if (stall_breakaway_kicks == 0) {
-        ++stall_breakaway_kicks;
-        const double kick_start_heading_deg = heading_deg;
-        const std::uint32_t kick_started_ms = pros::millis();
-        while (pros::millis() - kick_started_ms < 300) {
-          update_pose(pose, lidar_mode, false);
-          const double kick_error_deg = signed_angle_diff_deg(
-              target_heading_deg, pose_heading_deg(pose));
-          if (std::fabs(kick_error_deg) <= kFusedTurnToleranceDeg ||
-              std::fabs(signed_angle_diff_deg(
-                  pose_heading_deg(pose), kick_start_heading_deg)) >= 8.0) {
-            break;
-          }
-          set_physical_drive_power(
-              0, kick_error_deg >= 0.0 ? 127 : -127);
-          pros::delay(10);
-        }
-        stop_drive_motors();
-        const double kick_motion_deg = std::fabs(signed_angle_diff_deg(
-            pose_heading_deg(pose), kick_start_heading_deg));
-        std::printf(
-            "FUSE_TEST phase=%s event=turn_breakaway motion=%.2f\n",
-            phase, kick_motion_deg);
-        std::fflush(stdout);
-        if (kick_motion_deg >= 0.50) {
-          turn_command = 0.0;
-          last_error_deg = signed_angle_diff_deg(
-              target_heading_deg, pose_heading_deg(pose));
-          last_motion_heading_deg = pose_heading_deg(pose);
-          last_motion_ms = pros::millis();
-          continue;
-        }
-      }
       printf("FUSE_TEST phase=%s abort=turn_stall error=%.2f heading=%.2f\n",
              phase, error_deg, heading_deg);
       fflush(stdout);
@@ -2431,7 +2419,8 @@ bool fused_turn_to_heading(PoseEstimate& pose,
       return false;
     }
 
-    if (std::fabs(error_deg) <= kFusedTurnToleranceDeg && std::fabs(error_rate_deg_s) < 35.0) {
+    if (std::fabs(error_deg) <= kFusedTurnToleranceDeg &&
+        std::fabs(error_rate_deg_s) < kFusedTurnSettleRateDegPerSec) {
       stop_drive_motors();
       turn_command = 0.0;
       if (settled_since == 0) {
@@ -2445,11 +2434,22 @@ bool fused_turn_to_heading(PoseEstimate& pose,
       settled_since = 0;
     }
 
-    double target_turn = kFusedTurnKp * error_deg + kFusedTurnKd * error_rate_deg_s;
-    target_turn = clamp(target_turn, -static_cast<double>(max_turn_power), static_cast<double>(max_turn_power));
-    if (std::fabs(error_deg) > kFusedTurnMinPowerErrorDeg &&
+    const double active_max_power =
+        std::fabs(error_deg) <= kFusedTurnBrakeZoneDeg
+            ? std::min(static_cast<double>(max_turn_power),
+                       kFusedTurnBrakeZoneMaxPower)
+            : static_cast<double>(max_turn_power);
+    double target_turn =
+        kFusedTurnKp * error_deg + kFusedTurnKd * error_rate_deg_s;
+    target_turn = clamp(target_turn, -active_max_power, active_max_power);
+    // Only overcome static friction when rotation has actually slowed down.
+    // While approaching at speed, allowing a command below this floor gives
+    // the derivative term room to brake before the target.
+    if (std::fabs(error_deg) > kFusedTurnToleranceDeg &&
+        std::fabs(error_rate_deg_s) < kFusedTurnStaticRateDegPerSec &&
         std::fabs(target_turn) < kFusedTurnMinPower) {
-      target_turn = target_turn >= 0.0 ? kFusedTurnMinPower : -kFusedTurnMinPower;
+      target_turn = error_deg >= 0.0 ? kFusedTurnMinPower
+                                     : -kFusedTurnMinPower;
     }
     // Surface/load orientation changes the heavy chassis breakaway threshold.
     // Preserve the lower normal floor, but step above the measured 24/127
@@ -2457,8 +2457,8 @@ bool fused_turn_to_heading(PoseEstimate& pose,
     if (std::fabs(error_deg) > kFusedTurnToleranceDeg &&
         now - last_motion_ms >= kFusedTurnBreakawayDelayMs &&
         std::fabs(target_turn) < kFusedTurnBreakawayPower) {
-      target_turn = target_turn >= 0.0 ? kFusedTurnBreakawayPower
-                                      : -kFusedTurnBreakawayPower;
+      target_turn = error_deg >= 0.0 ? kFusedTurnBreakawayPower
+                                     : -kFusedTurnBreakawayPower;
     }
     turn_command = apply_slew(target_turn, turn_command, kFusedTurnSlewPowerPerSec * dt_s);
     set_physical_drive_power(0, clamp_power(turn_command));
@@ -2863,7 +2863,9 @@ bool public_straight_segment_is_safe(Waypoint start,
                                      double position_error_envelope_in,
                                      double& minimum_goal_clearance_in,
                                      double& required_goal_clearance_in,
-                                     const char*& reject_reason) {
+                                     const char*& reject_reason,
+                                     bool allow_goal_contact = false,
+                                     bool allow_wall_proximity = false) {
   if (!std::isfinite(position_error_envelope_in) ||
       position_error_envelope_in < 0.0) {
     reject_reason = "pose_uncertainty";
@@ -2874,8 +2876,9 @@ bool public_straight_segment_is_safe(Waypoint start,
       localization::kNavigationProvisionalWallClearanceIn -
       localization::kNavigationFieldElementToleranceIn -
       position_error_envelope_in;
-  if (std::fabs(target.x) > center_limit ||
-      std::fabs(target.y) > center_limit) {
+  if (!allow_wall_proximity &&
+      (std::fabs(target.x) > center_limit ||
+       std::fabs(target.y) > center_limit)) {
     reject_reason = "wall_clearance";
     return false;
   }
@@ -2907,7 +2910,8 @@ bool public_straight_segment_is_safe(Waypoint start,
       normal_goal_clearance_in,
       std::max(minimum_escape_clearance_in,
                start_goal_clearance_in - 0.5));
-  if (minimum_goal_clearance_in < required_goal_clearance_in) {
+  if (!allow_goal_contact &&
+      minimum_goal_clearance_in < required_goal_clearance_in) {
     reject_reason = "goal_clearance";
     return false;
   }
@@ -2918,7 +2922,9 @@ bool public_straight_segment_is_safe(Waypoint start,
 bool public_turn_center_is_safe(Waypoint center,
                                 double position_error_envelope_in,
                                 double& minimum_goal_clearance_in,
-                                const char*& reject_reason) {
+                                const char*& reject_reason,
+                                bool allow_goal_contact = false,
+                                bool allow_wall_proximity = false) {
   if (!std::isfinite(position_error_envelope_in) ||
       position_error_envelope_in < 0.0) {
     reject_reason = "turn_pose_uncertainty";
@@ -2929,8 +2935,9 @@ bool public_turn_center_is_safe(Waypoint center,
       localization::kNavigationProvisionalWallClearanceIn -
       localization::kNavigationFieldElementToleranceIn -
       position_error_envelope_in;
-  if (std::fabs(center.x) > center_limit ||
-      std::fabs(center.y) > center_limit) {
+  if (!allow_wall_proximity &&
+      (std::fabs(center.x) > center_limit ||
+       std::fabs(center.y) > center_limit)) {
     minimum_goal_clearance_in = std::numeric_limits<double>::infinity();
     reject_reason = "turn_wall_clearance";
     return false;
@@ -2942,7 +2949,7 @@ bool public_turn_center_is_safe(Waypoint center,
         minimum_goal_clearance_in,
         std::hypot(goal.x_in - center.x, goal.y_in - center.y));
   }
-  if (minimum_goal_clearance_in <
+  if (!allow_goal_contact && minimum_goal_clearance_in <
       localization::kNavigationProvisionalGoalClearanceIn +
           localization::kNavigationFieldElementToleranceIn +
           position_error_envelope_in) {
@@ -3202,7 +3209,9 @@ void clear_path() {
 
 Result turn_to(double heading_deg,
                int max_power,
-               std::uint32_t timeout_ms) {
+               std::uint32_t timeout_ms,
+               bool allow_goal_contact,
+               bool allow_wall_proximity) {
   if (!std::isfinite(heading_deg) || max_power <= 0 || timeout_ms < 100) {
     return Result::kInvalidArgument;
   }
@@ -3228,7 +3237,9 @@ Result turn_to(double heading_deg,
           Waypoint{telemetry_pose.x, telemetry_pose.y},
           telemetry_pose.position_error_envelope_in,
           minimum_goal_clearance_in,
-          turn_reject)) {
+          turn_reject,
+          allow_goal_contact,
+          allow_wall_proximity)) {
     stop_drive_motors();
     std::printf(
         "NAV_TURN reject=%s at=%.2f,%.2f heading_error=%.2f "
@@ -3247,7 +3258,7 @@ Result turn_to(double heading_deg,
       telemetry_pose,
       "navigation_turn",
       normalize_deg(heading_deg),
-      std::clamp(max_power, 20, 50),
+      std::clamp(max_power, 20, 100),
       timeout_ms);
   stop_drive_motors();
   telemetry_last_log_ms = 0;
@@ -3370,7 +3381,7 @@ Result go_straight_to(double target_x_in,
       "navigation_go_to_drive",
       Waypoint{target_x_in, target_y_in},
       bearing_deg,
-      std::clamp(max_power, 20, 60),
+      std::clamp(max_power, 20, 80),
       drive_timeout_ms);
   stop_drive_motors();
   telemetry_last_log_ms = 0;
@@ -3379,7 +3390,10 @@ Result go_straight_to(double target_x_in,
 
 Result drive_relative(double distance_in,
                       int max_power,
-                      std::uint32_t timeout_ms) {
+                      std::uint32_t timeout_ms,
+                      bool stop_for_forward_obstacle,
+                      bool allow_goal_contact,
+                      bool allow_wall_proximity) {
   if (!std::isfinite(distance_in) || max_power <= 0 || timeout_ms < 100) {
     return Result::kInvalidArgument;
   }
@@ -3423,7 +3437,7 @@ Result drive_relative(double distance_in,
   if (!public_straight_segment_is_safe(
           start, target, projected_path_error_envelope_in,
           minimum_goal_clearance_in, required_goal_clearance_in,
-          path_reject)) {
+          path_reject, allow_goal_contact, allow_wall_proximity)) {
     stop_drive_motors();
     std::printf(
         "NAV_RELATIVE reject=%s from=%.2f,%.2f target=%.2f,%.2f "
@@ -3443,10 +3457,12 @@ Result drive_relative(double distance_in,
                         : "navigation_relative_reverse",
       target,
       heading_deg,
-      std::clamp(max_power, 20, 60),
+      std::clamp(max_power, 20, 80),
       timeout_ms,
       localization::kNavigationCurvedPathCorridorIn,
-      distance_in > 0.0 ? 1 : -1);
+      distance_in > 0.0 ? 1 : -1,
+      LidarFusionMode::kBiasOnly,
+      stop_for_forward_obstacle);
   stop_drive_motors();
   telemetry_last_log_ms = 0;
   return arrived ? Result::kSuccess : Result::kDriveFailed;
@@ -3456,7 +3472,10 @@ Result go_to_pose(double target_x_in,
                   double target_y_in,
                   double target_heading_deg,
                   int max_power,
-                  std::uint32_t timeout_ms) {
+                  std::uint32_t timeout_ms,
+                  bool reverse,
+                  bool allow_goal_contact,
+                  bool allow_wall_proximity) {
   const double wall = localization::kPhysicalWallHalfSpanIn;
   if (!std::isfinite(target_x_in) || !std::isfinite(target_y_in) ||
       !std::isfinite(target_heading_deg) || target_x_in < -wall ||
@@ -3484,8 +3503,10 @@ Result go_to_pose(double target_x_in,
       ? normalize_deg(rad_to_deg(std::atan2(target.y - start.y,
                                            target.x - start.x)))
       : pose_heading_deg(telemetry_pose);
+  const double chassis_path_heading_deg = normalize_deg(
+      path_bearing_deg + (reverse ? 180.0 : 0.0));
   const double initial_bearing_error_deg = std::fabs(signed_angle_diff_deg(
-      path_bearing_deg, pose_heading_deg(telemetry_pose)));
+      chassis_path_heading_deg, pose_heading_deg(telemetry_pose)));
   const bool requires_preturn =
       requested_path_length_in > kFusedDriveToleranceIn &&
       initial_bearing_error_deg > kNavigationGoToPosePreturnThresholdDeg;
@@ -3504,7 +3525,7 @@ Result go_to_pose(double target_x_in,
       !public_straight_segment_is_safe(
           start, target, curved_corridor_envelope_in,
           minimum_goal_clearance_in, required_goal_clearance_in,
-          path_reject)) {
+          path_reject, allow_goal_contact, allow_wall_proximity)) {
     stop_drive_motors();
     std::printf(
         "NAV_POSE reject=%s from=%.2f,%.2f target=%.2f,%.2f "
@@ -3521,7 +3542,8 @@ Result go_to_pose(double target_x_in,
     const char* start_turn_reject = "none";
     if (!public_turn_center_is_safe(
             start, telemetry_pose.position_error_envelope_in,
-            start_turn_goal_clearance_in, start_turn_reject)) {
+            start_turn_goal_clearance_in, start_turn_reject,
+            allow_goal_contact, allow_wall_proximity)) {
       stop_drive_motors();
       std::printf(
           "NAV_POSE reject=%s preturn=1 from=%.2f,%.2f bearing_error=%.2f "
@@ -3538,7 +3560,8 @@ Result go_to_pose(double target_x_in,
   const char* target_turn_reject = "none";
   if (!public_turn_center_is_safe(
           target, projected_path_error_envelope_in,
-          target_goal_clearance_in, target_turn_reject)) {
+          target_goal_clearance_in, target_turn_reject,
+          allow_goal_contact, allow_wall_proximity)) {
     stop_drive_motors();
     std::printf(
         "NAV_POSE reject=%s target=%.2f,%.2f goal_clearance=%.2f "
@@ -3553,8 +3576,9 @@ Result go_to_pose(double target_x_in,
   chassis.drive_mode_set(ez::DISABLE, true);
   if (requires_preturn) {
     const bool preturned = fused_turn_to_heading(
-        telemetry_pose, "navigation_go_to_pose_preturn", path_bearing_deg,
-        std::clamp(max_power, 20, 45),
+        telemetry_pose, "navigation_go_to_pose_preturn",
+        chassis_path_heading_deg,
+        std::clamp(max_power, 20, 75),
         std::min<std::uint32_t>(timeout_ms, 6000));
     if (!preturned) {
       stop_drive_motors();
@@ -3573,9 +3597,10 @@ Result go_to_pose(double target_x_in,
     }
     const bool arrived = fused_drive_to_point(
         telemetry_pose, "navigation_go_to_pose_drive", target,
-        normalize_deg(target_heading_deg), std::clamp(max_power, 20, 70),
+        normalize_deg(target_heading_deg), std::clamp(max_power, 20, 90),
         timeout_ms - predrive_elapsed_ms,
-        localization::kNavigationCurvedPathCorridorIn);
+        localization::kNavigationCurvedPathCorridorIn,
+        reverse ? -1 : 1);
     if (!arrived) {
       stop_drive_motors();
       telemetry_last_log_ms = 0;
@@ -3591,7 +3616,7 @@ Result go_to_pose(double target_x_in,
   }
   const bool heading_settled = fused_turn_to_heading(
       telemetry_pose, "navigation_go_to_pose_heading",
-      normalize_deg(target_heading_deg), std::clamp(max_power, 20, 70),
+      normalize_deg(target_heading_deg), std::clamp(max_power, 20, 90),
       timeout_ms - elapsed_ms);
   stop_drive_motors();
   telemetry_last_log_ms = 0;
@@ -4584,6 +4609,655 @@ void localization_toggle_goal_example_auton() {
   stop_drive_motors();
 }
 
+bool localization_path1_opening_tuning_test() {
+  constexpr localization::FieldPose kExactStart{63.0, -8.0, 0.0};
+  constexpr double kStartErrorEnvelopeIn = 0.5;
+  constexpr double kRamTravelLimitIn = 7.0;
+  constexpr std::uint32_t kRamTimeoutMs = 2000;
+  constexpr std::int32_t kRamCurrentLimitMa = 2400;
+  constexpr double kReverseDistanceIn = 6.0;
+
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  if (!chassis.imu.is_installed() || chassis.imu.is_calibrating()) {
+    std::printf("PATH1_OPEN abort=imu_unavailable\n");
+    std::fflush(stdout);
+    return false;
+  }
+  if (!navigation::init(kExactStart.x_in, kExactStart.y_in,
+                        kExactStart.heading_deg,
+                        kStartErrorEnvelopeIn)) {
+    std::printf("PATH1_OPEN abort=navigation_init\n");
+    std::fflush(stdout);
+    return false;
+  }
+  navigation_stop_requested.store(false, std::memory_order_release);
+  for (auto& motor : chassis.left_motors) {
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+  }
+  for (auto& motor : chassis.right_motors) {
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+  }
+  navigation::update();
+  const navigation::Pose anchored = navigation::current_pose();
+  std::printf(
+      "PATH1_OPEN event=anchor x=%.3f y=%.3f heading=%.3f valid=%d\n",
+      anchored.x_in, anchored.y_in, anchored.heading_deg,
+      static_cast<int>(anchored.valid));
+  std::fflush(stdout);
+
+  const MotorSideReading ram_left_start =
+      read_motor_side(chassis.left_motors);
+  const MotorSideReading ram_right_start =
+      read_motor_side(chassis.right_motors);
+  if (!ram_left_start.trustworthy || !ram_right_start.trustworthy) {
+    stop_drive_motors();
+    return false;
+  }
+  std::int32_t maximum_current_ma = 0;
+  bool current_limit = false;
+  bool travel_limit = false;
+  std::uint32_t current_over_limit_since_ms = 0;
+  const std::uint32_t ram_started_ms = pros::millis();
+  while (pros::millis() - ram_started_ms < kRamTimeoutMs) {
+    navigation::update();
+    if (blocking_motion_abort_requested("path1_toggle_ram")) break;
+    const MotorSideReading left = read_motor_side(chassis.left_motors);
+    const MotorSideReading right = read_motor_side(chassis.right_motors);
+    if (!left.trustworthy || !right.trustworthy) break;
+    const double left_in =
+        ((left.position_deg - ram_left_start.position_deg) / 360.0) *
+        kWheelCircumferenceIn * kLeftEncoderSign;
+    const double right_in =
+        ((right.position_deg - ram_right_start.position_deg) / 360.0) *
+        kWheelCircumferenceIn * kRightEncoderSign;
+    const double travel_in = 0.5 * (left_in + right_in);
+    if (travel_in >= kRamTravelLimitIn) {
+      travel_limit = true;
+      break;
+    }
+    std::int32_t instantaneous_current_ma = 0;
+    for (auto& motor : chassis.left_motors) {
+      instantaneous_current_ma = std::max(instantaneous_current_ma,
+                                          motor.get_current_draw());
+    }
+    for (auto& motor : chassis.right_motors) {
+      instantaneous_current_ma = std::max(instantaneous_current_ma,
+                                          motor.get_current_draw());
+    }
+    maximum_current_ma = std::max(maximum_current_ma,
+                                  instantaneous_current_ma);
+    if (travel_in >= 4.5 && instantaneous_current_ma >= kRamCurrentLimitMa) {
+      if (current_over_limit_since_ms == 0) {
+        current_over_limit_since_ms = pros::millis();
+      } else if (pros::millis() - current_over_limit_since_ms >= 80) {
+        current_limit = true;
+        break;
+      }
+    } else {
+      current_over_limit_since_ms = 0;
+    }
+    const navigation::Pose pose = navigation::current_pose();
+    const double heading_error_deg = signed_angle_diff_deg(
+        kExactStart.heading_deg, pose.heading_deg);
+    const double remaining_in = kRamTravelLimitIn - travel_in;
+    const int ram_power = remaining_in > 3.0
+        ? 127
+        : clamp_power(std::clamp(28.0 + remaining_in * 28.0,
+                                 28.0, 100.0));
+    set_physical_drive_power(
+        ram_power, clamp_power(heading_error_deg * 1.2));
+    pros::delay(10);
+  }
+  stop_drive_motors();
+  pros::delay(250);
+  navigation::update();
+  const MotorSideReading ram_left_stop =
+      read_motor_side(chassis.left_motors);
+  const MotorSideReading ram_right_stop =
+      read_motor_side(chassis.right_motors);
+  if (!ram_left_stop.trustworthy || !ram_right_stop.trustworthy) return false;
+  const double ram_travel_in = 0.5 * (
+      ((ram_left_stop.position_deg - ram_left_start.position_deg) / 360.0) *
+          kWheelCircumferenceIn * kLeftEncoderSign +
+      ((ram_right_stop.position_deg - ram_right_start.position_deg) / 360.0) *
+          kWheelCircumferenceIn * kRightEncoderSign);
+  const navigation::Pose after_ram = navigation::current_pose();
+  std::printf(
+      "PATH1_OPEN event=ram travel=%.3f current=%ld current_limit=%d "
+      "travel_limit=%d x=%.3f y=%.3f heading=%.3f\n",
+      ram_travel_in, static_cast<long>(maximum_current_ma),
+      static_cast<int>(current_limit), static_cast<int>(travel_limit),
+      after_ram.x_in, after_ram.y_in, after_ram.heading_deg);
+  std::fflush(stdout);
+  if (ram_travel_in < 4.5 && !current_limit) return false;
+
+  const double heading_rad = deg_to_rad(after_ram.heading_deg);
+  const Waypoint reverse_target{
+      after_ram.x_in - kReverseDistanceIn * std::cos(heading_rad),
+      after_ram.y_in - kReverseDistanceIn * std::sin(heading_rad)};
+  navigation_stop_requested.store(false, std::memory_order_release);
+  const bool reverse_ok = fused_drive_to_point(
+      telemetry_pose, "path1_reverse_6", reverse_target,
+      after_ram.heading_deg, 70, 5000, 3.0, -1,
+      LidarFusionMode::kBiasOnly);
+  stop_drive_motors();
+  pros::delay(250);
+  navigation::update();
+  const navigation::Pose final_pose = navigation::current_pose();
+  const double reverse_error_in = std::hypot(
+      final_pose.x_in - reverse_target.x,
+      final_pose.y_in - reverse_target.y);
+  std::printf(
+      "PATH1_OPEN event=complete reverse_ok=%d target=%.3f,%.3f "
+      "x=%.3f y=%.3f heading=%.3f reverse_error=%.3f\n",
+      static_cast<int>(reverse_ok), reverse_target.x, reverse_target.y,
+      final_pose.x_in, final_pose.y_in, final_pose.heading_deg,
+      reverse_error_in);
+  std::fflush(stdout);
+  navigation::stop();
+  navigation::update();
+  stop_drive_motors();
+  return reverse_ok && reverse_error_in <= 1.25;
+}
+
+bool localization_path1_goal_turn_tuning_test() {
+  // The first backside pivot was fail-closed when the Toggle-side appendage
+  // physically blocked rotation. Reverse along the current chassis axis into
+  // open floor before completing the rear-first Goal orientation.
+  constexpr localization::FieldPose kMeasuredStart{
+      62.660, -7.160, 41.340};
+  constexpr double kClearanceReverseIn = 4.0;
+  constexpr double kTargetHeadingDeg = 90.0;
+  constexpr double kStartErrorEnvelopeIn = 0.75;
+
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  if (!chassis.imu.is_installed() || chassis.imu.is_calibrating()) {
+    std::printf("PATH1_TURN abort=imu_unavailable\n");
+    std::fflush(stdout);
+    return false;
+  }
+  if (!navigation::init(kMeasuredStart.x_in, kMeasuredStart.y_in,
+                        kMeasuredStart.heading_deg,
+                        kStartErrorEnvelopeIn)) {
+    std::printf("PATH1_TURN abort=navigation_init\n");
+    std::fflush(stdout);
+    return false;
+  }
+  navigation_stop_requested.store(false, std::memory_order_release);
+  navigation::update();
+  const navigation::Pose anchored = navigation::current_pose();
+  std::printf(
+      "PATH1_TURN event=anchor x=%.3f y=%.3f heading=%.3f valid=%d\n",
+      anchored.x_in, anchored.y_in, anchored.heading_deg,
+      static_cast<int>(anchored.valid));
+  std::fflush(stdout);
+
+  const double start_heading_rad = deg_to_rad(kMeasuredStart.heading_deg);
+  const Waypoint clearance_target{
+      kMeasuredStart.x_in - kClearanceReverseIn * std::cos(start_heading_rad),
+      kMeasuredStart.y_in - kClearanceReverseIn * std::sin(start_heading_rad)};
+  bool clearance_ok = fused_drive_to_point(
+      telemetry_pose, "path1_backside_clearance", clearance_target,
+      kMeasuredStart.heading_deg, 45, 4500, 2.5, -1,
+      LidarFusionMode::kBiasOnly);
+  stop_drive_motors();
+  pros::delay(250);
+  bool turn_ok = false;
+  if (clearance_ok) {
+    turn_ok = fused_turn_to_heading(
+        telemetry_pose, "path1_backside_turn_retry", kTargetHeadingDeg,
+        50, 6500, LidarFusionMode::kBiasOnly);
+  }
+  stop_drive_motors();
+  pros::delay(300);
+  navigation::update();
+  const navigation::Pose final_pose = navigation::current_pose();
+  const double heading_error_deg = std::fabs(signed_angle_diff_deg(
+      kTargetHeadingDeg, final_pose.heading_deg));
+  const double position_shift_in = std::hypot(
+      final_pose.x_in - kMeasuredStart.x_in,
+      final_pose.y_in - kMeasuredStart.y_in);
+  std::printf(
+      "PATH1_TURN event=complete clearance_ok=%d turn_ok=%d x=%.3f y=%.3f heading=%.3f "
+      "heading_error=%.3f position_shift=%.3f\n",
+      static_cast<int>(clearance_ok), static_cast<int>(turn_ok),
+      final_pose.x_in, final_pose.y_in,
+      final_pose.heading_deg, heading_error_deg, position_shift_in);
+  std::fflush(stdout);
+  navigation::stop();
+  navigation::update();
+  stop_drive_motors();
+  return clearance_ok && turn_ok && heading_error_deg <= 1.5;
+}
+
+bool localization_path1_goal_approach_tuning_test() {
+  // Measured endpoint of the camera-verified blue->red Toggle flip and
+  // six-inch backout. Goal 3 must receive the robot's rear mechanism, so turn
+  // the front away from the Goal and reverse into it.
+  constexpr localization::FieldPose kMeasuredStart{
+      59.647, -9.767, 89.951};
+  constexpr double kTargetHeadingDeg = 90.0;
+  constexpr double kTravelLimitIn = 7.0;
+  constexpr std::uint32_t kTimeoutMs = 2200;
+  constexpr std::int32_t kContactCurrentMa = 2400;
+
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  if (!chassis.imu.is_installed() || chassis.imu.is_calibrating()) {
+    std::printf("PATH1_APPROACH abort=imu_unavailable\n");
+    std::fflush(stdout);
+    return false;
+  }
+  if (!navigation::init(kMeasuredStart.x_in, kMeasuredStart.y_in,
+                        kMeasuredStart.heading_deg, 0.75)) {
+    std::printf("PATH1_APPROACH abort=navigation_init\n");
+    std::fflush(stdout);
+    return false;
+  }
+  navigation_stop_requested.store(false, std::memory_order_release);
+  navigation::update();
+  const bool turn_ok = fused_turn_to_heading(
+      telemetry_pose, "path1_backside_turn", kTargetHeadingDeg,
+      60, 6500, LidarFusionMode::kBiasOnly);
+  stop_drive_motors();
+  pros::delay(300);
+  navigation::update();
+  if (!turn_ok) {
+    std::printf("PATH1_APPROACH abort=backside_turn\n");
+    std::fflush(stdout);
+    navigation::stop();
+    return false;
+  }
+  const MotorSideReading left_start = read_motor_side(chassis.left_motors);
+  const MotorSideReading right_start = read_motor_side(chassis.right_motors);
+  if (!left_start.trustworthy || !right_start.trustworthy) {
+    stop_drive_motors();
+    return false;
+  }
+
+  bool current_limit = false;
+  bool travel_limit = false;
+  std::int32_t maximum_current_ma = 0;
+  const std::uint32_t started_ms = pros::millis();
+  while (pros::millis() - started_ms < kTimeoutMs) {
+    navigation::update();
+    if (blocking_motion_abort_requested("path1_goal_approach")) break;
+    const MotorSideReading left = read_motor_side(chassis.left_motors);
+    const MotorSideReading right = read_motor_side(chassis.right_motors);
+    if (!left.trustworthy || !right.trustworthy) break;
+    const double left_in =
+        ((left.position_deg - left_start.position_deg) / 360.0) *
+        kWheelCircumferenceIn * kLeftEncoderSign;
+    const double right_in =
+        ((right.position_deg - right_start.position_deg) / 360.0) *
+        kWheelCircumferenceIn * kRightEncoderSign;
+    const double travel_in = -0.5 * (left_in + right_in);
+    if (travel_in >= kTravelLimitIn) {
+      travel_limit = true;
+      break;
+    }
+    for (auto& motor : chassis.left_motors) {
+      maximum_current_ma = std::max(maximum_current_ma,
+                                    motor.get_current_draw());
+    }
+    for (auto& motor : chassis.right_motors) {
+      maximum_current_ma = std::max(maximum_current_ma,
+                                    motor.get_current_draw());
+    }
+    const std::uint32_t elapsed_ms = pros::millis() - started_ms;
+    if (maximum_current_ma >= kContactCurrentMa &&
+        (elapsed_ms >= 150 || travel_in >= 1.0)) {
+      current_limit = true;
+      break;
+    }
+    const navigation::Pose pose = navigation::current_pose();
+    const double heading_error_deg = signed_angle_diff_deg(
+        kTargetHeadingDeg, pose.heading_deg);
+    const double remaining_in = kTravelLimitIn - travel_in;
+    const int reverse_power = remaining_in > 2.0 ? -55 : -32;
+    set_physical_drive_power(reverse_power,
+                             clamp_power(heading_error_deg * 1.2));
+    pros::delay(10);
+  }
+  stop_drive_motors();
+  pros::delay(300);
+  navigation::update();
+  const MotorSideReading left_stop = read_motor_side(chassis.left_motors);
+  const MotorSideReading right_stop = read_motor_side(chassis.right_motors);
+  if (!left_stop.trustworthy || !right_stop.trustworthy) return false;
+  const double travel_in = -0.5 * (
+      ((left_stop.position_deg - left_start.position_deg) / 360.0) *
+          kWheelCircumferenceIn * kLeftEncoderSign +
+      ((right_stop.position_deg - right_start.position_deg) / 360.0) *
+          kWheelCircumferenceIn * kRightEncoderSign);
+  const navigation::Pose final_pose = navigation::current_pose();
+  const double heading_error_deg = std::fabs(signed_angle_diff_deg(
+      kTargetHeadingDeg, final_pose.heading_deg));
+  std::printf(
+      "PATH1_APPROACH event=complete backside=1 turn_ok=%d travel=%.3f current=%ld "
+      "current_limit=%d travel_limit=%d x=%.3f y=%.3f heading=%.3f "
+      "heading_error=%.3f\n",
+      static_cast<int>(turn_ok), travel_in,
+      static_cast<long>(maximum_current_ma),
+      static_cast<int>(current_limit), static_cast<int>(travel_limit),
+      final_pose.x_in, final_pose.y_in, final_pose.heading_deg,
+      heading_error_deg);
+  std::fflush(stdout);
+  navigation::stop();
+  navigation::update();
+  stop_drive_motors();
+  return (travel_limit || current_limit) && travel_in >= 1.0 &&
+         heading_error_deg <= 2.0;
+}
+
+bool localization_path1_goal_outtake_test() {
+  constexpr int kOuttakePower = 35;
+  constexpr std::uint32_t kOuttakeDurationMs = 1400;
+  constexpr std::int32_t kMechanismCurrentStopMa = 2300;
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  counter_rollers.move(0);
+  if (!counter_rollers.is_installed()) {
+    std::printf("PATH1_OUTTAKE abort=p3_unavailable\n");
+    std::fflush(stdout);
+    return false;
+  }
+  const double start_deg = counter_rollers.get_position();
+  std::int32_t peak_current_ma = 0;
+  bool current_stop = false;
+  const std::uint32_t started_ms = pros::millis();
+  while (pros::millis() - started_ms < kOuttakeDurationMs) {
+    if (blocking_motion_abort_requested("path1_goal_outtake")) break;
+    const std::int32_t current_ma = counter_rollers.get_current_draw();
+    peak_current_ma = std::max(peak_current_ma, current_ma);
+    if (current_ma >= kMechanismCurrentStopMa) {
+      current_stop = true;
+      break;
+    }
+    counter_rollers.move(kOuttakePower);  // L1/outtake direction.
+    pros::delay(10);
+  }
+  counter_rollers.move(0);
+  stop_drive_motors();
+  pros::delay(300);
+  const double end_deg = counter_rollers.get_position();
+  const bool moved = std::isfinite(start_deg) && std::isfinite(end_deg) &&
+                     std::fabs(end_deg - start_deg) >= 20.0;
+  std::printf(
+      "PATH1_OUTTAKE event=complete power=%d duration_ms=%lu "
+      "start_deg=%.2f end_deg=%.2f delta_deg=%.2f peak_current=%ld "
+      "current_stop=%d moved=%d\n",
+      kOuttakePower, static_cast<unsigned long>(pros::millis() - started_ms),
+      start_deg, end_deg, end_deg - start_deg,
+      static_cast<long>(peak_current_ma), static_cast<int>(current_stop),
+      static_cast<int>(moved));
+  std::fflush(stdout);
+  return moved && !current_stop;
+}
+
+bool localization_path1_return_to_exact_start_test() {
+  constexpr localization::FieldPose kRejectedApproachEndpoint{
+      58.959, -14.688, 254.784};
+  constexpr Waypoint kAfterOpening{59.303, -8.042};
+  constexpr Waypoint kExactStart{63.0, -8.0};
+
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  if (!chassis.imu.is_installed() || chassis.imu.is_calibrating()) {
+    std::printf("PATH1_RESET abort=imu_unavailable\n");
+    std::fflush(stdout);
+    return false;
+  }
+  if (!navigation::init(kRejectedApproachEndpoint.x_in,
+                        kRejectedApproachEndpoint.y_in,
+                        kRejectedApproachEndpoint.heading_deg, 1.0)) {
+    std::printf("PATH1_RESET abort=navigation_init\n");
+    std::fflush(stdout);
+    return false;
+  }
+
+  navigation_stop_requested.store(false, std::memory_order_release);
+  bool ok = fused_drive_to_point(
+      telemetry_pose, "path1_reset_reverse", kAfterOpening,
+      270.0, 55, 5500, 3.0, -1, LidarFusionMode::kBiasOnly);
+  stop_drive_motors();
+  if (ok) {
+    navigation_stop_requested.store(false, std::memory_order_release);
+    ok = fused_turn_to_heading(
+        telemetry_pose, "path1_reset_turn_zero", 0.0,
+        45, 6500, LidarFusionMode::kBiasOnly);
+    stop_drive_motors();
+  }
+  if (ok) {
+    navigation_stop_requested.store(false, std::memory_order_release);
+    ok = fused_drive_to_point(
+        telemetry_pose, "path1_reset_to_start", kExactStart,
+        0.0, 45, 4500, 2.5, 1, LidarFusionMode::kBiasOnly);
+    stop_drive_motors();
+  }
+  pros::delay(300);
+  navigation::update();
+  const navigation::Pose final_pose = navigation::current_pose();
+  const double position_error_in = std::hypot(
+      final_pose.x_in - kExactStart.x,
+      final_pose.y_in - kExactStart.y);
+  const double heading_error_deg = std::fabs(signed_angle_diff_deg(
+      0.0, final_pose.heading_deg));
+  std::printf(
+      "PATH1_RESET event=complete ok=%d x=%.3f y=%.3f heading=%.3f "
+      "position_error=%.3f heading_error=%.3f\n",
+      static_cast<int>(ok), final_pose.x_in, final_pose.y_in,
+      final_pose.heading_deg, position_error_in, heading_error_deg);
+  std::fflush(stdout);
+  navigation::stop();
+  navigation::update();
+  stop_drive_motors();
+  return ok && position_error_in <= 1.0 && heading_error_deg <= 1.5;
+}
+
+bool localization_path1_opening_return_to_start_test() {
+  constexpr localization::FieldPose kMeasuredStart{
+      67.082, -7.945, 359.475};
+  constexpr Waypoint kExactStart{63.0, -8.0};
+  constexpr double kToggleFacingHeadingDeg = 180.0;
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  if (!chassis.imu.is_installed() || chassis.imu.is_calibrating()) {
+    std::printf("PATH1_OPEN_RESET abort=imu_unavailable\n");
+    std::fflush(stdout);
+    return false;
+  }
+  if (!navigation::init(kMeasuredStart.x_in, kMeasuredStart.y_in,
+                        kMeasuredStart.heading_deg, 0.75)) {
+    std::printf("PATH1_OPEN_RESET abort=navigation_init\n");
+    std::fflush(stdout);
+    return false;
+  }
+  navigation_stop_requested.store(false, std::memory_order_release);
+  bool ok = fused_drive_to_point(
+      telemetry_pose, "path1_open_reset_reverse", kExactStart,
+      0.0, 50, 4500, 2.5, -1, LidarFusionMode::kBiasOnly);
+  stop_drive_motors();
+  if (ok) {
+    navigation_stop_requested.store(false, std::memory_order_release);
+    ok = fused_turn_to_heading(
+        telemetry_pose, "path1_face_toggle", kToggleFacingHeadingDeg,
+        50, 6500, LidarFusionMode::kBiasOnly);
+    stop_drive_motors();
+  }
+  pros::delay(300);
+  navigation::update();
+  const navigation::Pose final_pose = navigation::current_pose();
+  const double position_error_in = std::hypot(
+      final_pose.x_in - kExactStart.x, final_pose.y_in - kExactStart.y);
+  const double heading_error_deg = std::fabs(signed_angle_diff_deg(
+      kToggleFacingHeadingDeg, final_pose.heading_deg));
+  std::printf(
+      "PATH1_OPEN_RESET event=complete ok=%d x=%.3f y=%.3f heading=%.3f "
+      "position_error=%.3f heading_error=%.3f\n",
+      static_cast<int>(ok), final_pose.x_in, final_pose.y_in,
+      final_pose.heading_deg, position_error_in, heading_error_deg);
+  std::fflush(stdout);
+  navigation::stop();
+  navigation::update();
+  stop_drive_motors();
+  return ok && position_error_in <= 0.8 && heading_error_deg <= 1.5;
+}
+
+bool localization_path1_toggle_finish_probe_test() {
+  constexpr localization::FieldPose kLocalAnchor{63.0, -8.0, 0.0};
+  constexpr double kMaximumProbeTravelIn = 14.0;
+  constexpr std::int32_t kContactCurrentMa = 1500;
+  constexpr double kReverseDistanceIn = 6.0;
+  constexpr double kRangeStopIn = 1.0;
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  if (!navigation::init(kLocalAnchor.x_in, kLocalAnchor.y_in,
+                        kLocalAnchor.heading_deg, 0.75)) {
+    std::printf("PATH1_TOGGLE_PROBE abort=navigation_init\n");
+    std::fflush(stdout);
+    return false;
+  }
+  for (auto& motor : chassis.left_motors) {
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+  }
+  for (auto& motor : chassis.right_motors) {
+    motor.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+  }
+  const MotorSideReading left_start = read_motor_side(chassis.left_motors);
+  const MotorSideReading right_start = read_motor_side(chassis.right_motors);
+  if (!left_start.trustworthy || !right_start.trustworthy) return false;
+  navigation_stop_requested.store(false, std::memory_order_release);
+  bool contact = false;
+  bool travel_limit = false;
+  bool range_stop = false;
+  bool wrong_direction = false;
+  std::uint32_t over_current_since_ms = 0;
+  std::int32_t maximum_current_ma = 0;
+  const double initial_p1_in =
+      static_cast<double>(distance_1.get_distance()) / 25.4;
+  const std::uint32_t started_ms = pros::millis();
+  while (pros::millis() - started_ms < 6500) {
+    navigation::update();
+    if (blocking_motion_abort_requested("path1_toggle_finish_probe")) break;
+    const MotorSideReading left = read_motor_side(chassis.left_motors);
+    const MotorSideReading right = read_motor_side(chassis.right_motors);
+    if (!left.trustworthy || !right.trustworthy) break;
+    const double left_in =
+        ((left.position_deg - left_start.position_deg) / 360.0) *
+        kWheelCircumferenceIn * kLeftEncoderSign;
+    const double right_in =
+        ((right.position_deg - right_start.position_deg) / 360.0) *
+        kWheelCircumferenceIn * kRightEncoderSign;
+    const double travel_in = 0.5 * (left_in + right_in);
+    if (travel_in >= kMaximumProbeTravelIn) {
+      travel_limit = true;
+      break;
+    }
+    const double p1_in =
+        static_cast<double>(distance_1.get_distance()) / 25.4;
+    const bool p1_valid = distance_1.is_installed() &&
+        std::isfinite(p1_in) && p1_in >= 20.0 / 25.4 && p1_in <= 78.75;
+    if (travel_in >= 1.0 && p1_valid &&
+        p1_in > initial_p1_in + 1.0) {
+      wrong_direction = true;
+      break;
+    }
+    if (p1_valid && p1_in <= kRangeStopIn) {
+      range_stop = true;
+      break;
+    }
+    std::int32_t instantaneous_current_ma = 0;
+    for (auto& motor : chassis.left_motors) {
+      instantaneous_current_ma = std::max(
+          instantaneous_current_ma, motor.get_current_draw());
+    }
+    for (auto& motor : chassis.right_motors) {
+      instantaneous_current_ma = std::max(
+          instantaneous_current_ma, motor.get_current_draw());
+    }
+    maximum_current_ma = std::max(maximum_current_ma,
+                                  instantaneous_current_ma);
+    if (travel_in >= 0.5 && instantaneous_current_ma >= kContactCurrentMa) {
+      if (over_current_since_ms == 0) {
+        over_current_since_ms = pros::millis();
+      } else if (pros::millis() - over_current_since_ms >= 120) {
+        contact = true;
+        break;
+      }
+    } else {
+      over_current_since_ms = 0;
+    }
+    const navigation::Pose pose = navigation::current_pose();
+    const double heading_error_deg = signed_angle_diff_deg(
+        0.0, pose.heading_deg);
+    const int approach_power = p1_valid && p1_in <= 3.0 ? 30 : 55;
+    set_physical_drive_power(
+        approach_power, clamp_power(heading_error_deg * 1.5));
+    pros::delay(10);
+  }
+  stop_drive_motors();
+  pros::delay(200);
+  navigation::update();
+  const MotorSideReading left_contact = read_motor_side(chassis.left_motors);
+  const MotorSideReading right_contact = read_motor_side(chassis.right_motors);
+  if (!left_contact.trustworthy || !right_contact.trustworthy) return false;
+  const double probe_travel_in = 0.5 * (
+      ((left_contact.position_deg - left_start.position_deg) / 360.0) *
+          kWheelCircumferenceIn * kLeftEncoderSign +
+      ((right_contact.position_deg - right_start.position_deg) / 360.0) *
+          kWheelCircumferenceIn * kRightEncoderSign);
+  const navigation::Pose after_probe = navigation::current_pose();
+  const double heading_rad = deg_to_rad(after_probe.heading_deg);
+  const Waypoint reverse_target{
+      after_probe.x_in - kReverseDistanceIn * std::cos(heading_rad),
+      after_probe.y_in - kReverseDistanceIn * std::sin(heading_rad)};
+  navigation_stop_requested.store(false, std::memory_order_release);
+  const bool reverse_ok = fused_drive_to_point(
+      telemetry_pose, "path1_toggle_probe_reverse", reverse_target,
+      after_probe.heading_deg, 60, 5500, 3.0, -1,
+      LidarFusionMode::kBiasOnly);
+  stop_drive_motors();
+  pros::delay(250);
+  navigation::update();
+  const navigation::Pose final_pose = navigation::current_pose();
+  const double reverse_error_in = std::hypot(
+      final_pose.x_in - reverse_target.x,
+      final_pose.y_in - reverse_target.y);
+  std::printf(
+      "PATH1_TOGGLE_PROBE event=complete contact=%d travel_limit=%d "
+      "range_stop=%d wrong_direction=%d initial_p1=%.3f probe_travel=%.3f "
+      "max_current=%ld reverse_ok=%d reverse_error=%.3f "
+      "x=%.3f y=%.3f heading=%.3f\n",
+      static_cast<int>(contact), static_cast<int>(travel_limit),
+      static_cast<int>(range_stop), static_cast<int>(wrong_direction),
+      initial_p1_in, probe_travel_in,
+      static_cast<long>(maximum_current_ma),
+      static_cast<int>(reverse_ok), reverse_error_in,
+      final_pose.x_in, final_pose.y_in, final_pose.heading_deg);
+  std::fflush(stdout);
+  navigation::stop();
+  navigation::update();
+  stop_drive_motors();
+  return !wrong_direction && reverse_ok && reverse_error_in <= 1.0 &&
+         (contact || range_stop || travel_limit);
+}
+
 void localization_toggle_goal_continue_auton() {
   // Measured fused endpoint of the fail-closed first run. The robot has not
   // moved since that run; SafeTuned rebooted afterward, so its local encoder
@@ -4991,6 +5665,260 @@ bool localization_pure_pursuit_endpoint_test() {
   navigation::update();
   stop_drive_motors();
   return ok && arrived && final_error_in <= 2.0;
+}
+
+bool localization_simple_red_goal_hotkey_auton() {
+  // Surveyed global field frame: +X points toward the starting Toggle.
+  constexpr localization::FieldPose kStart{60.5, 0.25, 0.0};
+  // Requested global coordinate: shift X 1.5 inches more negative while
+  // retaining the prior Y correction.
+  constexpr Waypoint kGoal{kStart.x_in - 6.5, kStart.y_in - 8.0};
+  constexpr Waypoint kRetreat{49.0, 3.0};
+  // Live trace proved both IMU and GPS reached the old 90-degree request,
+  // while the mechanism was still physically a few degrees short of the
+  // scoring alignment. This is a calibrated scoring heading, not PID error.
+  constexpr double kDepositHeadingDeg = 96.0;
+  // Raw PROS IMU rotation is clockwise-positive, so physical -90 degrees is
+  // navigation +90 degrees in this file's CCW-positive field convention.
+  constexpr double kPhysicalRetreatHeadingDeg = -90.0;
+  constexpr double kNavigationRetreatHeadingDeg =
+      -kPhysicalRetreatHeadingDeg;
+
+  default_constants();
+  stop_drive_motors();
+  counter_rollers.move(0);
+  if (!navigation::init(kStart.x_in, kStart.y_in,
+                        kStart.heading_deg, 0.75)) {
+    return false;
+  }
+
+  // P1 intentionally sees the Toggle, so this one command explicitly allows
+  // contact. Encoder, IMU, GPS, vision, stall, and timeout checks remain live.
+  const navigation::Result ram = navigation::drive_relative(
+      6.0, 78, 1800, false, false, true);
+  // Contact with the Toggle normally ends through stall detection, which is
+  // the expected outcome for this one short ram command.
+  const bool ram_ok = ram == navigation::Result::kSuccess ||
+                      ram == navigation::Result::kDriveFailed;
+  const navigation::Result backout = ram_ok
+      ? navigation::drive_relative(-5.0, 68, 3500, true, false, true)
+      : navigation::Result::kDriveFailed;
+  navigation::update();
+  const navigation::Pose approach_start = navigation::current_pose();
+  const double kGoalApproachHeadingDeg = normalize_deg(
+      rad_to_deg(std::atan2(kGoal.y - approach_start.y_in,
+                           kGoal.x - approach_start.x_in)) + 180.0);
+  // Reverse to the Goal coordinate. The target heading is the rear-facing
+  // bearing calculated from the current fused pose, so this leg does not add
+  // a second hard-coded turn.
+  const navigation::Result approach = navigation::go_to_pose(
+      kGoal.x, kGoal.y, kGoalApproachHeadingDeg,
+      88, 5000, true, true, true);
+
+  navigation::update();
+  navigation::Pose chained_pose = navigation::current_pose();
+  const double goal_error_in = std::hypot(
+      chained_pose.x_in - kGoal.x, chained_pose.y_in - kGoal.y);
+  // A controller can report a settle timeout after reaching the coordinate.
+  // Continue the chain when the fused pose confirms the robot is at the Goal.
+  const bool near_goal = approach == navigation::Result::kSuccess ||
+                         goal_error_in <= 4.0;
+  const navigation::Result turn = navigation::turn_to(
+      kDepositHeadingDeg, 100, 4000, true, true);
+
+  navigation::update();
+  chained_pose = navigation::current_pose();
+  const double deposit_heading_error_deg = std::fabs(
+      signed_angle_diff_deg(kDepositHeadingDeg, chained_pose.heading_deg));
+
+  navigation::Result goal_nudge = navigation::Result::kDriveFailed;
+  navigation::Result straighten = navigation::Result::kTurnFailed;
+  navigation::Result retreat = navigation::Result::kDriveFailed;
+  navigation::Result face_start = navigation::Result::kTurnFailed;
+  navigation::Result reverse_first = navigation::Result::kDriveFailed;
+  navigation::Result reverse_second = navigation::Result::kDriveFailed;
+  bool dropped = false;
+  bool pin_intaked = false;
+  const bool turn_fully_settled = deposit_heading_error_deg <= 2.5;
+  if (turn_fully_settled) {
+    // Move the rear of the robot one inch closer before starting the rollers.
+    goal_nudge = navigation::drive_relative(
+        -1.0, 52, 1800, true, true, true);
+    const bool nudge_ok = goal_nudge == navigation::Result::kSuccess ||
+                          goal_nudge == navigation::Result::kDriveFailed;
+    if (nudge_ok) {
+      const double outtake_start_deg = counter_rollers.get_position();
+      counter_rollers.move(110);
+      pros::delay(800);
+      counter_rollers.move(0);
+      dropped = std::fabs(counter_rollers.get_position() -
+                          outtake_start_deg) >= 20.0;
+
+      // The scoring alignment is calibrated to 96 degrees. Return to the
+      // field-axis 90-degree heading before beginning the retreat.
+      straighten = navigation::turn_to(
+          kNavigationRetreatHeadingDeg, 90, 3000, true, true);
+      if (straighten == navigation::Result::kSuccess) {
+        retreat = navigation::go_to_pose(
+            kRetreat.x, kRetreat.y, kNavigationRetreatHeadingDeg,
+            75, 7000, false, true, true);
+      }
+
+      navigation::update();
+      const navigation::Pose retreat_pose = navigation::current_pose();
+      const bool at_retreat = retreat == navigation::Result::kSuccess ||
+          std::hypot(retreat_pose.x_in - kRetreat.x,
+                     retreat_pose.y_in - kRetreat.y) <= 2.0;
+      if (at_retreat) {
+        face_start = navigation::turn_to(0.0, 90, 4000, true, true);
+      }
+      if (face_start == navigation::Result::kSuccess) {
+        // Slow 12-inch reverse is split at halfway so the claw rollers begin
+        // intaking exactly after the first six inches.
+        reverse_first = navigation::drive_relative(
+            -6.0, 38, 4500, true, true, true);
+      }
+      if (reverse_first == navigation::Result::kSuccess) {
+        const double intake_start_deg = counter_rollers.get_position();
+        counter_rollers.move(-110);
+        reverse_second = navigation::drive_relative(
+            -6.0, 38, 4500, true, true, true);
+        counter_rollers.move(-110);
+        pros::delay(500);
+        counter_rollers.move(0);
+        pin_intaked = std::fabs(counter_rollers.get_position() -
+                               intake_start_deg) >= 20.0;
+      }
+    }
+  }
+
+  navigation::update();
+  const navigation::Pose final_pose = navigation::current_pose();
+  const bool success = ram_ok &&
+      backout == navigation::Result::kSuccess &&
+      near_goal && turn_fully_settled &&
+      (goal_nudge == navigation::Result::kSuccess ||
+       goal_nudge == navigation::Result::kDriveFailed) &&
+      dropped && straighten == navigation::Result::kSuccess &&
+      retreat == navigation::Result::kSuccess &&
+      face_start == navigation::Result::kSuccess &&
+      reverse_first == navigation::Result::kSuccess &&
+      reverse_second == navigation::Result::kSuccess && pin_intaked;
+  std::printf(
+      "SIMPLE_RED complete ok=%d ram=%s backout=%s approach=%s "
+      "near=%d turn=%s heading_error=%.2f nudge=%s dropped=%d "
+      "straighten=%s retreat=%s face_start=%s reverse=%s/%s intake=%d "
+      "x=%.2f y=%.2f heading=%.2f\n",
+      static_cast<int>(success), navigation::result_name(ram),
+      navigation::result_name(backout), navigation::result_name(approach),
+      static_cast<int>(near_goal), navigation::result_name(turn),
+      deposit_heading_error_deg,
+      navigation::result_name(goal_nudge),
+      static_cast<int>(dropped), navigation::result_name(straighten),
+      navigation::result_name(retreat), navigation::result_name(face_start),
+      navigation::result_name(reverse_first),
+      navigation::result_name(reverse_second),
+      static_cast<int>(pin_intaked), final_pose.x_in, final_pose.y_in,
+      final_pose.heading_deg);
+  std::fflush(stdout);
+  navigation::stop();
+  counter_rollers.move(0);
+  return success;
+}
+
+bool localization_simple_red_goal_finish_correction() {
+  // Measured endpoint of the current missed-Goal trial. Uploading resets the
+  // local IMU/encoders, so re-anchor that physical pose before correcting it.
+  constexpr localization::FieldPose kCurrent{-42.38, -5.16, 81.66};
+  constexpr double kTargetHeadingDeg = 90.0;
+  constexpr double kBackoffIn = 3.0;
+
+  default_constants();
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  stop_drive_motors();
+  counter_rollers.move(0);
+  if (!navigation::init(kCurrent.x_in, kCurrent.y_in,
+                        kCurrent.heading_deg, 0.75)) {
+    std::printf("SIMPLE_FINISH abort=navigation_init\n");
+    std::fflush(stdout);
+    return false;
+  }
+
+  navigation_stop_requested.store(false, std::memory_order_release);
+  bool turn_ok = false;
+  std::uint32_t turn_settled_since_ms = 0;
+  const std::uint32_t turn_started_ms = pros::millis();
+  while (pros::millis() - turn_started_ms < 2500) {
+    update_pose(telemetry_pose, LidarFusionMode::kBiasOnly);
+    const double error_deg = signed_angle_diff_deg(
+        kTargetHeadingDeg, pose_heading_deg(telemetry_pose));
+    if (std::fabs(error_deg) <= 1.0) {
+      if (turn_settled_since_ms == 0) turn_settled_since_ms = pros::millis();
+      if (pros::millis() - turn_settled_since_ms >= 120) {
+        turn_ok = true;
+        break;
+      }
+    } else {
+      turn_settled_since_ms = 0;
+    }
+    const int turn_power = std::fabs(error_deg) > 3.0 ? 70 : 50;
+    set_physical_drive_power(
+        0, error_deg >= 0.0 ? turn_power : -turn_power);
+    pros::delay(10);
+  }
+  stop_drive_motors();
+  update_pose(telemetry_pose, LidarFusionMode::kBiasOnly);
+  const MotorSideReading left_start = read_motor_side(chassis.left_motors);
+  const MotorSideReading right_start = read_motor_side(chassis.right_motors);
+  const double outtake_start_deg = counter_rollers.get_position();
+  counter_rollers.move(45);  // Slow L1/outtake starts before backing off.
+  pros::delay(350);
+  bool backoff_ok = left_start.trustworthy && right_start.trustworthy;
+  double reverse_travel_in = 0.0;
+  const std::uint32_t reverse_started_ms = pros::millis();
+  while (backoff_ok && pros::millis() - reverse_started_ms < 2600) {
+    update_pose(telemetry_pose, LidarFusionMode::kBiasOnly);
+    const MotorSideReading left = read_motor_side(chassis.left_motors);
+    const MotorSideReading right = read_motor_side(chassis.right_motors);
+    if (!left.trustworthy || !right.trustworthy) {
+      backoff_ok = false;
+      break;
+    }
+    reverse_travel_in = -0.5 * (
+        ((left.position_deg - left_start.position_deg) / 360.0) *
+            kWheelCircumferenceIn * kLeftEncoderSign +
+        ((right.position_deg - right_start.position_deg) / 360.0) *
+            kWheelCircumferenceIn * kRightEncoderSign);
+    if (reverse_travel_in >= kBackoffIn) break;
+    const double heading_error_deg = signed_angle_diff_deg(
+        kTargetHeadingDeg, pose_heading_deg(telemetry_pose));
+    set_physical_drive_power(-38, clamp_power(heading_error_deg * 1.5));
+    counter_rollers.move(45);
+    pros::delay(10);
+  }
+  stop_drive_motors();
+  backoff_ok = backoff_ok && reverse_travel_in >= 2.5;
+  counter_rollers.move(45);
+  pros::delay(700);
+  counter_rollers.move(0);
+  update_pose(telemetry_pose, LidarFusionMode::kBiasOnly);
+  const double outtake_delta_deg =
+      counter_rollers.get_position() - outtake_start_deg;
+  const bool outtake_ok = std::isfinite(outtake_delta_deg) &&
+                          std::fabs(outtake_delta_deg) >= 20.0;
+  std::printf(
+      "SIMPLE_FINISH event=complete turn_ok=%d backoff_ok=%d outtake_ok=%d "
+      "reverse=%.3f outtake_delta=%.2f x=%.3f y=%.3f heading=%.3f\n",
+      static_cast<int>(turn_ok), static_cast<int>(backoff_ok),
+      static_cast<int>(outtake_ok), reverse_travel_in, outtake_delta_deg,
+      telemetry_pose.x, telemetry_pose.y,
+      pose_heading_deg(telemetry_pose));
+  std::fflush(stdout);
+  navigation::stop();
+  stop_drive_motors();
+  counter_rollers.move(0);
+  return turn_ok && backoff_ok && outtake_ok;
 }
 
 bool localization_toggle_far_goal_hotkey_auton() {

@@ -1,4 +1,5 @@
 #include "main.h"
+#include "cascade_lift.hpp"
 #include "gps_frame.hpp"
 #include "localization_config.hpp"
 #include "pid_autotune.hpp"
@@ -77,11 +78,31 @@ constexpr bool RUN_STARTUP_ALL_MECHANISMS_TEST = false;
 constexpr bool RUN_STARTUP_CLAMP_PICTURE_TEST = false;
 // One supervised toggle-contact and far-Goal example route.
 constexpr bool RUN_STARTUP_TOGGLE_GOAL_EXAMPLE = false;
+// One supervised Path 1 opening trial: toggle contact and six-inch reverse.
+// Restore false and reinstall the safe image after every recorded run.
+constexpr bool RUN_STARTUP_PATH1_OPENING_TUNING = false;
+// Resume from the measured Path 1 opening endpoint and tune only the -90 deg
+// in-place turn. Restore false and reinstall the safe image after each run.
+constexpr bool RUN_STARTUP_PATH1_GOAL_TURN_TUNING = false;
+// Resume after the verified -90 deg turn and perform only the bounded Goal 3
+// contact approach. Restore false and reinstall the safe image after the run.
+constexpr bool RUN_STARTUP_PATH1_GOAL_APPROACH_TUNING = false;
+// Drive-disabled, low-power L1-direction pin outtake at the verified rear Goal.
+constexpr bool RUN_STARTUP_PATH1_GOAL_OUTTAKE = false;
+// Recover from the rejected front-side Goal contact and return to the exact
+// Path 1 start for a camera-verified single Toggle flip.
+constexpr bool RUN_STARTUP_PATH1_RETURN_TO_START = false;
+// Return from the measured Toggle verification endpoint to the exact start.
+constexpr bool RUN_STARTUP_PATH1_OPENING_RETURN_TO_START = false;
+// Low-power final Toggle contact from the measured near-Toggle endpoint.
+constexpr bool RUN_STARTUP_PATH1_TOGGLE_FINISH_PROBE = false;
 // Resume-only leg from the measured fail-closed endpoint of the toggle route.
 constexpr bool RUN_STARTUP_TOGGLE_GOAL_CONTINUE = false;
 // One supervised end-to-end Up+A route trial. Enable only for a recorded
 // tuning boot, then restore false before the competition image is installed.
 constexpr bool RUN_STARTUP_TOGGLE_FAR_GOAL_TEST = false;
+// Temporary supervised full-route trace. Must be false in the normal image.
+constexpr bool RUN_STARTUP_SIMPLE_RED_TRACE = false;
 constexpr bool RUN_STARTUP_FAR_GOAL_RECOVERY_TEST = false;
 // One supervised coordinate-to-coordinate pursuit trial. Restore false after
 // the recorded run and reinstall the hotkey-only image.
@@ -113,6 +134,13 @@ constexpr bool ENABLE_CONTROLLER_MOTION_DIAGNOSTICS = false;
 // only initialize() progress markers run. Restore false after diagnosis.
 constexpr bool RUN_BOOT_DIAGNOSTIC_NO_ACTUATION = false;
 constexpr bool RUN_STARTUP_WRIST_HOLD_TEST = false;
+// One supervised cascade verification from physical rest to calibrated stage 4.
+// Keep disabled in the normal competition image.
+constexpr bool RUN_STARTUP_CASCADE_STAGE4_TEST = false;
+// One supervised all-stage PID sequence from physical rest. It visits each
+// stage, dips 75 degrees, returns to that stage, and finally returns to zero.
+// Keep disabled in the normal competition image.
+constexpr bool RUN_STARTUP_CASCADE_SEQUENCE_TEST = false;
 constexpr int CONTROLLER_DRIVE_DEADBAND = 5;
 
 struct RuntimePoseEditor {
@@ -1054,17 +1082,17 @@ void start_toggle_far_goal_auton() {
   opcontrol_auton_running = true;
   pros::Task::create([] {
     pros::Controller controller(pros::E_CONTROLLER_MASTER);
-    pros::lcd::set_text(6, "Up+A: toggle -> (24,-48)");
-    controller.print(0, 0, "AUTON (24,-48)   ");
+    pros::lcd::set_text(6, "Up+A: full red auton");
+    controller.print(0, 0, "FULL RED AUTON   ");
     move_intake(0);
     chassis.drive_set(0, 0);
-    const bool success = localization_toggle_far_goal_hotkey_auton();
+    const bool success = localization_simple_red_goal_hotkey_auton();
     chassis.drive_set(0, 0);
     move_intake(0);
     opcontrol_auton_running = false;
     controller.rumble(success ? "." : "---");
     pros::lcd::set_text(
-        6, success ? "Far Goal auton PASS" : "Far Goal auton FAIL");
+        6, success ? "Simple auton PASS" : "Simple auton FAIL");
     controller.print(
         0, 0, success ? "AUTON PASS        " : "AUTON FAILED      ");
   }, "toggle far goal");
@@ -1510,6 +1538,7 @@ void initialize() {
               static_cast<unsigned long>(pros::millis()));
   std::fflush(stdout);
   horizontal_odom.reset_position();
+  cascade_lift::initialize_at_rest();
   localization_telemetry_reset();
   std::printf("BOOT_STAGE t=%lu stage=vision_init_begin\n",
               static_cast<unsigned long>(pros::millis()));
@@ -1528,6 +1557,46 @@ void initialize() {
          chassis.drive_imu_get());
   print_drive_motor_health("startup_stationary");
   fflush(stdout);
+
+  // Keep the autonomous hotkey independent of the competition callback state.
+  // This listener is the single owner of Up+A and remains alive whenever the
+  // user program is running, even if opcontrol() is restarted.
+  pros::Task::create([] {
+    pros::Controller controller(pros::E_CONTROLLER_MASTER);
+    bool armed = true;
+    bool last_up = false;
+    bool last_a = false;
+    std::uint32_t chord_started_ms = 0;
+    while (true) {
+      const bool up = controller.get_digital(
+          pros::E_CONTROLLER_DIGITAL_UP);
+      const bool a = controller.get_digital(
+          pros::E_CONTROLLER_DIGITAL_A);
+      if (up != last_up || a != last_a) {
+        std::printf("HOTKEY_INPUT up=%d a=%d connected=%d\n",
+                    static_cast<int>(up), static_cast<int>(a),
+                    static_cast<int>(controller.is_connected()));
+        std::fflush(stdout);
+        last_up = up;
+        last_a = a;
+      }
+      if (up && a) {
+        if (chord_started_ms == 0) chord_started_ms = pros::millis();
+        if (armed && pros::millis() - chord_started_ms >= 100) {
+          armed = false;
+          std::printf("SIMPLE_RED event=hotkey_up_a_listener\n");
+          std::fflush(stdout);
+          controller.rumble(".-");
+          start_toggle_far_goal_auton();
+        }
+      } else {
+        chord_started_ms = 0;
+        if (!up && !a) armed = true;
+      }
+      pros::delay(20);
+    }
+  }, "up a auton listener");
+  pros::lcd::set_text(6, "Ready: hold Up + A");
 }
 
 void disabled() {
@@ -1540,12 +1609,7 @@ void autonomous() {
   if constexpr (RUN_COMPETITION_DIAGNOSTIC_ROUTE) {
     fusion_test_auton();
   } else {
-    // A competition path has not been specified yet. Fail closed instead of
-    // running the 240-inch sensor-development route when the field enables
-    // autonomous. User autonomous code can call navigation::init() followed
-    // by navigation::go_straight_to().
-    navigation::stop();
-    navigation::update();
+    localization_simple_red_goal_hotkey_auton();
   }
 }
 
@@ -1559,8 +1623,154 @@ void opcontrol() {
     }
   }
   pros::Controller master(pros::E_CONTROLLER_MASTER);
+  master.print(0, 0, "READY: UP+A AUTON ");
+  pros::lcd::set_text(6, "Ready: press Up + A");
   if (drive_positions_are_zeroed()) {
     localization_telemetry_reset();
+  }
+  if (RUN_STARTUP_SIMPLE_RED_TRACE) {
+    pros::lcd::set_text(6, "Simple red trace in 5s");
+    std::printf("SIMPLE_RED_TRACE event=countdown duration_ms=5000\n");
+    std::fflush(stdout);
+    pros::delay(5000);
+    const bool trace_ok = localization_simple_red_goal_hotkey_auton();
+    std::printf("SIMPLE_RED_TRACE event=done ok=%d\n",
+                static_cast<int>(trace_ok));
+    std::fflush(stdout);
+    pros::lcd::set_text(6, trace_ok ? "Trace PASS" : "Trace FAIL");
+  }
+  if (RUN_STARTUP_CASCADE_SEQUENCE_TEST) {
+    constexpr double kDipDeg = 75.0;
+    constexpr double kToleranceDeg = 10.0;
+    constexpr std::uint32_t kSettleMs = 250;
+    constexpr std::uint32_t kLegTimeoutMs = 10000;
+    constexpr std::int32_t kCurrentAbortMa = 2450;
+    constexpr std::uint32_t kCurrentAbortConfirmMs = 200;
+
+    const auto run_target = [&](double target_deg, const char* label) {
+      const bool accepted = cascade_lift::set_target_position_deg(target_deg);
+      const std::uint32_t started_ms = pros::millis();
+      std::uint32_t settled_since_ms = 0;
+      std::uint32_t loaded_since_ms = 0;
+      bool reached = false;
+      bool current_abort = false;
+      std::printf("CASCADE_SEQUENCE begin label=%s target_deg=%.2f accepted=%d\n",
+                  label, target_deg, static_cast<int>(accepted));
+      std::fflush(stdout);
+      while (accepted && pros::millis() - started_ms < kLegTimeoutMs) {
+        cascade_lift::update();
+        cascade_lift::print_telemetry_if_due(100);
+        const auto lift = cascade_lift::snapshot();
+        const std::uint32_t now_ms = pros::millis();
+        const std::int32_t max_current_ma = std::max(
+            slider_right.get_current_draw(), slider_left.get_current_draw());
+        if (max_current_ma >= kCurrentAbortMa) {
+          if (loaded_since_ms == 0) loaded_since_ms = now_ms;
+          if (now_ms - loaded_since_ms >= kCurrentAbortConfirmMs) {
+            current_abort = true;
+            break;
+          }
+        } else {
+          loaded_since_ms = 0;
+        }
+        if (std::fabs(lift.error_deg) <= kToleranceDeg &&
+            std::fabs(lift.velocity_deg_s) <= 15.0) {
+          if (settled_since_ms == 0) settled_since_ms = now_ms;
+          if (now_ms - settled_since_ms >= kSettleMs) {
+            reached = true;
+            break;
+          }
+        } else {
+          settled_since_ms = 0;
+        }
+        if (lift.faulted) break;
+        pros::delay(20);
+      }
+      const auto final_lift = cascade_lift::snapshot();
+      std::printf(
+          "CASCADE_SEQUENCE end label=%s reached=%d current_abort=%d "
+          "fault=%d position_deg=%.2f error_deg=%.2f elapsed_ms=%lu\n",
+          label, static_cast<int>(reached), static_cast<int>(current_abort),
+          static_cast<int>(final_lift.faulted), final_lift.position_deg,
+          target_deg - final_lift.position_deg,
+          static_cast<unsigned long>(pros::millis() - started_ms));
+      std::fflush(stdout);
+      return reached && !current_abort && !final_lift.faulted;
+    };
+
+    bool sequence_ok = true;
+    for (int stage = 1; stage <= static_cast<int>(cascade_lift::kStageCount);
+         ++stage) {
+      const double stage_deg = cascade_lift::stage_position_deg(stage);
+      char stage_label[20];
+      char dip_label[20];
+      std::snprintf(stage_label, sizeof(stage_label), "stage_%d", stage);
+      std::snprintf(dip_label, sizeof(dip_label), "stage_%d_dip", stage);
+      sequence_ok = run_target(stage_deg, stage_label) && sequence_ok;
+      if (!sequence_ok) break;
+      pros::delay(500);
+      sequence_ok = run_target(std::max(0.0, stage_deg - kDipDeg), dip_label) &&
+                    sequence_ok;
+      if (!sequence_ok) break;
+      sequence_ok = run_target(stage_deg, stage_label) && sequence_ok;
+      if (!sequence_ok) break;
+      pros::delay(500);
+    }
+
+    if (!sequence_ok) cascade_lift::clear_fault();
+    const bool zero_ok = run_target(0.0, "zero");
+    cascade_lift::disable_pid();
+    slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+    slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+    slider_right.move(0);
+    slider_left.move(0);
+    std::printf("CASCADE_SEQUENCE complete sequence_ok=%d zero_ok=%d\n",
+                static_cast<int>(sequence_ok), static_cast<int>(zero_ok));
+    std::fflush(stdout);
+  }
+  if (RUN_STARTUP_CASCADE_STAGE4_TEST) {
+    constexpr std::uint32_t kCascadeTestTimeoutMs = 10000;
+    constexpr std::int32_t kCascadeTestCurrentAbortMa = 2400;
+    constexpr double kCascadeTestToleranceDeg = 8.0;
+    const bool target_ok = cascade_lift::set_target_stage(4);
+    const std::uint32_t started_ms = pros::millis();
+    bool reached = false;
+    bool current_abort = false;
+    while (target_ok &&
+           pros::millis() - started_ms < kCascadeTestTimeoutMs) {
+      cascade_lift::update();
+      cascade_lift::print_telemetry_if_due(100);
+      const auto lift = cascade_lift::snapshot();
+      const std::int32_t max_current_ma = std::max(
+          slider_right.get_current_draw(), slider_left.get_current_draw());
+      if (max_current_ma >= kCascadeTestCurrentAbortMa) {
+        current_abort = true;
+        break;
+      }
+      if (std::fabs(lift.target_deg - lift.position_deg) <=
+          kCascadeTestToleranceDeg) {
+        reached = true;
+        break;
+      }
+      if (lift.faulted) break;
+      pros::delay(20);
+    }
+    cascade_lift::disable_pid();
+    slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+    slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+    slider_right.move(0);
+    slider_left.move(0);
+    const auto final_lift = cascade_lift::snapshot();
+    std::printf(
+        "CASCADE_STAGE4_TEST complete target_ok=%d reached=%d "
+        "current_abort=%d fault=%d target_deg=%.2f position_deg=%.2f "
+        "error_deg=%.2f elapsed_ms=%lu\n",
+        static_cast<int>(target_ok), static_cast<int>(reached),
+        static_cast<int>(current_abort), static_cast<int>(final_lift.faulted),
+        final_lift.target_deg, final_lift.position_deg,
+        final_lift.target_deg - final_lift.position_deg,
+        static_cast<unsigned long>(pros::millis() - started_ms));
+    std::fflush(stdout);
   }
   if (RUN_STARTUP_WRIST_HOLD_TEST) {
     constexpr std::uint32_t kTestTimeoutMs = 3000;
@@ -1702,6 +1912,56 @@ void opcontrol() {
     pros::delay(5000);
     localization_toggle_goal_example_auton();
   }
+  if (RUN_STARTUP_PATH1_OPENING_TUNING) {
+    pros::lcd::set_text(6, "Path1 opening in 3s");
+    pros::delay(3000);
+    const bool path1_opening_ok = localization_path1_opening_tuning_test();
+    pros::lcd::set_text(6, path1_opening_ok ? "Path1 opening PASS"
+                                           : "Path1 opening STOP");
+  }
+  if (RUN_STARTUP_PATH1_GOAL_TURN_TUNING) {
+    pros::lcd::set_text(6, "Path1 turn in 3s");
+    pros::delay(3000);
+    const bool path1_turn_ok = localization_path1_goal_turn_tuning_test();
+    pros::lcd::set_text(6, path1_turn_ok ? "Path1 turn PASS"
+                                        : "Path1 turn STOP");
+  }
+  if (RUN_STARTUP_PATH1_GOAL_APPROACH_TUNING) {
+    pros::lcd::set_text(6, "Path1 approach in 3s");
+    pros::delay(3000);
+    const bool path1_approach_ok =
+        localization_path1_goal_approach_tuning_test();
+    pros::lcd::set_text(6, path1_approach_ok ? "Path1 approach PASS"
+                                            : "Path1 approach STOP");
+  }
+  if (RUN_STARTUP_PATH1_GOAL_OUTTAKE) {
+    pros::lcd::set_text(6, "Path1 outtake in 3s");
+    pros::delay(3000);
+    const bool outtake_ok = localization_path1_goal_outtake_test();
+    pros::lcd::set_text(6, outtake_ok ? "Path1 outtake PASS"
+                                     : "Path1 outtake STOP");
+  }
+  if (RUN_STARTUP_PATH1_RETURN_TO_START) {
+    pros::lcd::set_text(6, "Path1 reset in 3s");
+    pros::delay(3000);
+    const bool path1_reset_ok = localization_path1_return_to_exact_start_test();
+    pros::lcd::set_text(6, path1_reset_ok ? "Path1 reset PASS"
+                                         : "Path1 reset STOP");
+  }
+  if (RUN_STARTUP_PATH1_OPENING_RETURN_TO_START) {
+    pros::lcd::set_text(6, "Toggle reset in 3s");
+    pros::delay(3000);
+    const bool reset_ok = localization_path1_opening_return_to_start_test();
+    pros::lcd::set_text(6, reset_ok ? "Toggle reset PASS"
+                                   : "Toggle reset STOP");
+  }
+  if (RUN_STARTUP_PATH1_TOGGLE_FINISH_PROBE) {
+    pros::lcd::set_text(6, "Toggle probe in 3s");
+    pros::delay(3000);
+    const bool probe_ok = localization_path1_toggle_finish_probe_test();
+    pros::lcd::set_text(6, probe_ok ? "Toggle probe PASS"
+                                   : "Toggle probe STOP");
+  }
   if (RUN_STARTUP_TOGGLE_GOAL_CONTINUE) {
     pros::lcd::set_text(6, "Goal continuation in 5s");
     pros::delay(5000);
@@ -1797,7 +2057,6 @@ void opcontrol() {
   bool auton_combo_was_pressed = false;
   bool fusion_test_combo_was_pressed = false;
   bool pid_tune_combo_was_pressed = false;
-  bool relative_motion_combo_was_pressed = false;
   enum class WristActionState { idle, seeking, dwelling };
   WristActionState wrist_action_state = WristActionState::idle;
   std::uint32_t wrist_action_started_ms = 0;
@@ -1806,17 +2065,6 @@ void opcontrol() {
 
   while (true) {
     const bool pose_editor_active = update_runtime_pose_editor(master);
-    const bool relative_motion_combo_pressed =
-        !pose_editor_active &&
-        master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) &&
-        master.get_digital(pros::E_CONTROLLER_DIGITAL_A);
-    if (relative_motion_combo_pressed &&
-        !relative_motion_combo_was_pressed) {
-      master.rumble(".-");
-      start_toggle_far_goal_auton();
-    }
-    relative_motion_combo_was_pressed = relative_motion_combo_pressed;
-
     const bool auton_combo_pressed =
         ENABLE_CONTROLLER_MOTION_DIAGNOSTICS && !pose_editor_active &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_B) &&
@@ -1893,8 +2141,9 @@ void opcontrol() {
               : (master.get_digital(pros::E_CONTROLLER_DIGITAL_R2)
                      ? -kMechanismPower
                      : 0);
-      slider_right.move(!pose_editor_active ? slider_power : 0);
-      slider_left.move(!pose_editor_active ? slider_power : 0);
+      cascade_lift::set_manual_power(!pose_editor_active ? slider_power : 0);
+      cascade_lift::update();
+      cascade_lift::print_telemetry_if_due();
 
       const int claw_arm_power = pose_editor_active
           ? 0

@@ -114,7 +114,9 @@ void clear_path();
 // protect the sides or rear.
 Result turn_to(double heading_deg,
                int max_power = 35,
-               std::uint32_t timeout_ms = 6000);
+               std::uint32_t timeout_ms = 6000,
+               bool allow_goal_contact = false,
+               bool allow_wall_proximity = false);
 
 // Turns onto the start-to-target bearing, then follows that fixed straight
 // path. It stops at the finish plane rather than orbiting a noisy endpoint.
@@ -138,9 +140,16 @@ Result go_straight_to(double target_x_in,
 // estimator, map/corridor bounds, deadline, and stall checks as go_straight_to.
 // P1 protects positive travel only because the sensor faces forward; reverse
 // travel has static field-map protection but no rear dynamic-obstacle sensor.
+// stop_for_forward_obstacle=false is reserved for deliberate contact with a
+// known object. allow_goal_contact=true relaxes only mapped-Goal exclusion.
+// allow_wall_proximity=true relaxes the provisional robot-footprint buffer,
+// but never permits a target beyond the physical field boundary.
 Result drive_relative(double distance_in,
                       int max_power = 40,
-                      std::uint32_t timeout_ms = 12000);
+                      std::uint32_t timeout_ms = 12000,
+                      bool stop_for_forward_obstacle = true,
+                      bool allow_goal_contact = false,
+                      bool allow_wall_proximity = false);
 
 // Follows one continuous curved path to a field-coordinate pose, then uses the
 // tuned fused turn controller for any residual final-heading error. Forward
@@ -150,12 +159,18 @@ Result drive_relative(double distance_in,
 // centerline in addition to the projected localization-error envelope, and
 // the live controller brakes with kDriveFailed if fused cross-track leaves
 // that corridor.
+// reverse=true drives the curve backward. allow_goal_contact=true relaxes
+// only mapped-Goal exclusion for an intentional scoring approach.
+// allow_wall_proximity=true relaxes only the provisional wall buffer.
 // timeout_ms is one deadline shared by the curved drive and heading settle.
 Result go_to_pose(double target_x_in,
                   double target_y_in,
                   double target_heading_deg,
                   int max_power = 60,
-                  std::uint32_t timeout_ms = 12000);
+                  std::uint32_t timeout_ms = 12000,
+                  bool reverse = false,
+                  bool allow_goal_contact = false,
+                  bool allow_wall_proximity = false);
 
 // Thread-safe cancellation: latches a request that the active blocking public
 // turn/drive observes within its next control iteration, and brakes now.
