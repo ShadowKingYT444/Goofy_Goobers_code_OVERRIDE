@@ -47,7 +47,8 @@ void path2_brake_drive() {
 // Toggle backout can return exactly as far as the ram moved.
 Path2FastDriveResult path2_fast_drive(double distance_in, int full_power,
                                       unsigned timeout_ms,
-                                      bool contact_is_finish = false) {
+                                      bool contact_is_finish = false,
+                                      bool progressive_goal_decel = false) {
   Path2FastDriveResult result;
   if (!std::isfinite(distance_in) || std::fabs(distance_in) < 0.05 ||
       full_power <= 0) {
@@ -89,9 +90,19 @@ Path2FastDriveResult path2_fast_drive(double distance_in, int full_power,
       result.reached = contact_is_finish;
       break;
     }
-    const int power = remaining_in <= kBrakeZoneIn
-                          ? std::min(full_power, 50)
-                          : full_power;
+    int power = remaining_in <= kBrakeZoneIn
+                    ? std::min(full_power, 50)
+                    : full_power;
+    if (progressive_goal_decel) {
+      constexpr double kGoalDecelZoneIn = 7.0;
+      constexpr int kGoalContactPower = 32;
+      if (remaining_in <= kGoalDecelZoneIn) {
+        const double fraction = std::clamp(
+            remaining_in / kGoalDecelZoneIn, 0.0, 1.0);
+        power = static_cast<int>(std::lround(
+            kGoalContactPower + (full_power - kGoalContactPower) * fraction));
+      }
+    }
     chassis.drive_set(direction * power, direction * power);
     pros::delay(10);
   }
@@ -285,18 +296,12 @@ bool path2_nav_ok(navigation::Result result, const char* step) {
   std::fflush(stdout);
   navigation::stop();
   upper_intake.move(0);
-  counter_rollers.move(0);
   return false;
-}
-
-void path2_set_rollers(int upper_power, int counter_power) {
-  upper_intake.move(std::clamp(upper_power, -127, 127));
-  counter_rollers.move(std::clamp(counter_power, -127, 127));
 }
 
 void path2_stop_all() {
   navigation::stop();
-  path2_set_rollers(0, 0);
+  upper_intake.move(0);
 }
 
 // Program initialization cannot safely assume the lift is physically at rest:
@@ -409,6 +414,8 @@ bool path2_config_ready() {
   need_power("fast_drive_power", kFastDrivePower);
   need_power("stack_approach_power", kStackApproachPower);
   need_power("slow_stack_power", kSlowStackPower);
+  need_power("second_stack_approach_power", kSecondStackApproachPower);
+  need_power("second_stack_slow_power", kSecondStackSlowPower);
   need_power("turn_power", kTurnPower);
   if (kIntakeUpperPower == 0 && kIntakeCounterPower == 0) {
     std::printf("PATH2_CONFIG missing=intake_motor_powers\n");
@@ -462,7 +469,8 @@ bool path2_config_ready() {
   const int configured_powers[] = {
       kTogglePower, kGoalDockPower, kGoalAlignmentBumpPower,
       kToggleReturnPower,
-      kFastDrivePower, kStackApproachPower, kSlowStackPower, kTurnPower,
+      kFastDrivePower, kStackApproachPower, kSlowStackPower,
+      kSecondStackApproachPower, kSecondStackSlowPower, kTurnPower,
       kStage1GoalDrivePower, kStage1ScoreRetreatPower,
       kStage1ExtraCapturePower,
       kStage2ExtraCapturePower, kStage2GoalDrivePower,
@@ -484,11 +492,20 @@ class Path2LiftService {
  public:
   Path2LiftService()
       : task_([this] {
+          std::uint32_t full_down_started_ms = 0;
           while (active_.load(std::memory_order_acquire)) {
             if (full_down_requested_.load(std::memory_order_acquire)) {
+              if (!full_down_active_.load(std::memory_order_acquire)) {
+                full_down_started_ms = pros::millis();
+                full_down_active_.store(true, std::memory_order_release);
+              }
+              if (pros::millis() - full_down_started_ms >=
+                  full_down_duration_ms_.load(std::memory_order_acquire)) {
+                full_down_requested_.store(false, std::memory_order_release);
+                continue;
+              }
               rest_lock_.store(false, std::memory_order_release);
               cascade_lift::set_manual_power(-127);
-              full_down_active_.store(true, std::memory_order_release);
               cascade_lift::update();
               position_deg_.store(cascade_lift::snapshot().position_deg,
                                   std::memory_order_release);
@@ -509,6 +526,7 @@ class Path2LiftService {
               slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
               slider_right.brake();
               slider_left.brake();
+              full_down_completed_.store(true, std::memory_order_release);
             }
             const double position_request = requested_position_deg_.exchange(
                 std::numeric_limits<double>::quiet_NaN(),
@@ -586,22 +604,21 @@ class Path2LiftService {
     requested_position_deg_.store(position_deg, std::memory_order_release);
   }
 
-  void drive_down_full_for(unsigned duration_ms) {
+  void start_full_down_for(unsigned duration_ms) {
+    full_down_completed_.store(false, std::memory_order_release);
+    full_down_duration_ms_.store(duration_ms, std::memory_order_release);
     full_down_requested_.store(true, std::memory_order_release);
+  }
+
+  bool wait_full_down_complete(unsigned timeout_ms) {
     const std::uint32_t start_wait_ms = pros::millis();
-    while (!full_down_active_.load(std::memory_order_acquire) &&
-           pros::millis() - start_wait_ms < 100) {
-      pros::delay(2);
+    while (pros::millis() - start_wait_ms < timeout_ms) {
+      if (full_down_completed_.load(std::memory_order_acquire)) {
+        return true;
+      }
+      pros::delay(5);
     }
-    // Measure the pulse from the point where the lift task actually applied
-    // full downward power, not from when the request was queued.
-    pros::delay(duration_ms);
-    full_down_requested_.store(false, std::memory_order_release);
-    const std::uint32_t stop_wait_ms = pros::millis();
-    while (full_down_active_.load(std::memory_order_acquire) &&
-           pros::millis() - stop_wait_ms < 100) {
-      pros::delay(2);
-    }
+    return false;
   }
 
   bool wait_ready(int stage, double tolerance_deg, unsigned timeout_ms) {
@@ -656,6 +673,8 @@ class Path2LiftService {
   std::atomic<bool> rest_lock_{true};
   std::atomic<bool> full_down_requested_{false};
   std::atomic<bool> full_down_active_{false};
+  std::atomic<bool> full_down_completed_{false};
+  std::atomic<unsigned> full_down_duration_ms_{0};
   std::atomic<double> requested_position_deg_{
       std::numeric_limits<double>::quiet_NaN()};
   std::atomic<double> target_position_deg_{0.0};
@@ -664,63 +683,6 @@ class Path2LiftService {
   std::atomic<bool> accepted_{false};
   std::atomic<bool> faulted_{false};
   std::atomic<double> error_deg_{0.0};
-  pros::Task task_;
-};
-
-// Autonomous owns the wrist motor for the complete route.  Opcontrol's wrist
-// loop is intentionally suspended while a hotkey autonomous is running, so a
-// dedicated service is required to keep the claw at its normal 330-degree
-// orientation during every drive, turn, lift, and scoring action.
-class Path2WristService {
- public:
-  Path2WristService()
-      : task_([this] {
-          constexpr double kTargetDeg = 330.0;
-          constexpr double kKp = 3.0;
-          constexpr double kKd = 0.08;
-          constexpr double kMaxPower = 45.0;
-          constexpr double kBrakeBandDeg = 1.5;
-          double previous_error_deg = 0.0;
-          double filtered_derivative = 0.0;
-          std::uint32_t previous_ms = pros::millis();
-          claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-          while (active_.load(std::memory_order_acquire)) {
-            const std::uint32_t now_ms = pros::millis();
-            const double dt_s = std::clamp(
-                static_cast<double>(now_ms - previous_ms) / 1000.0,
-                0.001, 0.100);
-            const double angle_deg =
-                static_cast<double>(horizontal_odom.get_angle()) / 100.0;
-            double error_deg = kTargetDeg - angle_deg;
-            while (error_deg > 180.0) error_deg -= 360.0;
-            while (error_deg < -180.0) error_deg += 360.0;
-            const double raw_derivative =
-                (error_deg - previous_error_deg) / dt_s;
-            filtered_derivative +=
-                0.20 * (raw_derivative - filtered_derivative);
-            if (std::fabs(error_deg) <= kBrakeBandDeg) {
-              claw_arm.brake();
-            } else {
-              const double output = std::clamp(
-                  kKp * error_deg + kKd * filtered_derivative,
-                  -kMaxPower, kMaxPower);
-              claw_arm.move(static_cast<int>(std::lround(output)));
-            }
-            previous_error_deg = error_deg;
-            previous_ms = now_ms;
-            pros::delay(20);
-          }
-          claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-          claw_arm.brake();
-        }, "path2 wrist") {}
-
-  ~Path2WristService() {
-    active_.store(false, std::memory_order_release);
-    task_.join();
-  }
-
- private:
-  std::atomic<bool> active_{true};
   pros::Task task_;
 };
 
@@ -819,7 +781,6 @@ bool path2_approach_stack(Path2Point target, bool reverse,
   navigation::update();
   pose = navigation::current_pose();
   if (!pose.valid) return false;
-  path2_set_rollers(kIntakeUpperPower, kIntakeCounterPower);
   const double final_distance = std::hypot(
       robot_center_target.x - pose.x_in,
       robot_center_target.y - pose.y_in);
@@ -829,30 +790,47 @@ bool path2_approach_stack(Path2Point target, bool reverse,
       target.x, target.y, robot_center_target.x, robot_center_target.y,
       pickup_reach, final_distance);
   std::fflush(stdout);
+  // Close the longer pneumatic claw 8.5 inches before its calibrated contact
+  // point, then finish the approach while it is already closing around the
+  // stack. This avoids driving past the stack before the piston can capture it.
+  constexpr double kPneumaticGrabLeadIn = 8.5;
+  const double before_grab =
+      std::max(0.0, final_distance - kPneumaticGrabLeadIn);
+  if (before_grab > 0.05) {
+    const auto approach_result = navigation::drive_relative(
+        reverse ? -before_grab : before_grab,
+        kSlowStackPower, 5000, false, true, true);
+    if (approach_result != navigation::Result::kSuccess &&
+        approach_result != navigation::Result::kDriveFailed) {
+      return path2_nav_ok(approach_result, "slow stack approach");
+    }
+  }
+  set_claw_piston(false);
+  pros::delay(100);
+  const double final_capture =
+      std::min(kPneumaticGrabLeadIn, final_distance);
   const auto capture_result = navigation::drive_relative(
-      reverse ? -final_distance : final_distance,
-      kSlowStackPower, 5000, false, true, true);
+      reverse ? -final_capture : final_capture,
+      kSlowStackPower, 1800, false, true, true);
   if (capture_result == navigation::Result::kSuccess ||
       capture_result == navigation::Result::kDriveFailed) {
+    pros::delay(50);
     return true;
   }
-  return path2_nav_ok(capture_result, "slow stack capture");
+  return path2_nav_ok(capture_result, "final pneumatic stack capture");
 }
 
 void path2_score(unsigned dwell_ms) {
-  path2_set_rollers(path2_config::kPreloadPinUpperPower,
-                    path2_config::kPreloadPinCounterPower);
+  // Extended releases the preload/stack; retracted is the holding state.
+  set_claw_piston(true);
   pros::delay(dwell_ms);
-  path2_set_rollers(0, 0);
 }
 
 bool path2_exit_preload_goal(double distance_in, const char* step) {
-  path2_set_rollers(path2_config::kPreloadPinUpperPower,
-                    path2_config::kPreloadPinCounterPower);
+  set_claw_piston(true);
   const bool ok = path2_nav_ok(navigation::drive_relative(
       std::fabs(distance_in), path2_config::kFastDrivePower, 5000,
       true, true, true), step);
-  path2_set_rollers(0, 0);
   return ok;
 }
 
@@ -868,11 +846,10 @@ bool path2_score_cup_and_exit(Path2LiftService& lift, int stage,
     std::fflush(stdout);
     return false;
   }
-  path2_set_rollers(kOuttakeUpperPower, kOuttakeCounterPower);
+  set_claw_piston(true);
   lift.request(0);
   const bool exited = path2_nav_ok(navigation::drive_relative(
       exit_distance_in, kFastDrivePower, 6000, true, true, true), step);
-  path2_set_rollers(0, 0);
   return exited;
 }
 
@@ -898,7 +875,10 @@ bool localization_two_cup_red_auton() {
     std::fflush(stdout);
     return false;
   }
-  Path2WristService wrist;
+  // The arm changed to an 11 W motor. Its old position gains oscillate with
+  // the new mechanism, so autonomous uses passive braking until retuning.
+  claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+  claw_arm.move(0);
   if (!navigation::init(kStart.x, kStart.y,
                         kStartHeadingDeg, kStartPositionErrorIn)) {
     return false;
@@ -915,11 +895,13 @@ bool localization_two_cup_red_auton() {
   const auto toggle = path2_fast_drive(
       kToggleSignedDistanceIn, kTogglePower, 1100, true);
   if (toggle.disabled || toggle.traveled_in < 0.5) return false;
-  const double toggle_return_in = toggle.traveled_in;
+  // The robot now starts one inch farther from the Toggle. Ram the extra inch,
+  // but return only the original six-inch offset so every later field waypoint
+  // begins from the already-qualified route anchor instead of remaining shifted.
   const auto toggle_return = path2_fast_drive(
-      -toggle_return_in, kToggleReturnPower, 1600);
+      -kToggleReturnDistanceIn, kToggleReturnPower, 1600);
   if (toggle_return.disabled) return false;
-  if (!path2_fast_turn(-70.0, true)) {
+  if (!path2_fast_turn(-75.0, true)) {
     return false;
   }
   const auto preload_reverse = path2_fast_drive(
@@ -951,8 +933,8 @@ bool localization_two_cup_red_auton() {
   if (!path2_approach_stack(kStackA, true,
                             "stack A boomerang approach")) return false;
 
-  // Phase 2 ends at the stack coordinate. Intake began halfway through the
-  // approach; there is intentionally no additional five-inch movement.
+  // Phase 2 ends at the stack coordinate. The ADI-E claw begins closing for
+  // the final 8.5 inches based on the latest loaded test.
   if constexpr (kTestStopAfterPhase == 2) {
     path2_stop_all();
     std::printf("PATH2 test_stop=phase_2_after_first_cup_capture\n");
@@ -997,7 +979,7 @@ bool localization_two_cup_red_auton() {
   }
   if (!path2_fast_turn(180.0)) return false;
   const auto goal_drive = path2_fast_drive(
-      -kStage1GoalDriveIn, kStage1GoalDrivePower, 2600, true);
+      -kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true);
   if (goal_drive.disabled || goal_drive.traveled_in < 1.0) return false;
   // Confirm Stage 2 at the first Goal. It has been rising asynchronously
   // throughout the turn and drive, so this normally returns immediately.
@@ -1011,7 +993,7 @@ bool localization_two_cup_red_auton() {
   const double stage1_lowered_target =
       std::max(0.0, lift_at_goal.position_deg - kStage1ScoreLoweringDeg);
   lift.request_position(stage1_lowered_target);
-  // The stack must physically descend onto the Goal before the rollers or
+  // The stack must physically descend onto the Goal before the claw or
   // chassis move. Preserve the requested 0.2-second minimum dwell, then gate
   // outtake on the measured port-16 position rather than elapsed time alone.
   pros::delay(kStage1PostLowerWaitMs);
@@ -1024,15 +1006,19 @@ bool localization_two_cup_red_auton() {
     std::fflush(stdout);
     return false;
   }
-  path2_set_rollers(kOuttakeUpperPower, kOuttakeCounterPower);
+  set_claw_piston(true);
   pros::delay(kStage1OuttakeLeadMs);
   // Clear the scoring height immediately: bypass the slow position controller
   // and run both cascade motors downward at full power for 0.2 seconds.
-  lift.drive_down_full_for(200);
+  lift.start_full_down_for(500);
   const auto score_retreat = path2_fast_drive(
       kStage1ScoreRetreatIn, kStage1ScoreRetreatPower, 2400);
-  path2_set_rollers(0, 0);
   if (score_retreat.disabled) return false;
+  if (!lift.wait_full_down_complete(800)) {
+    std::printf("PATH2 abort=first_full_down_pulse_timeout\n");
+    std::fflush(stdout);
+    return false;
+  }
   std::printf("PATH2_PHASE completed=first_stack_deposit next=second_stack\n");
   std::fflush(stdout);
   // Chain directly into the next phase while the lift returns home in its
@@ -1043,25 +1029,36 @@ bool localization_two_cup_red_auton() {
     std::fflush(stdout);
     return true;
   }
-  // D. From the verified first-Goal backoff, turn 45 degrees in the measured
-  // positive direction so the rear claw points toward the second stack at
-  // (48,-48), not its mirrored (0,-48) location. Drive only far enough for the
-  // rear tool to touch it, beginning intake halfway through.
-  if (!path2_chain_turn(45.0, true, 5.0)) return false;
+  // D. Face stack B with the rear claw. In the production heading frame the
+  // correct tested direction is absolute 225 degrees (the user's 135-degree
+  // frame). Computing it from the noisy post-retreat pose over-rotated toward
+  // the mirrored Goal at path (48,-24), while a relative +45 inherited error.
+  constexpr double kSecondStackPickupHeadingDeg = 225.0;
+  if (!path2_chain_turn(kSecondStackPickupHeadingDeg, false, 2.5)) return false;
   constexpr double kSecondStackCenterTravelIn =
       kStackBTravelIn - kRearPickupReachIn;
   const double second_stack_fast_in =
       kSecondStackCenterTravelIn * kStackFastFraction;
   auto second_stack_drive = path2_fast_drive(
-      -second_stack_fast_in, kStackApproachPower, 1800);
+      -second_stack_fast_in, kSecondStackApproachPower, 2200);
   if (second_stack_drive.disabled) return false;
-  path2_set_rollers(kIntakeUpperPower, kIntakeCounterPower);
+  constexpr double kPneumaticGrabLeadIn = 7.0;
+  const double second_slow_in =
+      kSecondStackCenterTravelIn - second_stack_fast_in;
   second_stack_drive = path2_fast_drive(
-      -(kSecondStackCenterTravelIn - second_stack_fast_in),
-      kSlowStackPower, 2200);
+      -std::max(0.0, second_slow_in - kPneumaticGrabLeadIn),
+      kSecondStackSlowPower, 2600);
   if (second_stack_drive.disabled) return false;
+  // Begin closing 7 inches before contact, then carry the closing claw
+  // through the remaining approach so it cannot pass the stack before closing.
+  set_claw_piston(false);
+  pros::delay(100);
+  second_stack_drive = path2_fast_drive(
+      -kPneumaticGrabLeadIn, kSecondStackSlowPower, 1200);
+  if (second_stack_drive.disabled) return false;
+  pros::delay(50);
 
-  // Pull the stack four more inches fully into the claw before raising it.
+  // Pull the stack 4.5 more inches fully into the claw before raising it.
   auto second_extra = path2_fast_drive(
       -kStage2ExtraCaptureIn, kStage2ExtraCapturePower, 1600);
   if (second_extra.disabled) return false;
@@ -1080,16 +1077,14 @@ bool localization_two_cup_red_auton() {
                 cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
-  // Stage 3 continues rising asynchronously during the turn and following
-  // Goal approach; this never waits for the full stage position. From the
-  // known second-stack pickup heading, a slightly deeper -145-degree turn
-  // faces the Goal reliably. The five-degree completion window prevents this
-  // final alignment from stalling the rest of the scoring sequence.
-  // E. Complete the deeper rear-facing alignment, reverse 12 inches into the
-  // Goal, lower 60 degrees from the loaded height, then outtake and retreat.
-  if (!path2_fast_turn(-145.0, true, 5.0)) return false;
+  // Ignore accumulated relative-heading error here. The prior -90-degree
+  // absolute target faced directly away from the Goal, so the correct field
+  // alignment after the (48,-48) pickup is its 180-degree opposite: +90.
+  // E. Complete that rear-facing alignment, reverse 12 inches into the Goal,
+  // lower from the loaded height, then outtake and retreat.
+  if (!path2_fast_turn(90.0, false, 1.5)) return false;
   const auto second_goal_drive = path2_fast_drive(
-      -kStage2GoalDriveIn, kStage2GoalDrivePower, 2200, true);
+      -kStage2GoalDriveIn, kStage2GoalDrivePower, 2600, true, true);
   if (second_goal_drive.disabled || second_goal_drive.traveled_in < 1.0) {
     return false;
   }
@@ -1114,13 +1109,17 @@ bool localization_two_cup_red_auton() {
     std::fflush(stdout);
     return false;
   }
-  path2_set_rollers(kOuttakeUpperPower, kOuttakeCounterPower);
+  set_claw_piston(true);
   pros::delay(kStage1OuttakeLeadMs);
-  lift.drive_down_full_for(200);
+  lift.start_full_down_for(500);
   const auto second_retreat = path2_fast_drive(
       kStage2ScoreRetreatIn, kStage2ScoreRetreatPower, 2400);
-  path2_set_rollers(0, 0);
   if (second_retreat.disabled) return false;
+  if (!lift.wait_full_down_complete(800)) {
+    std::printf("PATH2 abort=second_full_down_pulse_timeout\n");
+    std::fflush(stdout);
+    return false;
+  }
   // End the tested route 24 inches clear of the Goal, facing the requested
   // absolute 180-degree heading and holding position.
   if (!path2_fast_turn(180.0)) return false;

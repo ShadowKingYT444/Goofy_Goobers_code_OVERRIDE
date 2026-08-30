@@ -25,7 +25,7 @@ constexpr Point kFinal{48.0, 60.0};  // Path coordinate (60,-48).
 // positive means the robot front hits it, negative means the rear hits it.
 constexpr double kStartHeadingDeg = 0.0;
 constexpr double kStartPositionErrorIn = 1.0;
-constexpr double kToggleSignedDistanceIn = 6.0;
+constexpr double kToggleSignedDistanceIn = 7.0;
 constexpr double kToggleReturnDistanceIn = 6.0;
 constexpr int kTogglePower = 90;
 constexpr int kToggleReturnPower = 80;
@@ -47,8 +47,11 @@ constexpr double kGoalContactExitIn = 12.0;
 
 constexpr double kStackFastFraction = 0.50;
 constexpr int kFastDrivePower = 112;
-constexpr int kStackApproachPower = 80;
-constexpr int kSlowStackPower = 45;
+constexpr int kStackApproachPower = 75;
+constexpr int kSlowStackPower = 35;
+// Dedicated gentler powers for the exposed stack at path (48,-48).
+constexpr int kSecondStackApproachPower = 60;
+constexpr int kSecondStackSlowPower = 38;
 constexpr int kTurnPower = 112;
 
 // Rear-first pickup geometry. The robot fits the 18-inch starting envelope,
@@ -75,15 +78,15 @@ constexpr double kLiftReadyToleranceDeg = 5.0;
 constexpr unsigned kLiftReadyTimeoutMs = 5000;
 constexpr int kSafeFinalLiftStage = 0;
 constexpr double kScoreLoweringDeg = 15.0;
-constexpr double kStage1ScoreLoweringDeg = 60.0;
-constexpr double kStage1ExtraCaptureIn = 4.0;
+constexpr double kStage1ScoreLoweringDeg = 85.0;
+constexpr double kStage1ExtraCaptureIn = 1.5;
 constexpr int kStage1ExtraCapturePower = 70;
 constexpr double kStage1GoalDriveIn = 24.0;
 constexpr int kStage1GoalDrivePower = 80;
 constexpr unsigned kStage1LowerTimeoutMs = 900;
 constexpr unsigned kStage1PostLowerWaitMs = 200;
 constexpr unsigned kStage1OuttakeLeadMs = 100;
-constexpr double kStage1ScoreRetreatIn = 11.0;
+constexpr double kStage1ScoreRetreatIn = 10.0;
 constexpr int kStage1ScoreRetreatPower = 95;
 constexpr unsigned kStage1HomeWaitMs = 1800;
 constexpr int kFirstCupLiftStage = 2;
@@ -92,11 +95,11 @@ constexpr double kLoadedTurnClearanceDeg = 250.0;
 constexpr unsigned kLoadedTurnClearanceTimeoutMs = 650;
 constexpr unsigned kScoreStageReadyTimeoutMs = 1000;
 
-constexpr double kStage2ExtraCaptureIn = 4.0;
+constexpr double kStage2ExtraCaptureIn = 4.5;
 constexpr int kStage2ExtraCapturePower = 70;
-constexpr double kStage2GoalDriveIn = 12.0;
+constexpr double kStage2GoalDriveIn = 16.0;
 constexpr int kStage2GoalDrivePower = 80;
-constexpr double kStage2ScoreLoweringDeg = 60.0;
+constexpr double kStage2ScoreLoweringDeg = 85.0;
 constexpr double kStage2ScoreRetreatIn = 24.0;
 constexpr int kStage2ScoreRetreatPower = 95;
 

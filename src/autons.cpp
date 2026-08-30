@@ -5680,12 +5680,142 @@ bool localization_pure_pursuit_endpoint_test() {
 }
 
 bool localization_simple_red_goal_hotkey_auton() {
+  // Repositioned one-pin route. A twelve-inch backward vector at +60 degrees
+  // terminates at the requested Goal coordinate (48,-24), so its matching
+  // start anchor is (54,-13.6077) at heading zero after returning from Toggle.
+  constexpr localization::FieldPose kStart{54.0, -13.6076952, 0.0};
+  constexpr Waypoint kGoal{48.0, -24.0};
+  constexpr Waypoint kFinalStack{24.0, 0.0};
+  constexpr double kGoalTurnDeg = 60.0;
+  constexpr double kGoalContactIn = 12.0;
+  constexpr double kGoalExitIn = 13.5;
+  constexpr double kStackReverseIn = 24.0;
+  constexpr double kStackClampLeadIn = 1.0;
+
+  default_constants();
+  stop_drive_motors();
+  set_claw_piston(false);
+  if (!navigation::init(kStart.x_in, kStart.y_in,
+                        kStart.heading_deg, 0.75)) {
+    return false;
+  }
+
+  // Preserve the required Toggle contact, then return to the exact starting
+  // position before turning toward the nearby Goal. The repositioned start is
+  // inside the mapped near-Goal buffer, so both short legs explicitly allow
+  // Goal proximity; otherwise navigation rejects them before motor output.
+  const navigation::Result toggle_ram = navigation::drive_relative(
+      6.0, 78, 1800, false, true, true);
+  const bool toggle_contacted =
+      toggle_ram == navigation::Result::kSuccess ||
+      toggle_ram == navigation::Result::kDriveFailed;
+  if (!toggle_contacted) {
+    navigation::stop();
+    return false;
+  }
+  const navigation::Result toggle_return = navigation::drive_relative(
+      -6.0, 68, 2600, true, true, true);
+  const bool toggle_returned =
+      toggle_return == navigation::Result::kSuccess ||
+      toggle_return == navigation::Result::kDriveFailed;
+  if (!toggle_returned) {
+    navigation::stop();
+    return false;
+  }
+
+  // Turn directly toward the Goal only after completing the Toggle sequence.
+  const navigation::Result goal_turn = navigation::turn_to(
+      kGoalTurnDeg, 100, 1800, true, true);
+  const bool goal_turn_attempted =
+      goal_turn == navigation::Result::kSuccess ||
+      goal_turn == navigation::Result::kTurnFailed;
+  if (!goal_turn_attempted) {
+    navigation::stop();
+    return false;
+  }
+
+  // Deliberate Goal contact. A stall at twelve inches is a valid finish.
+  const navigation::Result goal_contact = navigation::drive_relative(
+      -kGoalContactIn, 80, 2200, true, true, true);
+  const bool contacted = goal_contact == navigation::Result::kSuccess ||
+                         goal_contact == navigation::Result::kDriveFailed;
+  if (!contacted) {
+    navigation::stop();
+    return false;
+  }
+  set_claw_piston(true);
+  pros::delay(250);
+
+  // Drive forward 13.5 inches away from the Goal to create turning space.
+  const navigation::Result goal_retreat = navigation::drive_relative(
+      kGoalExitIn, 72, 3000, true, true, true);
+  const bool retreated = goal_retreat == navigation::Result::kSuccess ||
+                         goal_retreat == navigation::Result::kDriveFailed;
+  if (!retreated) {
+    navigation::stop();
+    return false;
+  }
+  // One lower-power turn toward zero. Do not retry or wait on a precision
+  // settle: those gates were stopping the remainder of the autonomous.
+  const navigation::Result zero_turn = navigation::turn_to(
+      0.0, 70, 1400, true, true);
+  const bool zero_turn_attempted =
+      zero_turn == navigation::Result::kSuccess ||
+      zero_turn == navigation::Result::kTurnFailed;
+  if (!zero_turn_attempted) {
+    navigation::stop();
+    return false;
+  }
+
+  // Reverse 23 inches with the claw open, clamp one inch before the requested
+  // 24-inch endpoint, then finish the last inch while closed around the stack.
+  const navigation::Result stack_approach = navigation::drive_relative(
+      -(kStackReverseIn - kStackClampLeadIn),
+      55, 6000, true, true, true);
+  const bool stack_approach_usable =
+      stack_approach == navigation::Result::kSuccess ||
+      stack_approach == navigation::Result::kDriveFailed;
+  if (!stack_approach_usable) {
+    navigation::stop();
+    return false;
+  }
+  set_claw_piston(false);
+  pros::delay(100);
+  const navigation::Result final_capture = navigation::drive_relative(
+      -kStackClampLeadIn, 38, 1600, true, true, true);
+  const bool stack_reached =
+      final_capture == navigation::Result::kSuccess ||
+      final_capture == navigation::Result::kDriveFailed;
+  pros::delay(50);
+
+  std::printf(
+      "ONE_PIN_NEW toggle=%s/%s goal=%.2f,%.2f turn=%s contact=%s "
+      "retreat=%s zero=%s stack=%.2f,%.2f approach=%s capture=%s ok=%d\n",
+      navigation::result_name(toggle_ram),
+      navigation::result_name(toggle_return), kGoal.x, kGoal.y,
+      navigation::result_name(goal_turn),
+      navigation::result_name(goal_contact),
+      navigation::result_name(goal_retreat), navigation::result_name(zero_turn),
+      kFinalStack.x, kFinalStack.y,
+      navigation::result_name(stack_approach),
+      navigation::result_name(final_capture),
+      static_cast<int>(stack_reached));
+  std::fflush(stdout);
+  navigation::stop();
+  return stack_reached;
+}
+
+bool localization_simple_red_goal_hotkey_auton_legacy() {
   // Surveyed global field frame: +X points toward the starting Toggle.
   constexpr localization::FieldPose kStart{60.5, 0.25, 0.0};
   // Requested global coordinate: shift X 1.5 inches more negative while
   // retaining the prior Y correction.
   constexpr Waypoint kGoal{kStart.x_in - 6.5, kStart.y_in - 8.0};
   constexpr Waypoint kRetreat{49.0, 3.0};
+  constexpr Waypoint kFinalStack{24.0, 0.0};
+  constexpr double kRearPickupReachIn = 10.0;
+  constexpr Waypoint kFinalStackRobotCenter{
+      kFinalStack.x + kRearPickupReachIn, kFinalStack.y};
   // Live trace proved both IMU and GPS reached the old 90-degree request,
   // while the mechanism was still physically a few degrees short of the
   // scoring alignment. This is a calibrated scoring heading, not PID error.
@@ -5698,7 +5828,7 @@ bool localization_simple_red_goal_hotkey_auton() {
 
   default_constants();
   stop_drive_motors();
-  counter_rollers.move(0);
+  set_claw_piston(false);
   if (!navigation::init(kStart.x_in, kStart.y_in,
                         kStart.heading_deg, 0.75)) {
     return false;
@@ -5725,7 +5855,7 @@ bool localization_simple_red_goal_hotkey_auton() {
   // a second hard-coded turn.
   const navigation::Result approach = navigation::go_to_pose(
       kGoal.x, kGoal.y, kGoalApproachHeadingDeg,
-      88, 5000, true, true, true);
+      88, 2800, true, true, true);
 
   navigation::update();
   navigation::Pose chained_pose = navigation::current_pose();
@@ -5736,7 +5866,7 @@ bool localization_simple_red_goal_hotkey_auton() {
   const bool near_goal = approach == navigation::Result::kSuccess ||
                          goal_error_in <= 4.0;
   const navigation::Result turn = navigation::turn_to(
-      kDepositHeadingDeg, 100, 4000, true, true);
+      kDepositHeadingDeg, 100, 1400, true, true);
 
   navigation::update();
   chained_pose = navigation::current_pose();
@@ -5746,60 +5876,123 @@ bool localization_simple_red_goal_hotkey_auton() {
   navigation::Result goal_nudge = navigation::Result::kDriveFailed;
   navigation::Result straighten = navigation::Result::kTurnFailed;
   navigation::Result retreat = navigation::Result::kDriveFailed;
+  navigation::Result retreat_extra = navigation::Result::kDriveFailed;
   navigation::Result face_start = navigation::Result::kTurnFailed;
-  navigation::Result reverse_first = navigation::Result::kDriveFailed;
-  navigation::Result reverse_second = navigation::Result::kDriveFailed;
+  navigation::Result stack_approach = navigation::Result::kDriveFailed;
   bool dropped = false;
   bool pin_intaked = false;
-  const bool turn_fully_settled = deposit_heading_error_deg <= 2.5;
-  if (turn_fully_settled) {
+  bool straighten_usable = false;
+  bool retreat_reached = false;
+  bool face_start_usable = false;
+  const bool route_enabled =
+      !pros::competition::is_connected() ||
+      !pros::competition::is_disabled();
+  // A normal kDriveFailed/kTurnFailed here means the blocking controller
+  // exhausted its settle window after executing the motion. Treat those as a
+  // completed chain step; only invalid/unsafe/unavailable preflight results or
+  // competition disable may suppress the following mechanism sequence.
+  const bool approach_completed =
+      approach == navigation::Result::kSuccess ||
+      approach == navigation::Result::kDriveFailed ||
+      approach == navigation::Result::kTurnFailed;
+  const bool turn_usable =
+      turn == navigation::Result::kSuccess ||
+      turn == navigation::Result::kTurnFailed;
+  std::printf(
+      "SIMPLE_RED chain_after_boomerang enabled=%d pose=%d approach=%s "
+      "turn=%s near=%d heading_error=%.2f continue=%d\n",
+      static_cast<int>(route_enabled), static_cast<int>(chained_pose.valid),
+      navigation::result_name(approach), navigation::result_name(turn),
+      static_cast<int>(near_goal), deposit_heading_error_deg,
+      static_cast<int>(route_enabled && approach_completed && turn_usable));
+  std::fflush(stdout);
+  if (route_enabled && approach_completed && turn_usable) {
     // Move the rear of the robot one inch closer before starting the rollers.
     goal_nudge = navigation::drive_relative(
-        -1.0, 52, 1800, true, true, true);
-    const bool nudge_ok = goal_nudge == navigation::Result::kSuccess ||
-                          goal_nudge == navigation::Result::kDriveFailed;
+        -1.0, 52, 1000, true, true, true);
+    // The nudge may report pose-unavailable after the completed boomerang.
+    // It is an optional one-inch seating motion and must never suppress the
+    // pneumatic preload release at the already-reached Goal.
+    const bool nudge_ok = route_enabled;
     if (nudge_ok) {
-      const double outtake_start_deg = counter_rollers.get_position();
-      counter_rollers.move(110);
-      pros::delay(800);
-      counter_rollers.move(0);
-      dropped = std::fabs(counter_rollers.get_position() -
-                          outtake_start_deg) >= 20.0;
+      // ADI-E extended is release/open. The preload is dropped only after the
+      // chassis completes its final one-inch Goal nudge.
+      set_claw_piston(true);
+      pros::delay(250);
+      dropped = true;
 
       // The scoring alignment is calibrated to 96 degrees. Return to the
       // field-axis 90-degree heading before beginning the retreat.
       straighten = navigation::turn_to(
-          kNavigationRetreatHeadingDeg, 90, 3000, true, true);
-      if (straighten == navigation::Result::kSuccess) {
+          kNavigationRetreatHeadingDeg, 90, 900, true, true);
+      navigation::update();
+      const navigation::Pose straightened_pose = navigation::current_pose();
+      straighten_usable = straightened_pose.valid &&
+          (straighten == navigation::Result::kSuccess ||
+           straighten == navigation::Result::kTurnFailed);
+      if (straighten_usable) {
         retreat = navigation::go_to_pose(
             kRetreat.x, kRetreat.y, kNavigationRetreatHeadingDeg,
-            75, 7000, false, true, true);
+            75, 4500, false, true, true);
       }
 
       navigation::update();
       const navigation::Pose retreat_pose = navigation::current_pose();
-      const bool at_retreat = retreat == navigation::Result::kSuccess ||
-          std::hypot(retreat_pose.x_in - kRetreat.x,
-                     retreat_pose.y_in - kRetreat.y) <= 2.0;
-      if (at_retreat) {
-        face_start = navigation::turn_to(0.0, 90, 4000, true, true);
+      retreat_reached = retreat_pose.valid &&
+          (retreat == navigation::Result::kSuccess ||
+           retreat == navigation::Result::kDriveFailed ||
+           std::hypot(retreat_pose.x_in - kRetreat.x,
+                      retreat_pose.y_in - kRetreat.y) <= 2.0);
+      if (retreat_reached) {
+        // Create ten additional inches of clearance from the scored Goal.
+        // The extra four inches correct the observed turn approach ending near
+        // (24,-2) instead of squarely reaching the stack at (24,0).
+        // This is robot-relative and does not depend on the fused endpoint.
+        retreat_extra = navigation::drive_relative(
+            10.0, 75, 3200, true, true, true);
       }
-      if (face_start == navigation::Result::kSuccess) {
-        // Slow 12-inch reverse is split at halfway so the claw rollers begin
-        // intaking exactly after the first six inches.
-        reverse_first = navigation::drive_relative(
-            -6.0, 38, 4500, true, true, true);
+      const bool extra_retreat_usable =
+          retreat_extra == navigation::Result::kSuccess ||
+          retreat_extra == navigation::Result::kDriveFailed;
+      if (extra_retreat_usable) {
+        face_start = navigation::turn_to(0.0, 90, 1800, true, true);
+        navigation::update();
+        const navigation::Pose faced_pose = navigation::current_pose();
+        face_start_usable = faced_pose.valid &&
+            (face_start == navigation::Result::kSuccess ||
+             face_start == navigation::Result::kTurnFailed);
       }
-      if (reverse_first == navigation::Result::kSuccess) {
-        const double intake_start_deg = counter_rollers.get_position();
-        counter_rollers.move(-110);
-        reverse_second = navigation::drive_relative(
-            -6.0, 38, 4500, true, true, true);
-        counter_rollers.move(-110);
-        pros::delay(500);
-        counter_rollers.move(0);
-        pin_intaked = std::fabs(counter_rollers.get_position() -
-                               intake_start_deg) >= 20.0;
+      if (face_start_usable) {
+        // Target the actual stack at (24,0), not a fixed distance from the
+        // retreat. With ten inches of rear reach, the robot center endpoint is
+        // (34,0), heading 0, approached in reverse.
+        stack_approach = navigation::go_to_pose(
+            kFinalStackRobotCenter.x, kFinalStackRobotCenter.y, 0.0,
+            48, 6000, true, true, true);
+        navigation::update();
+        const navigation::Pose stack_pose = navigation::current_pose();
+        const double stack_center_error_in = stack_pose.valid
+            ? std::hypot(stack_pose.x_in - kFinalStackRobotCenter.x,
+                         stack_pose.y_in - kFinalStackRobotCenter.y)
+            : std::numeric_limits<double>::infinity();
+        const bool stack_reached =
+            stack_approach == navigation::Result::kSuccess ||
+            stack_center_error_in <= 3.0;
+        std::printf(
+            "SIMPLE_RED final_stack object=%.2f,%.2f center=%.2f,%.2f "
+            "result=%s error=%.2f reached=%d\n",
+            kFinalStack.x, kFinalStack.y, kFinalStackRobotCenter.x,
+            kFinalStackRobotCenter.y,
+            navigation::result_name(stack_approach), stack_center_error_in,
+            static_cast<int>(stack_reached));
+        std::fflush(stdout);
+        if (stack_reached) {
+          // Stay open throughout the coordinate approach and clamp only once
+          // the rear tool has reached the stack.
+          set_claw_piston(false);
+          pros::delay(150);
+          pin_intaked = true;
+        }
       }
     }
   }
@@ -5808,18 +6001,15 @@ bool localization_simple_red_goal_hotkey_auton() {
   const navigation::Pose final_pose = navigation::current_pose();
   const bool success = ram_ok &&
       backout == navigation::Result::kSuccess &&
-      near_goal && turn_fully_settled &&
+      approach_completed && turn_usable &&
       (goal_nudge == navigation::Result::kSuccess ||
        goal_nudge == navigation::Result::kDriveFailed) &&
-      dropped && straighten == navigation::Result::kSuccess &&
-      retreat == navigation::Result::kSuccess &&
-      face_start == navigation::Result::kSuccess &&
-      reverse_first == navigation::Result::kSuccess &&
-      reverse_second == navigation::Result::kSuccess && pin_intaked;
+      dropped && straighten_usable && retreat_reached &&
+      face_start_usable && pin_intaked;
   std::printf(
       "SIMPLE_RED complete ok=%d ram=%s backout=%s approach=%s "
       "near=%d turn=%s heading_error=%.2f nudge=%s dropped=%d "
-      "straighten=%s retreat=%s face_start=%s reverse=%s/%s intake=%d "
+      "straighten=%s retreat=%s extra=%s face_start=%s stack=%s intake=%d "
       "x=%.2f y=%.2f heading=%.2f\n",
       static_cast<int>(success), navigation::result_name(ram),
       navigation::result_name(backout), navigation::result_name(approach),
@@ -5827,14 +6017,13 @@ bool localization_simple_red_goal_hotkey_auton() {
       deposit_heading_error_deg,
       navigation::result_name(goal_nudge),
       static_cast<int>(dropped), navigation::result_name(straighten),
-      navigation::result_name(retreat), navigation::result_name(face_start),
-      navigation::result_name(reverse_first),
-      navigation::result_name(reverse_second),
+      navigation::result_name(retreat), navigation::result_name(retreat_extra),
+      navigation::result_name(face_start),
+      navigation::result_name(stack_approach),
       static_cast<int>(pin_intaked), final_pose.x_in, final_pose.y_in,
       final_pose.heading_deg);
   std::fflush(stdout);
   navigation::stop();
-  counter_rollers.move(0);
   return success;
 }
 
