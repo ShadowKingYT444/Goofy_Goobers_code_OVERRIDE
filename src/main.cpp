@@ -1754,8 +1754,8 @@ void initialize() {
     bool last_l2 = false;
     bool last_b = false;
     bool l2_press_had_b = false;
-    bool selection_pending = false;
-    std::uint32_t l2_pressed_ms = 0;
+    int l2_tap_count = 0;
+    std::uint32_t last_l2_tap_ms = 0;
     std::uint32_t chord_started_ms = 0;
     bool last_brain_left = false;
     bool last_brain_right = false;
@@ -1784,12 +1784,11 @@ void initialize() {
           touch.touch_status == pros::E_TOUCH_HELD;
       if (l2 && !last_l2) {
         l2_press_had_b = b_held;
-        selection_pending = !b_held;
-        l2_pressed_ms = pros::millis();
       }
       if (l2 && b_held) {
         l2_press_had_b = true;
-        selection_pending = false;
+        // A launch chord invalidates the entire selection-tap sequence.
+        l2_tap_count = 0;
       }
       if (l2 && b_held) {
         if (chord_started_ms == 0) chord_started_ms = pros::millis();
@@ -1808,23 +1807,27 @@ void initialize() {
         chord_started_ms = 0;
         if (!l2 && !b_held) launch_armed = true;
       }
-      // A standalone L2 press changes the selection while the button is still
-      // held, so the control gives immediate visible feedback. The short grace
-      // period leaves time for B to join the press without accidentally
-      // changing the selected autonomous before launching it.
-      if (selection_pending && l2 && !b_held && selectable &&
-          pros::millis() - l2_pressed_ms >= 120) {
-        select_red_auton(+1);
-        selection_pending = false;
-        controller.rumble(".");
-      }
       if (!l2 && last_l2) {
-        // Preserve quick taps shorter than the 120 ms hold threshold.
-        if (selection_pending && !l2_press_had_b && selectable) {
-          select_red_auton(+1);
-          controller.rumble(".");
+        // Require three completed standalone L2 taps. Counting only on release
+        // means a slow L2+B chord can never switch the autonomous first.
+        if (!l2_press_had_b && selectable) {
+          const std::uint32_t now = pros::millis();
+          if (last_l2_tap_ms == 0 || now - last_l2_tap_ms > 1200) {
+            l2_tap_count = 0;
+          }
+          last_l2_tap_ms = now;
+          ++l2_tap_count;
+          std::printf("AUTON_SELECTOR l2_tap=%d/3\n", l2_tap_count);
+          std::fflush(stdout);
+          if (l2_tap_count >= 3) {
+            select_red_auton(+1);
+            l2_tap_count = 0;
+            last_l2_tap_ms = 0;
+            controller.rumble(".-");
+          } else {
+            controller.rumble(".");
+          }
         }
-        selection_pending = false;
         l2_press_had_b = false;
       }
       if (brain_left && !last_brain_left) select_red_auton(-1);
@@ -1878,8 +1881,8 @@ void opcontrol() {
   // selection on entry to driver control so repeated field/testing runs can
   // choose another route without restarting the program.
   auton_selection_locked.store(false, std::memory_order_release);
-  master.print(0, 0, "L2=SELECT L2+B=GO ");
-  pros::lcd::set_text(6, "L2 select / L2+B run");
+  master.print(0, 0, "L2x3=SEL L2+B=GO ");
+  pros::lcd::set_text(6, "L2 x3 select / L2+B run");
   if (drive_positions_are_zeroed()) {
     localization_telemetry_reset();
   }
