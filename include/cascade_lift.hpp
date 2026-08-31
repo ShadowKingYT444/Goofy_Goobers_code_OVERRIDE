@@ -5,7 +5,7 @@
 
 namespace cascade_lift {
 
-constexpr std::size_t kStageCount = 5;
+constexpr std::size_t kStageCount = 4;
 
 struct Snapshot {
   bool sensor_ok = false;

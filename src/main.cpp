@@ -15,7 +15,7 @@
 // the robot forward.
 Drive chassis({17, 18},
               {-11, -13},
-              6,
+              12,
               localization::kDriveWheelDiameterIn,
               localization::kDriveRpm,
               localization::kDriveExternalRatio);
@@ -98,7 +98,7 @@ constexpr bool RUN_STARTUP_PATH1_OPENING_RETURN_TO_START = false;
 constexpr bool RUN_STARTUP_PATH1_TOGGLE_FINISH_PROBE = false;
 // Resume-only leg from the measured fail-closed endpoint of the toggle route.
 constexpr bool RUN_STARTUP_TOGGLE_GOAL_CONTINUE = false;
-// One supervised end-to-end Left+X route trial. Enable only for a recorded
+// One supervised end-to-end L2+B route trial. Enable only for a recorded
 // tuning boot, then restore false before the competition image is installed.
 constexpr bool RUN_STARTUP_TOGGLE_FAR_GOAL_TEST = false;
 // Temporary supervised full-route trace. Must be false in the normal image.
@@ -141,7 +141,6 @@ constexpr bool RUN_STARTUP_CASCADE_STAGE4_TEST = false;
 // Keep disabled in the normal competition image.
 constexpr bool RUN_STARTUP_CASCADE_SEQUENCE_TEST = false;
 constexpr int CONTROLLER_DRIVE_DEADBAND = 5;
-constexpr int kAutonArmLoweringPower = 127;
 
 struct RuntimePoseEditor {
   bool was_active = false;
@@ -268,44 +267,173 @@ void select_red_auton(int direction) {
   std::fflush(stdout);
 }
 
+bool run_selected_red_auton();
+
+int apply_controller_deadband(int value) {
+  return std::abs(value) <= CONTROLLER_DRIVE_DEADBAND ? 0 : value;
+}
+
+// Port-5 absolute angle recorded with the arm physically held at the desired
+// right-arrow pickup position on 2026-08-30. The 11 W green-cartridge motor
+// and claw mechanism hold their load mechanically, so this controller uses no
+// gravity or static feedforward.
+constexpr double kArmRightTargetDeg = 278.17;
+// Port-5 absolute angle recorded at the desired normal match orientation on
+// 2026-08-30. Autonomous and opcontrol actively hold this position.
+constexpr double kArmNormalTargetDeg = 324.66;
+constexpr double kArmNormalToleranceDeg = 5.0;
+constexpr double kArmPositionKp = 1.35;
+constexpr double kArmPositionKd = 0.10;
+constexpr double kArmPositionMaxPower = 70.0;
+constexpr double kArmPositionMinPower = 16.0;
+constexpr double kArmPositionBrakeBandDeg = 1.25;
+
+double shortest_arm_error_deg(double target_deg, double current_deg) {
+  double error_deg = target_deg - current_deg;
+  while (error_deg > 180.0) error_deg -= 360.0;
+  while (error_deg < -180.0) error_deg += 360.0;
+  return error_deg;
+}
+
+struct ArmPositionController {
+  bool initialized = false;
+  std::uint32_t previous_ms = 0;
+  std::uint32_t last_log_ms = 0;
+  double previous_error_deg = 0.0;
+  double filtered_derivative_deg_s = 0.0;
+
+  void reset() {
+    initialized = false;
+    filtered_derivative_deg_s = 0.0;
+  }
+
+  double update(double target_deg) {
+    const std::uint32_t now_ms = pros::millis();
+    const double angle_deg =
+        static_cast<double>(horizontal_odom.get_angle()) / 100.0;
+    const double error_deg = shortest_arm_error_deg(target_deg, angle_deg);
+    claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+
+    if (!initialized) {
+      initialized = true;
+      previous_ms = now_ms;
+      previous_error_deg = error_deg;
+      filtered_derivative_deg_s = 0.0;
+    }
+    const double dt_s = std::clamp(
+        static_cast<double>(now_ms - previous_ms) / 1000.0, 0.005, 0.100);
+    const double raw_derivative_deg_s =
+        (error_deg - previous_error_deg) / dt_s;
+    // Filtering the sensor derivative is important on the stronger motor: an
+    // unfiltered D term caused power reversals and visible oscillation.
+    filtered_derivative_deg_s +=
+        0.18 * (raw_derivative_deg_s - filtered_derivative_deg_s);
+
+    double output = kArmPositionKp * error_deg +
+        kArmPositionKd * filtered_derivative_deg_s;
+    output = std::clamp(output, -kArmPositionMaxPower,
+                        kArmPositionMaxPower);
+    if (std::fabs(error_deg) <= kArmPositionBrakeBandDeg) {
+      output = 0.0;
+    } else if (std::fabs(output) < kArmPositionMinPower) {
+      output = std::copysign(kArmPositionMinPower, error_deg);
+    }
+    claw_arm.move(static_cast<int>(std::lround(output)));
+
+    if (now_ms - last_log_ms >= 100) {
+      std::printf(
+          "ARM_PID target=%.2f angle=%.2f error=%.2f derivative=%.2f "
+          "output=%.0f\n",
+          target_deg, angle_deg, error_deg, filtered_derivative_deg_s,
+          output);
+      std::fflush(stdout);
+      last_log_ms = now_ms;
+    }
+    previous_ms = now_ms;
+    previous_error_deg = error_deg;
+    return error_deg;
+  }
+};
+
 bool run_selected_red_auton() {
   const auto selected = static_cast<RedAutonSelection>(
       selected_red_auton.load(std::memory_order_acquire));
   // Retracted is the default/holding state for the ADI-E claw and retains the
   // preload until the route explicitly releases it at the first Goal.
   set_claw_piston(false);
-  // First autonomous action shared by both routes: an independent task drives
-  // the arm at full positive power (the exact Down-arrow direction) for 300ms.
-  // It runs concurrently while D gets 1.0s to extend and 0.2s to retract.
-  pros::Task arm_lowering_task([] {
-    claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
-    claw_arm.move(kAutonArmLoweringPower);
-    pros::delay(300);
+  // Competition setup places the cascade at its physical bottom. Establish
+  // that exact position as Port-16 zero at the autonomous handoff so Stage 1
+  // cannot inherit a stale relative offset and run toward the upper limit.
+  cascade_lift::initialize_at_rest();
+
+  // Hold the arm at its absolute normal orientation for the complete route.
+  // This replaces the old timed full-power lowering pulse and avoids resetting
+  // the port-5 rotation sensor's relative position.
+  std::atomic<bool> arm_hold_running{true};
+  pros::Task arm_normal_hold_task([&arm_hold_running] {
+    ArmPositionController controller;
+    while (arm_hold_running.load(std::memory_order_acquire)) {
+      controller.update(kArmNormalTargetDeg);
+      pros::delay(20);
+    }
+    claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
     claw_arm.move(0);
-    // The full-power pulse seats the arm against its physical lower stop. Use
-    // that repeatable position as relative zero for the upcoming loaded PID.
-    horizontal_odom.reset_position();
-  }, "auton arm home");
+  }, "auton arm hold");
+
+  // ADI-D is active-low: extend for the Toggle, then return to retracted.
   clamp_piston.set_value(false);
   clamp_output_high.store(false, std::memory_order_release);
   pros::delay(1000);
   clamp_piston.set_value(true);
   clamp_output_high.store(true, std::memory_order_release);
   pros::delay(200);
-  arm_lowering_task.join();
-  std::printf("ARM_HOME relative_deg=%.2f absolute_deg=%.2f\n",
-              static_cast<double>(horizontal_odom.get_position()) / 100.0,
-              static_cast<double>(horizontal_odom.get_angle()) / 100.0);
+
+  // A hotkey test often begins after the robot was repositioned by hand. Motor
+  // encoders retain that motion and can have harmless unequal absolute offsets,
+  // which the fused-navigation preflight otherwise rejects before any drive
+  // command. Re-anchor every drivetrain encoder at the actual autonomous
+  // handoff, after allowing the arm motion to settle so it cannot shake the IMU.
+  const std::uint32_t arm_settle_started_ms = pros::millis();
+  while (pros::millis() - arm_settle_started_ms < 800) {
+    const double arm_angle_deg =
+        static_cast<double>(horizontal_odom.get_angle()) / 100.0;
+    if (std::fabs(shortest_arm_error_deg(
+            kArmNormalTargetDeg, arm_angle_deg)) <=
+        kArmNormalToleranceDeg) {
+      break;
+    }
+    pros::delay(20);
+  }
+  chassis.drive_set(0, 0);
+  chassis.pid_targets_reset();
+  chassis.drive_mode_set(ez::DISABLE, true);
+  int drive_tare_errors = 0;
+  for (auto& motor : chassis.left_motors) {
+    if (motor.tare_position() != 1) ++drive_tare_errors;
+  }
+  for (auto& motor : chassis.right_motors) {
+    if (motor.tare_position() != 1) ++drive_tare_errors;
+  }
+  pros::delay(100);
+  std::printf("AUTON_DRIVE_ANCHOR tare_errors=%d L=%.2f/%.2f R=%.2f/%.2f\n",
+              drive_tare_errors,
+              chassis.left_motors[0].get_position(),
+              chassis.left_motors[1].get_position(),
+              chassis.right_motors[0].get_position(),
+              chassis.right_motors[1].get_position());
+  std::printf("ARM_NORMAL target=%.2f absolute_deg=%.2f tolerance=%.1f\n",
+              kArmNormalTargetDeg,
+              static_cast<double>(horizontal_odom.get_angle()) / 100.0,
+              kArmNormalToleranceDeg);
   std::printf("AUTON_SELECTOR run=%d name=%s\n",
               static_cast<int>(selected), selected_red_auton_name());
   std::fflush(stdout);
-  return selected == RedAutonSelection::kTwoCup
+  const bool success = selected == RedAutonSelection::kTwoCup
       ? localization_two_cup_red_auton()
       : localization_simple_red_goal_hotkey_auton();
-}
-
-int apply_controller_deadband(int value) {
-  return std::abs(value) <= CONTROLLER_DRIVE_DEADBAND ? 0 : value;
+  arm_hold_running.store(false, std::memory_order_release);
+  arm_normal_hold_task.join();
+  return success;
 }
 
 bool drive_positions_are_zeroed() {
@@ -435,7 +563,7 @@ void run_distance_sweep_test() {
   constexpr std::uint32_t kTimeoutPerInchMs = 1800;
   constexpr std::array<int, 3> kTargetsIn = {2, 5, 10};
   auto& gps = gps_7;
-  auto& imu6 = chassis.imu;
+  auto& imu12 = chassis.imu;
 
   struct GpsSample {
     double x_m;
@@ -511,9 +639,9 @@ void run_distance_sweep_test() {
     motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
   stop();
 
-  const bool imu_installed = imu6.is_installed() && !imu6.is_calibrating();
-  printf("STRAIGHT_IMU_INIT port=6 installed=%d status=%d\n",
-         static_cast<int>(imu_installed), static_cast<int>(imu6.get_status()));
+  const bool imu_installed = imu12.is_installed() && !imu12.is_calibrating();
+  printf("STRAIGHT_IMU_INIT port=12 installed=%d status=%d\n",
+         static_cast<int>(imu_installed), static_cast<int>(imu12.get_status()));
   fflush(stdout);
 
   for (double velocity_rpm : kVelocityRpm) {
@@ -522,7 +650,7 @@ void run_distance_sweep_test() {
     const auto baseline = motor_positions();
     const std::int32_t baseline_h5 = horizontal_odom.get_position();
     const GpsSample start_gps = sample_gps();
-    const double start_imu_deg = imu6.get_rotation();
+    const double start_imu_deg = imu12.get_rotation();
     double max_abs_imu_delta_deg = 0.0;
     const double target_deg =
         static_cast<double>(target_in) * 360.0 / kWheelCircumferenceIn;
@@ -534,7 +662,7 @@ void run_distance_sweep_test() {
            average_delta_deg(motor_positions(), baseline) > -target_deg) {
       command(-velocity_rpm);
       max_abs_imu_delta_deg = std::max(
-          max_abs_imu_delta_deg, std::fabs(imu6.get_rotation() - start_imu_deg));
+          max_abs_imu_delta_deg, std::fabs(imu12.get_rotation() - start_imu_deg));
       pros::delay(10);
     }
     stop();
@@ -554,7 +682,7 @@ void run_distance_sweep_test() {
            gps_back_in - encoder_back_in,
            heading_delta(back_gps.heading_deg, start_gps.heading_deg),
            back_gps.error_m * 39.37007874,
-           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg,
+           imu12.get_rotation() - start_imu_deg, max_abs_imu_delta_deg,
            back_left_deg, back_right_deg, back_left_deg - back_right_deg,
            static_cast<long>(back_h5 - baseline_h5),
            tracking_delta_in(back_h5, baseline_h5),
@@ -568,7 +696,7 @@ void run_distance_sweep_test() {
            average_delta_deg(motor_positions(), baseline) < -1.5) {
       command(velocity_rpm);
       max_abs_imu_delta_deg = std::max(
-          max_abs_imu_delta_deg, std::fabs(imu6.get_rotation() - start_imu_deg));
+          max_abs_imu_delta_deg, std::fabs(imu12.get_rotation() - start_imu_deg));
       pros::delay(10);
     }
     stop();
@@ -587,7 +715,7 @@ void run_distance_sweep_test() {
            velocity_rpm, target_in, encoder_residual_in, gps_residual_in,
            heading_delta(final_gps.heading_deg, start_gps.heading_deg),
            final_gps.error_m * 39.37007874,
-           imu6.get_rotation() - start_imu_deg, max_abs_imu_delta_deg,
+           imu12.get_rotation() - start_imu_deg, max_abs_imu_delta_deg,
            final_left_deg, final_right_deg, final_left_deg - final_right_deg,
            static_cast<long>(final_h5 - baseline_h5),
            tracking_delta_in(final_h5, baseline_h5),
@@ -606,7 +734,7 @@ void run_rotation_sweep_test() {
   constexpr std::array<double, 1> kTargetsDeg = {15.0};
   constexpr double kVelocityRpm = 12.0;
   auto& gps = gps_7;
-  auto& imu6 = chassis.imu;
+  auto& imu12 = chassis.imu;
 
   struct HeadingSample {
     double gps_deg;
@@ -629,7 +757,7 @@ void run_rotation_sweep_test() {
     for (int i = 0; i < kSamples; ++i) {
       const auto position = gps.get_position();
       const double gps_rad = gps.get_heading() * kPi / 180.0;
-      const double imu_rad = imu6.get_heading() * kPi / 180.0;
+      const double imu_rad = imu12.get_heading() * kPi / 180.0;
       gps_sin += std::sin(gps_rad);
       gps_cos += std::cos(gps_rad);
       imu_sin += std::sin(imu_rad);
@@ -697,9 +825,9 @@ void run_rotation_sweep_test() {
   for (auto& motor : chassis.right_motors)
     motor.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
   stop();
-  const bool imu_installed = imu6.is_installed() && !imu6.is_calibrating();
-  printf("ROTATION_SWEEP_INIT imu_port=6 installed=%d status=%d\n",
-         static_cast<int>(imu_installed), static_cast<int>(imu6.get_status()));
+  const bool imu_installed = imu12.is_installed() && !imu12.is_calibrating();
+  printf("ROTATION_SWEEP_INIT imu_port=12 installed=%d status=%d\n",
+         static_cast<int>(imu_installed), static_cast<int>(imu12.get_status()));
   fflush(stdout);
   print_motor_health("start");
 
@@ -1060,7 +1188,7 @@ void print_distance_frame() {
                      forward_distance.confidence,
                      forward_distance.installed ? "ok" : "no");
     pros::lcd::print(1, "GPS P7 e%.3fm", gps_error_m);
-    pros::lcd::set_text(2, "IMU P6 / AI P8");
+    pros::lcd::set_text(2, "IMU P12 / AI P8");
     pros::lcd::set_text(3, "P9 left slider");
     const auto& vision = ai_vision_shadow_snapshot();
     pros::lcd::print(4, "AI P%u tag=%d %s",
@@ -1121,6 +1249,9 @@ void start_toggle_far_goal_auton() {
   slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
   slider_right.brake();
   slider_left.brake();
+  // Freeze the displayed selection before the asynchronous route starts.
+  // Selection is unlocked only after this exact run has finished.
+  auton_selection_locked.store(true, std::memory_order_release);
   opcontrol_auton_running = true;
   pros::Task::create([] {
     pros::Controller controller(pros::E_CONTROLLER_MASTER);
@@ -1132,6 +1263,7 @@ void start_toggle_far_goal_auton() {
     chassis.drive_set(0, 0);
     move_intake(0);
     opcontrol_auton_running = false;
+    auton_selection_locked.store(false, std::memory_order_release);
     controller.rumble(success ? "." : "---");
     pros::lcd::set_text(
         6, success ? "Simple auton PASS" : "Simple auton FAIL");
@@ -1539,8 +1671,8 @@ void initialize() {
   }
   std::fflush(stdout);
 
-  // Full-size 11 W port-4 arm motor. Keep it passive until its external
-  // rotation-sensor PID is retuned for the changed mechanism and load.
+  // Full-size 11 W port-4 arm motor. Port 5 supplies the absolute position
+  // feedback used by the normal/right position holds in autonomous/opcontrol.
   claw_arm.set_current_limit(2500);
   claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
   claw_arm.move(0);
@@ -1554,7 +1686,7 @@ void initialize() {
   std::fflush(stdout);
   pros::lcd::initialize();
   pros::lcd::set_text(0, "Forward Distance P1");
-  pros::lcd::set_text(1, "GPS P7 / IMU P6");
+  pros::lcd::set_text(1, "GPS P7 / IMU P12");
   pros::lcd::set_text(2, "IMU calibrating...");
   std::printf("BOOT_STAGE t=%lu stage=drive_reset_begin\n",
               static_cast<unsigned long>(pros::millis()));
@@ -1613,65 +1745,34 @@ void initialize() {
   print_drive_motor_health("startup_stationary");
   fflush(stdout);
 
-  // Keep the autonomous hotkey independent of the competition callback state.
-  // This listener is the single owner of Left+X and remains alive whenever the
-  // user program is running, even if opcontrol() is restarted.
+  // One task owns both L2 selection and L2+B launch. Keeping both sides of the
+  // chord in one state machine prevents a delayed L2 release from changing the
+  // selected route during or immediately after autonomous.
   pros::Task::create([] {
     pros::Controller controller(pros::E_CONTROLLER_MASTER);
-    bool armed = true;
-    bool last_left = false;
-    bool last_x = false;
+    bool launch_armed = true;
+    bool last_l2 = false;
+    bool last_b = false;
+    bool l2_press_had_b = false;
     std::uint32_t chord_started_ms = 0;
-    while (true) {
-      const bool left = controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_LEFT);
-      const bool x = controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_X);
-      if (left != last_left || x != last_x) {
-        std::printf("HOTKEY_INPUT left=%d x=%d connected=%d\n",
-                    static_cast<int>(left), static_cast<int>(x),
-                    static_cast<int>(controller.is_connected()));
-        std::fflush(stdout);
-        last_left = left;
-        last_x = x;
-      }
-      if (left && x) {
-        if (chord_started_ms == 0) chord_started_ms = pros::millis();
-        if (armed && pros::millis() - chord_started_ms >= 100) {
-          armed = false;
-          std::printf("SIMPLE_RED event=hotkey_left_x_listener\n");
-          std::fflush(stdout);
-          controller.rumble(".-");
-          start_toggle_far_goal_auton();
-        }
-      } else {
-        chord_started_ms = 0;
-        if (!left && !x) armed = true;
-      }
-      pros::delay(20);
-    }
-  }, "left x auton listener");
-
-  // Left cycles to the next autonomous while disabled or in normal opcontrol.
-  // Ignore it while X is held so the Left+X launch chord cannot also change
-  // the selected route. Selection locks when competition autonomous begins.
-  pros::Task::create([] {
-    pros::Controller controller(pros::E_CONTROLLER_MASTER);
-    bool last_left = false;
-    bool left_press_had_x = false;
-    bool last_right = false;
     bool last_brain_left = false;
     bool last_brain_right = false;
     bool last_touch_pressed = false;
     std::uint32_t last_render_ms = 0;
-    while (!auton_selection_locked.load(std::memory_order_acquire)) {
-      const bool x_held = controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_X);
-      const bool left = controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_LEFT);
-      const bool selectable = !opcontrol_auton_running;
-      const bool right = selectable && controller.get_digital(
-          pros::E_CONTROLLER_DIGITAL_RIGHT);
+    while (true) {
+      const bool selectable =
+          !auton_selection_locked.load(std::memory_order_acquire) &&
+          !opcontrol_auton_running;
+      const bool b_held = controller.get_digital(
+          pros::E_CONTROLLER_DIGITAL_B);
+      const bool l2 = controller.get_digital(
+          pros::E_CONTROLLER_DIGITAL_L2);
+      if (l2 != last_l2 || b_held != last_b) {
+        std::printf("HOTKEY_INPUT l2=%d b=%d connected=%d\n",
+                    static_cast<int>(l2), static_cast<int>(b_held),
+                    static_cast<int>(controller.is_connected()));
+        std::fflush(stdout);
+      }
       const std::uint8_t brain_buttons = pros::lcd::read_buttons();
       const bool brain_left = (brain_buttons & LCD_BTN_LEFT) != 0;
       const bool brain_right = (brain_buttons & LCD_BTN_RIGHT) != 0;
@@ -1679,23 +1780,36 @@ void initialize() {
       const bool touch_pressed =
           touch.touch_status == pros::E_TOUCH_PRESSED ||
           touch.touch_status == pros::E_TOUCH_HELD;
-      // Commit a Left selection only on release, and only if X was never part
-      // of that press. This makes Left+X atomic even when controller packets
-      // report Left a loop earlier than X.
-      if (left && !last_left) left_press_had_x = x_held;
-      if (left && x_held) left_press_had_x = true;
-      if (!left && last_left) {
-        if (!left_press_had_x && selectable) select_red_auton(+1);
-        left_press_had_x = false;
+      if (l2 && !last_l2) l2_press_had_b = b_held;
+      if (l2 && b_held) l2_press_had_b = true;
+      if (l2 && b_held) {
+        if (chord_started_ms == 0) chord_started_ms = pros::millis();
+        if (launch_armed && selectable &&
+            pros::millis() - chord_started_ms >= 100) {
+          launch_armed = false;
+          l2_press_had_b = true;
+          std::printf("AUTON_HOTKEY event=launch_l2_b selected=%d name=%s\n",
+                      selected_red_auton.load(std::memory_order_acquire),
+                      selected_red_auton_name());
+          std::fflush(stdout);
+          controller.rumble(".-");
+          start_toggle_far_goal_auton();
+        }
+      } else {
+        chord_started_ms = 0;
+        if (!l2 && !b_held) launch_armed = true;
       }
-      if (right && !last_right) select_red_auton(-1);
+      if (!l2 && last_l2) {
+        if (!l2_press_had_b && selectable) select_red_auton(+1);
+        l2_press_had_b = false;
+      }
       if (brain_left && !last_brain_left) select_red_auton(-1);
       if (brain_right && !last_brain_right) select_red_auton(+1);
       if (touch_pressed && !last_touch_pressed) {
         select_red_auton(touch.x < 240 ? -1 : +1);
       }
-      last_left = left;
-      last_right = right;
+      last_l2 = l2;
+      last_b = b_held;
       last_brain_left = brain_left;
       last_brain_right = brain_right;
       last_touch_pressed = touch_pressed;
@@ -1708,7 +1822,7 @@ void initialize() {
       }
       pros::delay(20);
     }
-  }, "auton selector");
+  }, "auton select and launch");
 }
 
 void disabled() {
@@ -1736,8 +1850,12 @@ void opcontrol() {
     }
   }
   pros::Controller master(pros::E_CONTROLLER_MASTER);
-  master.print(0, 0, "READY: UP+X AUTON ");
-  pros::lcd::set_text(6, "Ready: press Up + X");
+  // Competition autonomous locks selection only for its own run. Re-enable
+  // selection on entry to driver control so repeated field/testing runs can
+  // choose another route without restarting the program.
+  auton_selection_locked.store(false, std::memory_order_release);
+  master.print(0, 0, "L2=SELECT L2+B=GO ");
+  pros::lcd::set_text(6, "L2 select / L2+B run");
   if (drive_positions_are_zeroed()) {
     localization_telemetry_reset();
   }
@@ -1753,12 +1871,15 @@ void opcontrol() {
     pros::lcd::set_text(6, trace_ok ? "Trace PASS" : "Trace FAIL");
   }
   if (RUN_STARTUP_CASCADE_SEQUENCE_TEST) {
-    constexpr double kDipDeg = 75.0;
-    constexpr double kToleranceDeg = 10.0;
+    constexpr double kDipDeg = 100.0;
+    constexpr double kToleranceDeg = 16.0;
     constexpr std::uint32_t kSettleMs = 250;
     constexpr std::uint32_t kLegTimeoutMs = 10000;
     constexpr std::int32_t kCurrentAbortMa = 2450;
     constexpr std::uint32_t kCurrentAbortConfirmMs = 200;
+
+    pros::lcd::set_text(6, "Lift sequence in 2 sec");
+    pros::delay(2000);
 
     const auto run_target = [&](double target_deg, const char* label) {
       const bool accepted = cascade_lift::set_target_position_deg(target_deg);
@@ -1821,13 +1942,14 @@ void opcontrol() {
       std::snprintf(dip_label, sizeof(dip_label), "stage_%d_dip", stage);
       sequence_ok = run_target(stage_deg, stage_label) && sequence_ok;
       if (!sequence_ok) break;
-      pros::delay(500);
+      pros::delay(250);
       sequence_ok = run_target(std::max(0.0, stage_deg - kDipDeg), dip_label) &&
                     sequence_ok;
       if (!sequence_ok) break;
-      sequence_ok = run_target(stage_deg, stage_label) && sequence_ok;
+      pros::delay(100);
+      sequence_ok = run_target(0.0, "zero_between_stages") && sequence_ok;
       if (!sequence_ok) break;
-      pros::delay(500);
+      pros::delay(250);
     }
 
     if (!sequence_ok) cascade_lift::clear_fault();
@@ -2132,6 +2254,9 @@ void opcontrol() {
   bool pid_tune_combo_was_pressed = false;
   std::uint32_t last_drive_health_ms = 0;
   bool claw_toggle_was_pressed = false;
+  bool arm_position_hold_active = false;
+  double arm_position_target_deg = kArmNormalTargetDeg;
+  ArmPositionController arm_position_controller;
   clamp_piston.set_value(true);
   clamp_output_high.store(true, std::memory_order_release);
 
@@ -2177,7 +2302,6 @@ void opcontrol() {
     if (!opcontrol_auton_running) {
       constexpr double kOpcontrolDriveScale = 1.0;
       constexpr int kMechanismPower = 127;
-      const std::uint32_t control_now_ms = pros::millis();
       const bool claw_toggle_pressed =
           !pose_editor_active &&
           master.get_digital(pros::E_CONTROLLER_DIGITAL_L1);
@@ -2197,6 +2321,32 @@ void opcontrol() {
           !master.get_digital(pros::E_CONTROLLER_DIGITAL_B) &&
           !master.get_digital(pros::E_CONTROLLER_DIGITAL_X) &&
           master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN);
+      const bool wrist_right_position_pressed =
+          !pose_editor_active &&
+          !master.get_digital(pros::E_CONTROLLER_DIGITAL_A) &&
+          !master.get_digital(pros::E_CONTROLLER_DIGITAL_X) &&
+          master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_RIGHT);
+      const bool wrist_normal_position_pressed =
+          !pose_editor_active &&
+          !master.get_digital(pros::E_CONTROLLER_DIGITAL_A) &&
+          !master.get_digital(pros::E_CONTROLLER_DIGITAL_X) &&
+          master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT);
+      if (wrist_right_position_pressed) {
+        arm_position_hold_active = true;
+        arm_position_target_deg = kArmRightTargetDeg;
+        arm_position_controller.reset();
+        std::printf("ARM_PID event=start target=%.2f\n",
+                    kArmRightTargetDeg);
+        std::fflush(stdout);
+      }
+      if (wrist_normal_position_pressed) {
+        arm_position_hold_active = true;
+        arm_position_target_deg = kArmNormalTargetDeg;
+        arm_position_controller.reset();
+        std::printf("ARM_PID event=normal target=%.2f tolerance=%.1f\n",
+                    kArmNormalTargetDeg, kArmNormalToleranceDeg);
+        std::fflush(stdout);
+      }
       const int forward_power = pose_editor_active
           ? 0
           : apply_controller_deadband(
@@ -2221,7 +2371,9 @@ void opcontrol() {
       const int requested_intake_power = pose_editor_active ? 0 :
           master.get_digital(pros::E_CONTROLLER_DIGITAL_Y)
               ? kMechanismPower
-              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_B) && !auton_combo_pressed
+              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_B) &&
+                     !master.get_digital(pros::E_CONTROLLER_DIGITAL_L2) &&
+                     !auton_combo_pressed
                      ? -kMechanismPower
                      : 0);
       move_intake(requested_intake_power);
@@ -2237,20 +2389,29 @@ void opcontrol() {
       cascade_lift::print_telemetry_if_due();
 
       if (wrist_up_manual_negative) {
-        // PID is intentionally disabled while the new 11 W motor is tuned.
-        // Up and Down provide direct motion in either direction.
+        arm_position_hold_active = false;
+        arm_position_controller.reset();
         claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
         claw_arm.move(-kMechanismPower);
       } else if (wrist_down_manual_positive) {
+        arm_position_hold_active = false;
+        arm_position_controller.reset();
         claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
         claw_arm.move(kMechanismPower);
       } else if (pose_editor_active) {
+        arm_position_hold_active = false;
+        arm_position_controller.reset();
         claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_COAST);
         claw_arm.move(0);
+      } else if (arm_position_hold_active) {
+        // Keep correcting after arrival so the mechanism cannot wobble or sag.
+        // Normal mode's requested acceptance is +/-5 degrees; the shared
+        // controller's tighter brake band comfortably satisfies that bound.
+        arm_position_controller.update(arm_position_target_deg);
       } else {
-        // Passive braking only: do not run either of the previous wrist PID
-        // targets until gains are retuned for the heavier 11 W mechanism.
-        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
+        // A manual Up/Down move remains at its released location until Left or
+        // Right explicitly selects a held position again.
+        claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
         claw_arm.move(0);
       }
     }

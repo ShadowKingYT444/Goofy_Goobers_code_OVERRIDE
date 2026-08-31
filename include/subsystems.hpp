@@ -21,7 +21,9 @@ inline pros::adi::DigitalOut claw_piston('E');
 inline std::atomic<bool> claw_piston_extended{false};
 
 inline void set_claw_piston(bool extended) {
-  claw_piston.set_value(extended);
+  // ADI-E is physically active-low: low extends/open, high retracts/clamps.
+  // Keep callers expressed in physical terms despite the inverted wiring.
+  claw_piston.set_value(!extended);
   claw_piston_extended.store(extended, std::memory_order_release);
 }
 

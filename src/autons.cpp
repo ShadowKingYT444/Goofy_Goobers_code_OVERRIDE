@@ -3056,9 +3056,30 @@ bool init(double start_x_in,
       start_position_error_in < 0.0 || start_position_error_in > wall) {
     return false;
   }
-  if (!stationary_for_navigation_init()) return false;
+  // Mechanism motion or a freshly released chassis can perturb one 250 ms
+  // sample. Require one clean window across three bounded attempts instead of
+  // silently cancelling the whole autonomous on the first transient.
+  bool stationary = false;
+  for (int attempt = 1; attempt <= 3; ++attempt) {
+    if (stationary_for_navigation_init()) {
+      stationary = true;
+      break;
+    }
+    std::printf("NAV_INIT retry=%d/3\n", attempt);
+    std::fflush(stdout);
+    pros::delay(100);
+  }
+  if (!stationary) {
+    pros::lcd::set_text(6, "AUTON FAIL: NAV SENSORS");
+    std::printf("NAV_INIT abort=stationary_preflight_failed\n");
+    std::fflush(stdout);
+    return false;
+  }
   if (!localization_set_runtime_start_pose(
           start_x_in, start_y_in, start_heading_deg)) {
+    pros::lcd::set_text(6, "AUTON FAIL: START POSE");
+    std::printf("NAV_INIT abort=start_pose_rejected\n");
+    std::fflush(stdout);
     return false;
   }
   localization_telemetry_reset();
@@ -3075,6 +3096,12 @@ bool init(double start_x_in,
   publish_telemetry_snapshot();
   if (navigation_api_initialized) {
     reset_navigation_path(telemetry_pose, pros::millis());
+  } else {
+    pros::lcd::set_text(6, "AUTON FAIL: POSE/IMU");
+    std::printf("NAV_INIT abort=estimator_not_ready pose=%d imu=%d\n",
+                static_cast<int>(telemetry_pose.ready),
+                static_cast<int>(telemetry_pose.imu_ready));
+    std::fflush(stdout);
   }
   return navigation_api_initialized;
 }

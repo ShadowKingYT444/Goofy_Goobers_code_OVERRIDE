@@ -1,6 +1,7 @@
 #include "main.h"
 
 #include "cascade_lift.hpp"
+#include "gps_frame.hpp"
 #include "localization_config.hpp"
 #include "path2_auton_config.hpp"
 
@@ -13,6 +14,110 @@ namespace {
 
 using Path2Point = path2_config::Point;
 constexpr double kPath2Pi = 3.14159265358979323846;
+double path2_imu_anchor_cw_deg = 0.0;
+double path2_field_anchor_heading_deg = 0.0;
+bool path2_imu_anchor_valid = false;
+double path2_gps_heading_rotation_deg = 0.0;
+bool path2_gps_heading_anchor_valid = false;
+std::uint32_t path2_prefer_gps_until_ms = 0;
+void path2_brake_drive();
+
+double path2_field_heading_from_imu(double imu_cw_deg) {
+  if (!path2_imu_anchor_valid || !std::isfinite(imu_cw_deg)) return NAN;
+  return std::remainder(
+      path2_field_anchor_heading_deg -
+          (imu_cw_deg - path2_imu_anchor_cw_deg),
+      360.0);
+}
+
+bool path2_field_heading_from_gps(double& heading_deg) {
+  if (!path2_gps_heading_anchor_valid || !gps_7.is_installed()) return false;
+  const auto position = gps_7.get_position();
+  const double sensor_heading_cw_deg = gps_7.get_heading();
+  const double error_in = gps_7.get_error() * 39.37007874015748;
+  if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+      !std::isfinite(sensor_heading_cw_deg) || !std::isfinite(error_in) ||
+      error_in < 0.0 ||
+      error_in > localization::kGpsMaxReportedErrorIn) {
+    return false;
+  }
+  const auto project_pose = localization::vex_gps_to_project_robot_pose(
+      position.x, position.y, sensor_heading_cw_deg);
+  heading_deg = std::remainder(
+      project_pose.heading_deg + path2_gps_heading_rotation_deg, 360.0);
+  return std::isfinite(heading_deg);
+}
+
+bool path2_gps_turn(double target_heading_deg,
+                    double tolerance_deg = 4.0) {
+  constexpr std::uint32_t kTimeoutMs = 3000;
+  constexpr std::uint32_t kSettleMs = 100;
+  constexpr double kKp = 1.55;
+  constexpr double kMinimumPower = 28.0;
+  constexpr double kMaximumPower = 90.0;
+  const std::uint32_t started_ms = pros::millis();
+  std::uint32_t settled_since_ms = 0;
+  double last_error_deg = std::numeric_limits<double>::infinity();
+  const double bounded_tolerance_deg =
+      std::clamp(tolerance_deg, 2.0, 10.0);
+  chassis.drive_mode_set(ez::DISABLE, true);
+
+  while (pros::millis() - started_ms < kTimeoutMs) {
+    if (pros::competition::is_connected() &&
+        pros::competition::is_disabled()) {
+      path2_brake_drive();
+      return false;
+    }
+    double heading_deg = NAN;
+    if (!path2_field_heading_from_gps(heading_deg)) {
+      // GPS is the primary post-score source. A finite IMU is only a transient
+      // fallback while waiting for the next wall-strip GPS frame.
+      heading_deg = path2_field_heading_from_imu(chassis.drive_imu_get());
+      if (!std::isfinite(heading_deg)) {
+        path2_brake_drive();
+        pros::delay(20);
+        continue;
+      }
+    }
+    last_error_deg = std::remainder(target_heading_deg - heading_deg, 360.0);
+    if (std::fabs(last_error_deg) <= bounded_tolerance_deg) {
+      path2_brake_drive();
+      if (settled_since_ms == 0) settled_since_ms = pros::millis();
+      if (pros::millis() - settled_since_ms >= kSettleMs) {
+        std::printf("PATH2_GPS_TURN result=success target=%.1f heading=%.1f\n",
+                    target_heading_deg, heading_deg);
+        std::fflush(stdout);
+        return true;
+      }
+      pros::delay(20);
+      continue;
+    }
+    settled_since_ms = 0;
+    double command = std::clamp(kKp * last_error_deg,
+                                -kMaximumPower, kMaximumPower);
+    if (std::fabs(command) < kMinimumPower) {
+      command = std::copysign(kMinimumPower, command);
+    }
+    const int turn_power = static_cast<int>(std::lround(command));
+    chassis.drive_set(turn_power, -turn_power);
+    pros::delay(20);
+  }
+  path2_brake_drive();
+  const bool usable = std::fabs(last_error_deg) <= 12.0;
+  std::printf("PATH2_GPS_TURN result=timeout target=%.1f error=%.1f continue=%d\n",
+              target_heading_deg, last_error_deg, static_cast<int>(usable));
+  std::fflush(stdout);
+  return usable;
+}
+
+void path2_blank_impact_imu(unsigned duration_ms) {
+  path2_prefer_gps_until_ms = pros::millis() + 5000;
+  const std::uint32_t started_ms = pros::millis();
+  while (pros::millis() - started_ms < duration_ms) {
+    navigation::update();
+    pros::delay(20);
+  }
+}
 
 struct Path2FastDriveResult {
   bool reached{false};
@@ -142,13 +247,36 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
   navigation::update();
   const auto start_pose = navigation::current_pose();
   const double start_imu_cw_deg = chassis.drive_imu_get();
-  if (!start_pose.valid || !std::isfinite(start_imu_cw_deg)) return false;
+  if (!std::isfinite(start_imu_cw_deg)) return false;
+  // A Goal impact can momentarily rattle the IMU. During the bounded blanking
+  // window, use the wall-facing GPS for the absolute heading once, then
+  // re-anchor the fast IMU rate signal to that heading for the actual turn.
+  if (pros::millis() < path2_prefer_gps_until_ms) {
+    double gps_heading_deg = NAN;
+    if (path2_field_heading_from_gps(gps_heading_deg)) {
+      path2_imu_anchor_cw_deg = start_imu_cw_deg;
+      path2_field_anchor_heading_deg = gps_heading_deg;
+      path2_imu_anchor_valid = true;
+      std::printf("PATH2_TURN heading_reanchor=gps heading=%.2f imu=%.2f\n",
+                  gps_heading_deg, start_imu_cw_deg);
+      std::fflush(stdout);
+    }
+  }
+  const double current_field_heading_deg = start_pose.valid
+      ? start_pose.heading_deg
+      : path2_field_heading_from_imu(start_imu_cw_deg);
+  if (!std::isfinite(current_field_heading_deg)) return false;
+  if (!start_pose.valid) {
+    std::printf("PATH2_TURN heading_source=imu_fallback heading=%.2f\n",
+                current_field_heading_deg);
+    std::fflush(stdout);
+  }
   const double target_heading_deg = relative
-      ? std::remainder(start_pose.heading_deg + heading_deg, 360.0)
+      ? std::remainder(current_field_heading_deg + heading_deg, 360.0)
       : heading_deg;
   const double initial_field_error_deg = relative
       ? std::remainder(heading_deg, 360.0)
-      : std::remainder(heading_deg - start_pose.heading_deg, 360.0);
+      : std::remainder(heading_deg - current_field_heading_deg, 360.0);
   const double target_imu_cw_deg =
       start_imu_cw_deg - initial_field_error_deg;
   double last_error_deg = initial_field_error_deg;
@@ -224,13 +352,17 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
   path2_brake_drive();
   navigation::update();
   const auto final_pose = navigation::current_pose();
-  const double final_error_deg = final_pose.valid
+  const double final_imu_cw_deg = chassis.drive_imu_get();
+  const double final_heading_deg = final_pose.valid
+      ? final_pose.heading_deg
+      : path2_field_heading_from_imu(final_imu_cw_deg);
+  const double final_error_deg = std::isfinite(final_heading_deg)
       ? std::fabs(std::remainder(
-            target_heading_deg - final_pose.heading_deg, 360.0))
+            target_heading_deg - final_heading_deg, 360.0))
       : std::numeric_limits<double>::infinity();
   std::printf(
       "PATH2_TURN result=timeout target=%.2f heading=%.2f error=%.2f\n",
-      target_heading_deg, final_pose.heading_deg, final_error_deg);
+      target_heading_deg, final_heading_deg, final_error_deg);
   std::fflush(stdout);
   return final_error_deg <= tolerance_deg + 1.5;
 }
@@ -243,9 +375,13 @@ bool path2_chain_turn(double heading_deg, bool relative = false,
                       double settle_tolerance_deg = 4.0) {
   navigation::update();
   const auto start_pose = navigation::current_pose();
-  if (!start_pose.valid) return false;
+  const double start_imu_cw_deg = chassis.drive_imu_get();
+  const double current_field_heading_deg = start_pose.valid
+      ? start_pose.heading_deg
+      : path2_field_heading_from_imu(start_imu_cw_deg);
+  if (!std::isfinite(current_field_heading_deg)) return false;
   const double absolute_target_deg = relative
-      ? std::remainder(start_pose.heading_deg + heading_deg, 360.0)
+      ? std::remainder(current_field_heading_deg + heading_deg, 360.0)
       : heading_deg;
   if (path2_fast_turn(heading_deg, relative, settle_tolerance_deg)) {
     return true;
@@ -260,14 +396,17 @@ bool path2_chain_turn(double heading_deg, bool relative = false,
   navigation::update();
   const auto final_pose = navigation::current_pose();
   const double imu_deg = chassis.drive_imu_get();
-  if (!final_pose.valid || !std::isfinite(imu_deg)) return false;
+  const double final_heading_deg = final_pose.valid
+      ? final_pose.heading_deg
+      : path2_field_heading_from_imu(imu_deg);
+  if (!std::isfinite(final_heading_deg)) return false;
   const double final_error_deg = std::fabs(std::remainder(
-      absolute_target_deg - final_pose.heading_deg, 360.0));
+      absolute_target_deg - final_heading_deg, 360.0));
   const bool safe_to_chain = final_error_deg <= 10.0;
   std::printf(
       "PATH2_CHAIN turn_retry_end target=%.2f heading=%.2f error=%.2f "
       "continue=%d\n",
-      absolute_target_deg, final_pose.heading_deg, final_error_deg,
+      absolute_target_deg, final_heading_deg, final_error_deg,
       static_cast<int>(safe_to_chain));
   std::fflush(stdout);
   return safe_to_chain;
@@ -302,79 +441,6 @@ bool path2_nav_ok(navigation::Result result, const char* step) {
 void path2_stop_all() {
   navigation::stop();
   upper_intake.move(0);
-}
-
-// Program initialization cannot safely assume the lift is physically at rest:
-// an upload while it is raised would otherwise redefine that height as zero.
-// Establish the only trustworthy zero by gently driving downward until both
-// motors are loaded and the port-16 sensor has stopped moving, then reset.
-bool path2_home_lift_at_bottom() {
-  constexpr int kHomingPower = -45;
-  constexpr unsigned kHomingTimeoutMs = 3500;
-  constexpr unsigned kBottomConfirmMs = 250;
-  constexpr std::int32_t kBottomCurrentMa = 1100;
-  constexpr std::int32_t kStillWindowCentideg = 120;
-
-  cascade_lift::disable_pid();
-  cascade_lift::clear_fault();
-  slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-  slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
-  if (!slider_rotation_sensor.is_installed() ||
-      !slider_right.is_installed() || !slider_left.is_installed()) {
-    std::printf("PATH2_LIFT_HOME result=missing_device\n");
-    std::fflush(stdout);
-    return false;
-  }
-
-  const std::uint32_t started_ms = pros::millis();
-  std::uint32_t bottom_candidate_ms = 0;
-  std::int32_t bottom_candidate_position = 0;
-  while (pros::millis() - started_ms < kHomingTimeoutMs) {
-    if (pros::competition::is_connected() &&
-        pros::competition::is_disabled()) {
-      break;
-    }
-    slider_right.move(kHomingPower);
-    slider_left.move(kHomingPower);
-    pros::delay(20);
-
-    const std::int32_t raw_position = slider_rotation_sensor.get_position();
-    const std::int32_t average_current_ma =
-        (std::abs(slider_right.get_current_draw()) +
-         std::abs(slider_left.get_current_draw())) / 2;
-    if (average_current_ma >= kBottomCurrentMa) {
-      if (bottom_candidate_ms == 0) {
-        bottom_candidate_ms = pros::millis();
-        bottom_candidate_position = raw_position;
-      } else if (std::abs(raw_position - bottom_candidate_position) >
-                 kStillWindowCentideg) {
-        bottom_candidate_ms = pros::millis();
-        bottom_candidate_position = raw_position;
-      } else if (pros::millis() - bottom_candidate_ms >= kBottomConfirmMs) {
-        slider_right.brake();
-        slider_left.brake();
-        // This is now a physically verified rest position, so resetting the
-        // multi-turn sensor and lift controller state is valid.
-        cascade_lift::initialize_at_rest();
-        std::printf(
-            "PATH2_LIFT_HOME result=success elapsed=%lu current_ma=%ld\n",
-            static_cast<unsigned long>(pros::millis() - started_ms),
-            static_cast<long>(average_current_ma));
-        std::fflush(stdout);
-        return true;
-      }
-    } else {
-      bottom_candidate_ms = 0;
-    }
-  }
-
-  slider_right.brake();
-  slider_left.brake();
-  cascade_lift::disable_pid();
-  std::printf("PATH2_LIFT_HOME result=failed elapsed=%lu\n",
-              static_cast<unsigned long>(pros::millis() - started_ms));
-  std::fflush(stdout);
-  return false;
 }
 
 bool path2_config_ready() {
@@ -790,10 +856,10 @@ bool path2_approach_stack(Path2Point target, bool reverse,
       target.x, target.y, robot_center_target.x, robot_center_target.y,
       pickup_reach, final_distance);
   std::fflush(stdout);
-  // Close the longer pneumatic claw 8.5 inches before its calibrated contact
+  // Close the longer pneumatic claw 9.2 inches before its calibrated contact
   // point, then finish the approach while it is already closing around the
   // stack. This avoids driving past the stack before the piston can capture it.
-  constexpr double kPneumaticGrabLeadIn = 8.5;
+  constexpr double kPneumaticGrabLeadIn = 9.2;
   const double before_grab =
       std::max(0.0, final_distance - kPneumaticGrabLeadIn);
   if (before_grab > 0.05) {
@@ -859,13 +925,10 @@ bool localization_two_cup_red_auton() {
   using namespace path2_config;
   default_constants();
   path2_stop_all();
-  // A prior upload or interrupted run may have zeroed port 16 while raised.
-  // Physically establish the bottom before trusting any Stage 2/3 position.
-  if (!path2_home_lift_at_bottom()) {
-    std::printf("PATH2 abort=lift_bottom_home_failed\n");
-    std::fflush(stdout);
-    return false;
-  }
+  // Competition setup starts the lift physically at rest, and initialize()
+  // establishes that state as zero. Do not block the entire route on a second
+  // current-threshold homing pass before the first drivetrain command.
+  cascade_lift::clear_fault();
   slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
   slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
   slider_right.brake();
@@ -875,14 +938,33 @@ bool localization_two_cup_red_auton() {
     std::fflush(stdout);
     return false;
   }
-  // The arm changed to an 11 W motor. Its old position gains oscillate with
-  // the new mechanism, so autonomous uses passive braking until retuning.
-  claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
-  claw_arm.move(0);
+  // run_selected_red_auton() owns the arm and continuously holds its recorded
+  // normal position throughout this route.
   if (!navigation::init(kStart.x, kStart.y,
                         kStartHeadingDeg, kStartPositionErrorIn)) {
     return false;
   }
+  path2_imu_anchor_cw_deg = chassis.drive_imu_get();
+  path2_field_anchor_heading_deg = kStartHeadingDeg;
+  path2_imu_anchor_valid = std::isfinite(path2_imu_anchor_cw_deg);
+  const auto gps_start_position = gps_7.get_position();
+  const double gps_start_heading_cw_deg = gps_7.get_heading();
+  const double gps_start_error_in = gps_7.get_error() * 39.37007874015748;
+  path2_gps_heading_anchor_valid = gps_7.is_installed() &&
+      std::isfinite(gps_start_position.x) &&
+      std::isfinite(gps_start_position.y) &&
+      std::isfinite(gps_start_heading_cw_deg) &&
+      std::isfinite(gps_start_error_in) && gps_start_error_in >= 0.0 &&
+      gps_start_error_in <= localization::kGpsMaxReportedErrorIn;
+  if (path2_gps_heading_anchor_valid) {
+    const auto gps_project_start =
+        localization::vex_gps_to_project_robot_pose(
+            gps_start_position.x, gps_start_position.y,
+            gps_start_heading_cw_deg);
+    path2_gps_heading_rotation_deg = std::remainder(
+        kStartHeadingDeg - gps_project_start.heading_deg, 360.0);
+  }
+  path2_prefer_gps_until_ms = 0;
 
   Path2LiftService lift;
   lift.request(0);
@@ -907,6 +989,7 @@ bool localization_two_cup_red_auton() {
   const auto preload_reverse = path2_fast_drive(
       -11.0, kPhase1DrivePower, 1800);
   if (preload_reverse.disabled) return false;
+  path2_blank_impact_imu(600);
   navigation::update();
   const auto first_goal_pose = navigation::current_pose();
   std::printf("PATH2 first_goal x=%.3f y=%.3f heading=%.3f\n",
@@ -927,14 +1010,20 @@ bool localization_two_cup_red_auton() {
   // B. The verified -60-degree preload alignment leaves the chassis parallel
   // to the path X axis above the Goal. Retreat eleven inches away from the Goal
   // before curving rear-first toward the next cup at path (24,-24).
-  const auto goal_clearance = path2_fast_drive(
-      kPhase2GoalClearanceIn, kPhase1DrivePower, 1500);
+  auto goal_clearance = path2_fast_drive(
+      kPhase2GoalClearanceIn, kPhase1DrivePower, 2000);
   if (goal_clearance.disabled) return false;
+  if (goal_clearance.traveled_in < kPhase2GoalClearanceIn - 0.25) {
+    goal_clearance = path2_fast_drive(
+        kPhase2GoalClearanceIn - goal_clearance.traveled_in,
+        kPhase1DrivePower, 1200);
+    if (goal_clearance.disabled) return false;
+  }
   if (!path2_approach_stack(kStackA, true,
                             "stack A boomerang approach")) return false;
 
   // Phase 2 ends at the stack coordinate. The ADI-E claw begins closing for
-  // the final 8.5 inches based on the latest loaded test.
+  // the final 9.2 inches based on the latest loaded test.
   if constexpr (kTestStopAfterPhase == 2) {
     path2_stop_all();
     std::printf("PATH2 test_stop=phase_2_after_first_cup_capture\n");
@@ -942,7 +1031,7 @@ bool localization_two_cup_red_auton() {
     return true;
   }
 
-  // C. Pull the captured stack fully into the claw, then begin raising Stage 2
+  // C. Pull the captured stack fully into the claw, then begin raising Stage 1
   // asynchronously. Turn to the starting-frame 180-degree heading, reverse 24
   // inches into the Goal, lower 60 degrees, dwell, then outtake and retreat.
   auto extra_capture = path2_fast_drive(
@@ -981,7 +1070,8 @@ bool localization_two_cup_red_auton() {
   const auto goal_drive = path2_fast_drive(
       -kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true);
   if (goal_drive.disabled || goal_drive.traveled_in < 1.0) return false;
-  // Confirm Stage 2 at the first Goal. It has been rising asynchronously
+  path2_blank_impact_imu(600);
+  // Confirm Stage 1 at the first Goal. It has been rising asynchronously
   // throughout the turn and drive, so this normally returns immediately.
   if (!lift.wait_ready(kFirstCupLiftStage, kLiftReadyToleranceDeg,
                        kScoreStageReadyTimeoutMs)) {
@@ -999,12 +1089,13 @@ bool localization_two_cup_red_auton() {
   pros::delay(kStage1PostLowerWaitMs);
   if (!lift.wait_position(stage1_lowered_target, kLiftReadyToleranceDeg,
                           kStage1LowerTimeoutMs)) {
-    std::printf("PATH2 abort=first_score_drop_not_reached position=%.1f "
+    // The 100-degree lowering command has already run. A stale acceptance
+    // flag must never suppress the pneumatic release or the remaining route.
+    std::printf("PATH2 continue=first_score_drop_not_reached position=%.1f "
                 "target=%.1f\n",
                 cascade_lift::snapshot().position_deg,
                 stage1_lowered_target);
     std::fflush(stdout);
-    return false;
   }
   set_claw_piston(true);
   pros::delay(kStage1OuttakeLeadMs);
@@ -1015,10 +1106,14 @@ bool localization_two_cup_red_auton() {
       kStage1ScoreRetreatIn, kStage1ScoreRetreatPower, 2400);
   if (score_retreat.disabled) return false;
   if (!lift.wait_full_down_complete(800)) {
-    std::printf("PATH2 abort=first_full_down_pulse_timeout\n");
+    // The downward pulse is asynchronous and the next phase does not require
+    // an exact zero before beginning its turn. Never discard the remainder of
+    // autonomous solely because the completion flag arrived late.
+    std::printf("PATH2 continue=first_full_down_pulse_timeout position=%.1f\n",
+                cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
-    return false;
   }
+  pros::lcd::set_text(6, "P2: FIRST SCORE DONE");
   std::printf("PATH2_PHASE completed=first_stack_deposit next=second_stack\n");
   std::fflush(stdout);
   // Chain directly into the next phase while the lift returns home in its
@@ -1034,7 +1129,9 @@ bool localization_two_cup_red_auton() {
   // frame). Computing it from the noisy post-retreat pose over-rotated toward
   // the mirrored Goal at path (48,-24), while a relative +45 inherited error.
   constexpr double kSecondStackPickupHeadingDeg = 225.0;
-  if (!path2_chain_turn(kSecondStackPickupHeadingDeg, false, 2.5)) return false;
+  // From score 1 onward, wall-strip GPS heading is authoritative. Never cancel
+  // the remaining route merely because the impact invalidated IMU/fused pose.
+  path2_gps_turn(kSecondStackPickupHeadingDeg, 4.0);
   constexpr double kSecondStackCenterTravelIn =
       kStackBTravelIn - kRearPickupReachIn;
   const double second_stack_fast_in =
@@ -1042,7 +1139,7 @@ bool localization_two_cup_red_auton() {
   auto second_stack_drive = path2_fast_drive(
       -second_stack_fast_in, kSecondStackApproachPower, 2200);
   if (second_stack_drive.disabled) return false;
-  constexpr double kPneumaticGrabLeadIn = 7.0;
+  constexpr double kPneumaticGrabLeadIn = 5.5;
   const double second_slow_in =
       kSecondStackCenterTravelIn - second_stack_fast_in;
   second_stack_drive = path2_fast_drive(
@@ -1082,13 +1179,14 @@ bool localization_two_cup_red_auton() {
   // alignment after the (48,-48) pickup is its 180-degree opposite: +90.
   // E. Complete that rear-facing alignment, reverse 12 inches into the Goal,
   // lower from the loaded height, then outtake and retreat.
-  if (!path2_fast_turn(90.0, false, 1.5)) return false;
+  path2_gps_turn(90.0, 4.0);
   const auto second_goal_drive = path2_fast_drive(
       -kStage2GoalDriveIn, kStage2GoalDrivePower, 2600, true, true);
   if (second_goal_drive.disabled || second_goal_drive.traveled_in < 1.0) {
     return false;
   }
-  // Confirm Stage 3 at the second Goal before performing the 60-degree drop.
+  path2_blank_impact_imu(600);
+  // Confirm Stage 2 at the second Goal before performing the 100-degree drop.
   if (!lift.wait_ready(kSecondCupLiftStage, kLiftReadyToleranceDeg,
                        kScoreStageReadyTimeoutMs)) {
     std::printf("PATH2 continue=second_score_stage_not_ready position=%.1f\n",
@@ -1102,12 +1200,11 @@ bool localization_two_cup_red_auton() {
   pros::delay(kStage1PostLowerWaitMs);
   if (!lift.wait_position(stage2_lowered_target, kLiftReadyToleranceDeg,
                           kStage1LowerTimeoutMs)) {
-    std::printf("PATH2 abort=second_score_drop_not_reached position=%.1f "
+    std::printf("PATH2 continue=second_score_drop_not_reached position=%.1f "
                 "target=%.1f\n",
                 cascade_lift::snapshot().position_deg,
                 stage2_lowered_target);
     std::fflush(stdout);
-    return false;
   }
   set_claw_piston(true);
   pros::delay(kStage1OuttakeLeadMs);
@@ -1122,31 +1219,11 @@ bool localization_two_cup_red_auton() {
   }
   // End the tested route 24 inches clear of the Goal, facing the requested
   // absolute 180-degree heading and holding position.
-  if (!path2_fast_turn(180.0)) return false;
-  if constexpr (kTestStopAfterPhase == 4) {
-    path2_stop_all();
-    std::printf("PATH2 test_stop=phase_4_after_second_stack_score\n");
-    std::fflush(stdout);
-    return true;
-  }
-  // F. Finish at updated Path coordinate (60,-48), production (48,60), and
-  // return the lift to its starting/rest position.
-  navigation::update();
-  auto pose = navigation::current_pose();
-  if (!pose.valid || !path2_nav_ok(navigation::go_to_pose(
-          kFinal.x, kFinal.y, path2_front_heading(pose, kFinal),
-          kFastDrivePower, 9000, false, false, false),
-          "finish at path 60,-48")) {
-    return false;
-  }
-
-  lift.request(kSafeFinalLiftStage);
-  if (!lift.wait_ready(kSafeFinalLiftStage, kLiftReadyToleranceDeg,
-                       kLiftReadyTimeoutMs)) {
-    std::printf("PATH2 abort=safe_final_lift_not_ready\n");
-    std::fflush(stdout);
-    return false;
-  }
+  path2_gps_turn(180.0, 4.0);
+  // This is the requested competition endpoint: 24 inches clear of the second
+  // Goal, lift returned by the full-down pulse, and chassis facing 180 degrees.
+  // The old development build called this a phase-4 test stop; it is now the
+  // explicit successful end of the complete two-cup route.
   path2_stop_all();
   std::printf("PATH2 complete=1\n");
   std::fflush(stdout);

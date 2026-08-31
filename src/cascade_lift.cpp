@@ -23,17 +23,22 @@ constexpr double kImvPerDegS = 0.0;
 constexpr double kDmvPerDegPerS = 10.0;
 constexpr double kDownDmvPerDegPerS = 14.0;
 constexpr double kGravityMv = 0.0;  // Tune after the five heights are validated.
-constexpr double kMinimumUpwardPidMv = 2000.0;
-constexpr double kMinimumDownwardPidMv = 2500.0;
-constexpr double kPidVoltageLimitMv = 12000.0;
+// Live 2026-08-30 traces found the loaded cascade stops moving below roughly
+// 3 V upward and stalls about 30 degrees above bottom at 2.5 V downward.
+// These floors keep it moving through static friction; D still removes power
+// near a fast approach, and the position/velocity band brakes at the target.
+constexpr double kMinimumUpwardPidMv = 5000.0;
+constexpr double kMinimumDownwardPidMv = 4000.0;
+constexpr double kPidVoltageLimitMv = 10000.0;
 constexpr double kPidDownwardVoltageLimitMv = 9000.0;
-constexpr double kShortStageUpwardLimitMv = 6000.0;
+constexpr double kShortStageUpwardLimitMv = 9000.0;
 constexpr double kVelocityFilterAlpha = 0.20;
 constexpr double kIntegralZoneDeg = 40.0;
 constexpr double kIntegralLimitDegS = 100.0;
-constexpr double kPositionToleranceDeg = 5.0;
+constexpr double kStagePositionToleranceDeg = 16.0;
+constexpr double kZeroPositionToleranceDeg = 1.5;
 constexpr double kVelocityToleranceDegS = 8.0;
-constexpr double kUpperSoftLimitDeg = 2000.0;
+constexpr double kUpperSoftLimitDeg = 1717.20;
 constexpr double kCalibrationTravelLimitDeg = kUpperSoftLimitDeg;
 constexpr double kBottomRezeroWindowDeg = 40.0;
 constexpr double kBottomStillVelocityDegS = 6.0;
@@ -42,11 +47,10 @@ constexpr std::uint32_t kBottomConfirmMs = 300;
 constexpr double kStallVelocityDegS = 4.0;
 constexpr double kStallOutputMv = 7000.0;
 constexpr std::uint32_t kStallTimeoutMs = 350;
-// Empirical port-16 multi-turn positions, measured upward from stage 0/rest.
-// Unmeasured stages remain NaN until the current calibration session records
-// them. Keep these values in ascending stage order.
+// Empirical port-16 multi-turn positions measured on 2026-08-30 from the
+// freshly reset stage-0/rest position. Stage 4 is the physical maximum.
 constexpr std::array<double, kStageCount> kStageCalibrationDeg = {
-    427.59, 757.62, 1140.56, 1524.20, 1950.00};
+    427.59, 757.62, 1140.56, 1717.20};
 
 struct State {
   Snapshot data;
@@ -83,10 +87,14 @@ void command_power(int power) {
 }
 
 void command_voltage(double millivolts) {
-  const auto voltage = static_cast<std::int32_t>(std::lround(
-      std::clamp(millivolts, -12000.0, 12000.0)));
-  slider_right.move_voltage(voltage);
-  slider_left.move_voltage(voltage);
+  // Use the same normalized command path as the proven R1/R2 manual control.
+  // On the current motor firmware the voltage API accepted commands but both
+  // lift encoders and motor currents stayed at zero during the supervised PID
+  // sequence. Preserve millivolts internally for tuning/telemetry and convert
+  // only at the device boundary.
+  const double bounded_mv = std::clamp(millivolts, -12000.0, 12000.0);
+  const int power = static_cast<int>(std::lround(bounded_mv * 127.0 / 12000.0));
+  command_power(power);
 }
 
 void reset_controller_terms() {
@@ -288,6 +296,10 @@ void update() {
   }
 
   state.data.error_deg = state.data.target_deg - state.data.position_deg;
+  const double active_position_tolerance_deg =
+      state.data.target_deg <= 0.0
+          ? kZeroPositionToleranceDeg
+          : kStagePositionToleranceDeg;
   if (std::fabs(state.data.error_deg) < kIntegralZoneDeg) {
     state.integral = std::clamp(
         state.integral + state.data.error_deg * dt_s,
@@ -299,7 +311,7 @@ void update() {
   // changes do not create a derivative kick.
   const double derivative = -state.data.velocity_deg_s;
   state.previous_error = state.data.error_deg;
-  if (std::fabs(state.data.error_deg) <= kPositionToleranceDeg &&
+  if (std::fabs(state.data.error_deg) <= active_position_tolerance_deg &&
       std::fabs(state.data.velocity_deg_s) <= kVelocityToleranceDegS) {
     state.integral = 0.0;
     state.data.output_mv = 0.0;
@@ -321,12 +333,12 @@ void update() {
   state.data.output_mv = std::clamp(state.data.output_mv,
                                     -kPidDownwardVoltageLimitMv,
                                     upward_voltage_limit);
-  if (state.data.error_deg > kPositionToleranceDeg &&
+  if (state.data.error_deg > active_position_tolerance_deg &&
       state.data.output_mv > 0.0 &&
       state.data.output_mv < kMinimumUpwardPidMv) {
     state.data.output_mv = kMinimumUpwardPidMv;
   }
-  if (state.data.error_deg < -kPositionToleranceDeg &&
+  if (state.data.error_deg < -active_position_tolerance_deg &&
       state.data.output_mv < 0.0 &&
       state.data.output_mv > -kMinimumDownwardPidMv) {
     state.data.output_mv = -kMinimumDownwardPidMv;

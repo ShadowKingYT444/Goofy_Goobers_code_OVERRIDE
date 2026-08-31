@@ -17,7 +17,9 @@ constexpr double kUnset = std::numeric_limits<double>::quiet_NaN();
 constexpr Point kStart{63.0, 0.0};
 constexpr Point kToggle{72.0, 0.0};
 constexpr Point kGoal{48.0, 24.0};
-constexpr Point kStackA{24.0, 24.0};
+// Production stack (24,-24), shifted one inch to the opposite side of the
+// original line after the prior correction moved the boomerang farther away.
+constexpr Point kStackA{24.0, 25.0};
 constexpr Point kStackB{48.0, 48.0};
 constexpr Point kFinal{48.0, 60.0};  // Path coordinate (60,-48).
 
@@ -30,7 +32,7 @@ constexpr double kToggleReturnDistanceIn = 6.0;
 constexpr int kTogglePower = 90;
 constexpr int kToggleReturnPower = 80;
 constexpr int kPhase1DrivePower = 90;
-constexpr double kPhase2GoalClearanceIn = 11.0;
+constexpr double kPhase2GoalClearanceIn = 13.0;
 
 // Legal navigation poses outside the mapped Goal/wall exclusions.
 // The scoring edge is approximately 12 inches from robot center. Stage two
@@ -74,11 +76,13 @@ constexpr int kPreloadPinUpperPower = 0;
 constexpr int kPreloadPinCounterPower = 110;
 constexpr unsigned kPreloadDepositMs = 500;
 
-constexpr double kLiftReadyToleranceDeg = 5.0;
+// Match the cascade PID's validated stage stopping band. Requiring +/-5 here
+// while the controller brakes at +/-16 caused a guaranteed scoring timeout.
+constexpr double kLiftReadyToleranceDeg = 16.0;
 constexpr unsigned kLiftReadyTimeoutMs = 5000;
 constexpr int kSafeFinalLiftStage = 0;
 constexpr double kScoreLoweringDeg = 15.0;
-constexpr double kStage1ScoreLoweringDeg = 85.0;
+constexpr double kStage1ScoreLoweringDeg = 100.0;
 constexpr double kStage1ExtraCaptureIn = 1.5;
 constexpr int kStage1ExtraCapturePower = 70;
 constexpr double kStage1GoalDriveIn = 24.0;
@@ -89,8 +93,8 @@ constexpr unsigned kStage1OuttakeLeadMs = 100;
 constexpr double kStage1ScoreRetreatIn = 10.0;
 constexpr int kStage1ScoreRetreatPower = 95;
 constexpr unsigned kStage1HomeWaitMs = 1800;
-constexpr int kFirstCupLiftStage = 2;
-constexpr int kSecondCupLiftStage = 3;
+constexpr int kFirstCupLiftStage = 1;
+constexpr int kSecondCupLiftStage = 2;
 constexpr double kLoadedTurnClearanceDeg = 250.0;
 constexpr unsigned kLoadedTurnClearanceTimeoutMs = 650;
 constexpr unsigned kScoreStageReadyTimeoutMs = 1000;
@@ -99,7 +103,7 @@ constexpr double kStage2ExtraCaptureIn = 4.5;
 constexpr int kStage2ExtraCapturePower = 70;
 constexpr double kStage2GoalDriveIn = 16.0;
 constexpr int kStage2GoalDrivePower = 80;
-constexpr double kStage2ScoreLoweringDeg = 85.0;
+constexpr double kStage2ScoreLoweringDeg = 100.0;
 constexpr double kStage2ScoreRetreatIn = 24.0;
 constexpr int kStage2ScoreRetreatPower = 95;
 
@@ -110,6 +114,6 @@ constexpr double kStackBTravelIn = 33.9411255;
 // Physical qualification gate: 1 stops after the preload drop, 2 after the
 // next cup is captured, 3 after that cup is scored, 4 after the second stack
 // is scored, and 0 runs all.
-constexpr int kTestStopAfterPhase = 4;
+constexpr int kTestStopAfterPhase = 0;
 
 }  // namespace path2_config
