@@ -165,15 +165,15 @@ Path2FastDriveResult path2_fast_drive(double distance_in, int full_power,
 }
 
 bool path2_fast_turn(double heading_deg, bool relative = false,
-                     double settle_tolerance_deg = 2.5) {
+                     double settle_tolerance_deg = 2.5,
+                     unsigned timeout_ms = 2600,
+                     unsigned settle_ms = 40) {
   // Execute the requested global delta against the raw, continuous IMU
   // rotation. The fused pose establishes the field target once, but GPS/LiDAR
   // corrections cannot move the target underneath the controller mid-turn.
   // This also avoids a strict public-API timeout suppressing the rest of Path2.
   const double tolerance_deg =
       std::clamp(settle_tolerance_deg, 1.0, 8.0);
-  constexpr unsigned kSettleMs = 60;
-  constexpr unsigned kTimeoutMs = 2600;
   constexpr double kTurnKp = 1.65;
   constexpr double kTurnKd = 0.055;
   constexpr double kRateFilter = 0.30;
@@ -226,7 +226,7 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
   const std::uint32_t started_ms = last_loop_ms;
   chassis.drive_mode_set(ez::DISABLE, true);
 
-  while (pros::millis() - started_ms < kTimeoutMs) {
+  while (pros::millis() - started_ms < timeout_ms) {
     if (pros::competition::is_connected() &&
         pros::competition::is_disabled()) {
       path2_brake_drive();
@@ -253,7 +253,7 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
     if (std::fabs(error_deg) <= tolerance_deg) {
       path2_brake_drive();
       if (settled_since == 0) settled_since = now;
-      if (now - settled_since >= kSettleMs) {
+      if (now - settled_since >= settle_ms) {
         navigation::update();
         std::printf(
             "PATH2_TURN result=success target=%.2f raw_error=%.2f elapsed=%lu\n",
@@ -269,7 +269,7 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
     if (crossed_target) {
       path2_brake_drive();
       filtered_rate_deg_s = 0.0;
-      pros::delay(30);
+      pros::delay(15);
       continue;
     }
 
@@ -432,12 +432,13 @@ bool path2_config_ready() {
     ready = false;
   }
   need_time("preload_deposit_ms", kPreloadDepositMs);
-  need_double("stage_1_score_lowering_deg", kStage1ScoreLoweringDeg);
   need_double("stage_1_extra_capture_in", kStage1ExtraCaptureIn);
   need_power("stage_1_extra_capture_power", kStage1ExtraCapturePower);
   need_double("stage_1_goal_drive_in", kStage1GoalDriveIn);
   need_power("stage_1_goal_drive_power", kStage1GoalDrivePower);
-  need_time("stage_1_lower_timeout_ms", kStage1LowerTimeoutMs);
+  need_power("score_drop_power", kScoreDropPower);
+  need_time("score_drop_pulse_ms", kScoreDropPulseMs);
+  need_time("score_drop_wait_timeout_ms", kScoreDropWaitTimeoutMs);
   need_time("stage_1_outtake_lead_ms", kStage1OuttakeLeadMs);
   need_double("stage_1_score_retreat_in", kStage1ScoreRetreatIn);
   need_power("stage_1_score_retreat_power", kStage1ScoreRetreatPower);
@@ -450,7 +451,6 @@ bool path2_config_ready() {
   need_power("stage_2_extra_capture_power", kStage2ExtraCapturePower);
   need_double("stage_2_goal_drive_in", kStage2GoalDriveIn);
   need_power("stage_2_goal_drive_power", kStage2GoalDrivePower);
-  need_double("stage_2_score_lowering_deg", kStage2ScoreLoweringDeg);
   need_double("stage_2_score_retreat_in", kStage2ScoreRetreatIn);
   need_power("stage_2_score_retreat_power", kStage2ScoreRetreatPower);
   need_double("lift_ready_tolerance_deg", kLiftReadyToleranceDeg);
@@ -499,7 +499,37 @@ class Path2LiftService {
   Path2LiftService()
       : task_([this] {
           std::uint32_t full_down_started_ms = 0;
+          std::uint32_t score_drop_started_ms = 0;
           while (active_.load(std::memory_order_acquire)) {
+            if (score_drop_requested_.load(std::memory_order_acquire)) {
+              if (!score_drop_active_.load(std::memory_order_acquire)) {
+                score_drop_started_ms = pros::millis();
+                score_drop_active_.store(true, std::memory_order_release);
+              }
+              if (pros::millis() - score_drop_started_ms >=
+                  score_drop_duration_ms_.load(std::memory_order_acquire)) {
+                score_drop_requested_.store(false, std::memory_order_release);
+                continue;
+              }
+              rest_lock_.store(false, std::memory_order_release);
+              cascade_lift::set_manual_power(
+                  -score_drop_power_.load(std::memory_order_acquire));
+              cascade_lift::update();
+              position_deg_.store(cascade_lift::snapshot().position_deg,
+                                  std::memory_order_release);
+              pros::delay(10);
+              continue;
+            }
+            if (score_drop_active_.exchange(false,
+                                            std::memory_order_acq_rel)) {
+              cascade_lift::set_manual_power(0);
+              cascade_lift::update();
+              slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+              slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+              slider_right.brake();
+              slider_left.brake();
+              score_drop_completed_.store(true, std::memory_order_release);
+            }
             if (full_down_requested_.load(std::memory_order_acquire)) {
               if (!full_down_active_.load(std::memory_order_acquire)) {
                 full_down_started_ms = pros::millis();
@@ -616,6 +646,23 @@ class Path2LiftService {
     full_down_requested_.store(true, std::memory_order_release);
   }
 
+  void start_score_drop_for(int power, unsigned duration_ms) {
+    score_drop_completed_.store(false, std::memory_order_release);
+    score_drop_power_.store(std::clamp(power, 1, 127),
+                            std::memory_order_release);
+    score_drop_duration_ms_.store(duration_ms, std::memory_order_release);
+    score_drop_requested_.store(true, std::memory_order_release);
+  }
+
+  bool wait_score_drop_complete(unsigned timeout_ms) {
+    const std::uint32_t start_wait_ms = pros::millis();
+    while (pros::millis() - start_wait_ms < timeout_ms) {
+      if (score_drop_completed_.load(std::memory_order_acquire)) return true;
+      pros::delay(5);
+    }
+    return false;
+  }
+
   bool wait_full_down_complete(unsigned timeout_ms) {
     const std::uint32_t start_wait_ms = pros::millis();
     while (pros::millis() - start_wait_ms < timeout_ms) {
@@ -681,6 +728,11 @@ class Path2LiftService {
   std::atomic<bool> full_down_active_{false};
   std::atomic<bool> full_down_completed_{false};
   std::atomic<unsigned> full_down_duration_ms_{0};
+  std::atomic<bool> score_drop_requested_{false};
+  std::atomic<bool> score_drop_active_{false};
+  std::atomic<bool> score_drop_completed_{false};
+  std::atomic<int> score_drop_power_{0};
+  std::atomic<unsigned> score_drop_duration_ms_{0};
   std::atomic<double> requested_position_deg_{
       std::numeric_limits<double>::quiet_NaN()};
   std::atomic<double> target_position_deg_{0.0};
@@ -781,9 +833,9 @@ bool path2_approach_stack(Path2Point target, bool reverse,
   navigation::update();
   pose = navigation::current_pose();
   if (!pose.valid) return false;
-  const double final_heading = reverse ? path2_rear_heading(pose, target)
-                                       : path2_front_heading(pose, target);
-  if (!path2_chain_turn(final_heading)) return false;
+  // Preserve the boomerang's arrival tangent into the first stack. A separate
+  // final heading correction was turning the rear claw away immediately before
+  // contact and causing an otherwise aligned approach to miss.
   navigation::update();
   pose = navigation::current_pose();
   if (!pose.valid) return false;
@@ -796,10 +848,10 @@ bool path2_approach_stack(Path2Point target, bool reverse,
       target.x, target.y, robot_center_target.x, robot_center_target.y,
       pickup_reach, final_distance);
   std::fflush(stdout);
-  // Close the longer pneumatic claw 9.2 inches before its calibrated contact
+  // Close the longer pneumatic claw 9.7 inches before its calibrated contact
   // point, then finish the approach while it is already closing around the
   // stack. This avoids driving past the stack before the piston can capture it.
-  constexpr double kPneumaticGrabLeadIn = 9.2;
+  constexpr double kPneumaticGrabLeadIn = 9.7;
   const double before_grab =
       std::max(0.0, final_distance - kPneumaticGrabLeadIn);
   if (before_grab > 0.05) {
@@ -923,7 +975,9 @@ bool localization_two_cup_red_auton() {
   const auto toggle_return = path2_fast_drive(
       -kToggleReturnDistanceIn, kToggleReturnPower, 1600);
   if (toggle_return.disabled) return false;
-  if (!path2_fast_turn(-75.0, true)) {
+  // This alignment only needs to be accurate enough for the short preload
+  // docking leg. Do not spend multiple seconds chasing sub-degree settling.
+  if (!path2_fast_turn(-75.0, true, 5.0, 1400, 30)) {
     return false;
   }
   const auto preload_reverse = path2_fast_drive(
@@ -947,9 +1001,9 @@ bool localization_two_cup_red_auton() {
     return true;
   }
 
-  // B. The verified -60-degree preload alignment leaves the chassis parallel
-  // to the path X axis above the Goal. Retreat eleven inches away from the Goal
-  // before curving rear-first toward the next cup at path (24,-24).
+  // B. The preload alignment leaves the chassis parallel to the path X axis
+  // above the Goal. Retreat farther away from the Goal before curving rear-first
+  // toward the next cup so the boomerang has enough room to align its approach.
   auto goal_clearance = path2_fast_drive(
       kPhase2GoalClearanceIn, kPhase1DrivePower, 2000);
   if (goal_clearance.disabled) return false;
@@ -963,7 +1017,7 @@ bool localization_two_cup_red_auton() {
                             "stack A boomerang approach")) return false;
 
   // Phase 2 ends at the stack coordinate. The ADI-E claw begins closing for
-  // the final 9.2 inches based on the latest loaded test.
+  // the final 9.7 inches based on the latest loaded test.
   if constexpr (kTestStopAfterPhase == 2) {
     path2_stop_all();
     std::printf("PATH2 test_stop=phase_2_after_first_cup_capture\n");
@@ -973,7 +1027,7 @@ bool localization_two_cup_red_auton() {
 
   // C. Pull the captured stack fully into the claw, then begin raising Stage 1
   // asynchronously. Turn to the starting-frame 180-degree heading, reverse 24
-  // inches into the Goal, lower 60 degrees, dwell, then outtake and retreat.
+  // inches into the Goal, pulse the lift down, then outtake and retreat.
   auto extra_capture = path2_fast_drive(
       -kStage1ExtraCaptureIn, kStage1ExtraCapturePower, 2000);
   if (extra_capture.disabled) return false;
@@ -1019,22 +1073,13 @@ bool localization_two_cup_red_auton() {
                 cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
-  const auto lift_at_goal = cascade_lift::snapshot();
-  const double stage1_lowered_target =
-      std::max(0.0, lift_at_goal.position_deg - kStage1ScoreLoweringDeg);
-  lift.request_position(stage1_lowered_target);
-  // The stack must physically descend onto the Goal before the claw or
-  // chassis move. Preserve the requested 0.2-second minimum dwell, then gate
-  // outtake on the measured port-16 position rather than elapsed time alone.
-  pros::delay(kStage1PostLowerWaitMs);
-  if (!lift.wait_position(stage1_lowered_target, kLiftReadyToleranceDeg,
-                          kStage1LowerTimeoutMs)) {
-    // The 100-degree lowering command has already run. A stale acceptance
-    // flag must never suppress the pneumatic release or the remaining route.
-    std::printf("PATH2 continue=first_score_drop_not_reached position=%.1f "
-                "target=%.1f\n",
-                cascade_lift::snapshot().position_deg,
-                stage1_lowered_target);
+  // Deposit with a short direct pulse instead of waiting up to 1.1 seconds
+  // for the position PID to lower and settle. The lift task owns the motors,
+  // applies power 100 for 0.1 seconds, and brakes before the claw releases.
+  lift.start_score_drop_for(kScoreDropPower, kScoreDropPulseMs);
+  if (!lift.wait_score_drop_complete(kScoreDropWaitTimeoutMs)) {
+    std::printf("PATH2 continue=first_score_drop_pulse_timeout position=%.1f\n",
+                cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
   set_claw_piston(true);
@@ -1082,14 +1127,14 @@ bool localization_two_cup_red_auton() {
   auto second_stack_drive = path2_fast_drive(
       -second_stack_fast_in, kSecondStackApproachPower, 2200);
   if (second_stack_drive.disabled) return false;
-  constexpr double kPneumaticGrabLeadIn = 5.5;
+  constexpr double kPneumaticGrabLeadIn = 5.2;
   const double second_slow_in =
       kSecondStackCenterTravelIn - second_stack_fast_in;
   second_stack_drive = path2_fast_drive(
       -std::max(0.0, second_slow_in - kPneumaticGrabLeadIn),
       kSecondStackSlowPower, 2600);
   if (second_stack_drive.disabled) return false;
-  // Begin closing 5.5 inches before contact, then carry the closing claw
+  // Begin closing 5.2 inches before contact, then carry the closing claw
   // through the remaining approach so it cannot pass the stack before closing.
   set_claw_piston(false);
   pros::delay(100);
@@ -1120,8 +1165,8 @@ bool localization_two_cup_red_auton() {
   // Ignore accumulated relative-heading error here. The prior -90-degree
   // absolute target faced directly away from the Goal, so the correct field
   // alignment after the (48,-48) pickup is its 180-degree opposite: +90.
-  // E. Complete that rear-facing alignment, reverse 12 inches into the Goal,
-  // lower from the loaded height, then outtake and retreat.
+  // E. Complete that rear-facing alignment, reverse into the Goal, pulse the
+  // lift down, then outtake and retreat.
   if (!path2_fast_turn(90.0, false, 3.5)) {
     std::printf("PATH2 continue=second_goal_turn_degraded\n");
     std::fflush(stdout);
@@ -1139,17 +1184,10 @@ bool localization_two_cup_red_auton() {
                 cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
-  const auto stage2_lift_at_goal = cascade_lift::snapshot();
-  const double stage2_lowered_target = std::max(
-      0.0, stage2_lift_at_goal.position_deg - kStage2ScoreLoweringDeg);
-  lift.request_position(stage2_lowered_target);
-  pros::delay(kStage1PostLowerWaitMs);
-  if (!lift.wait_position(stage2_lowered_target, kLiftReadyToleranceDeg,
-                          kStage1LowerTimeoutMs)) {
-    std::printf("PATH2 continue=second_score_drop_not_reached position=%.1f "
-                "target=%.1f\n",
-                cascade_lift::snapshot().position_deg,
-                stage2_lowered_target);
+  lift.start_score_drop_for(kScoreDropPower, kScoreDropPulseMs);
+  if (!lift.wait_score_drop_complete(kScoreDropWaitTimeoutMs)) {
+    std::printf("PATH2 continue=second_score_drop_pulse_timeout position=%.1f\n",
+                cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
   set_claw_piston(true);

@@ -609,7 +609,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
 
         self.assertIn("kStart{63.0, 0.0}", config)
         self.assertIn("kGoal{48.0, 24.0}", config)
-        self.assertIn("kStackA{24.0, 25.5}", config)
+        self.assertIn("kStackA{24.4, 25.5}", config)
         self.assertIn("kStackB{48.0, 48.0}", config)
         self.assertIn("kFinal{48.0, 60.0}", config)
         self.assertIn("kStartHeadingDeg = 0.0", config)
@@ -626,30 +626,30 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kRearClawExtensionIn = 1.0", config)
         self.assertIn("kRearPickupReachIn", config)
         self.assertIn("kScoreLoweringDeg = 15.0", config)
-        self.assertIn("kPhase2GoalClearanceIn = 13.0", config)
-        self.assertIn("kStage1ScoreLoweringDeg = 100.0", config)
-        self.assertIn("kStage1ExtraCaptureIn = 1.5", config)
+        self.assertIn("kPhase2GoalClearanceIn = 13.5", config)
+        self.assertIn("kStage1ExtraCaptureIn = 2.0", config)
         self.assertIn("kStage1ExtraCapturePower = 70", config)
         self.assertIn("kStage1GoalDriveIn = 24.0", config)
         self.assertIn("kStage1GoalDrivePower = 80", config)
-        self.assertIn("kStage1PostLowerWaitMs = 200", config)
+        self.assertIn("kScoreDropPower = 100", config)
+        self.assertIn("kScoreDropPulseMs = 100", config)
+        self.assertIn("kScoreDropWaitTimeoutMs = 180", config)
         self.assertIn("kStage1OuttakeLeadMs = 100", config)
         self.assertIn("kStage1ScoreRetreatPower = 95", config)
-        self.assertIn("kStage1ScoreRetreatIn = 10.0", config)
+        self.assertIn("kStage1ScoreRetreatIn = 9.75", config)
         self.assertIn("kStage2ExtraCaptureIn = 4.5", config)
         self.assertIn("kStage2GoalDriveIn = 16.0", config)
-        self.assertIn("kStage2ScoreLoweringDeg = 100.0", config)
         self.assertIn("kSecondStackApproachPower = 60", config)
         self.assertIn("kSecondStackSlowPower = 38", config)
         self.assertIn("kFirstCupLiftStage = 1", config)
         self.assertIn("kSecondCupLiftStage = 2", config)
         self.assertIn("kLoadedTurnClearanceDeg = 250.0", config)
         self.assertIn("kLoadedTurnClearanceTimeoutMs = 650", config)
-        self.assertIn("kScoreStageReadyTimeoutMs = 1000", config)
+        self.assertIn("kScoreStageReadyTimeoutMs = 400", config)
         self.assertIn("kStage2ScoreRetreatIn = 24.0", config)
         self.assertIn("kTestStopAfterPhase = 0", config)
 
-        self.assertIn("path2_fast_turn(-75.0, true)", route)
+        self.assertIn("path2_fast_turn(-75.0, true, 5.0, 1400, 30)", route)
         self.assertIn(
             "path2_fast_drive(\n      -11.0, kPhase1DrivePower", route
         )
@@ -664,15 +664,15 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("final_error_deg <= 10.0", route)
         self.assertIn("robot_center_target", route)
         self.assertIn("pickup_reach", route)
-        self.assertIn("constexpr double kPneumaticGrabLeadIn = 9.2", route)
-        self.assertIn("constexpr double kPneumaticGrabLeadIn = 5.5", route)
+        self.assertIn("constexpr double kPneumaticGrabLeadIn = 9.7", route)
+        self.assertIn("constexpr double kPneumaticGrabLeadIn = 5.2", route)
         slow_capture = route.index(
             "const auto capture_result = navigation::drive_relative("
         )
         first_claw_close = route.index("set_claw_piston(false);", slow_capture)
         self.assertLess(slow_capture, first_claw_close)
         self.assertNotIn("path2_set_rollers", route)
-        self.assertIn("final 9.2 inches based on the latest loaded test", route)
+        self.assertIn("final 9.7 inches based on the latest loaded test", route)
         self.assertIn("test_stop=phase_2_after_first_cup_capture", route)
         self.assertIn("lift.request(kFirstCupLiftStage)", route)
         self.assertNotIn("first_cup_lift_not_ready", route)
@@ -686,10 +686,12 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("target_imu_cw_deg", route)
         self.assertIn("settle_tolerance_deg = 2.5", route)
         self.assertIn("final_error_deg <= tolerance_deg + 1.5", route)
-        self.assertIn("stage1_lowered_target", route)
-        self.assertIn("lift_at_goal.position_deg", route)
-        self.assertIn("continue=first_score_drop_not_reached", route)
-        self.assertIn("continue=second_score_drop_not_reached", route)
+        self.assertIn(
+            "lift.start_score_drop_for(kScoreDropPower, kScoreDropPulseMs)",
+            route,
+        )
+        self.assertIn("continue=first_score_drop_pulse_timeout", route)
+        self.assertIn("continue=second_score_drop_pulse_timeout", route)
         self.assertIn("remaining_capture", route)
         self.assertIn("extra_capture_total_in", route)
         self.assertIn("first_extra_capture_short", route)
@@ -702,10 +704,11 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
             "-kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true",
             route,
         )
-        self.assertIn("pros::delay(kStage1PostLowerWaitMs)", route)
         self.assertIn("pros::delay(kStage1OuttakeLeadMs)", route)
         self.assertIn("kStage1ScoreRetreatIn, kStage1ScoreRetreatPower", route)
-        first_lower_wait = route.index("pros::delay(kStage1PostLowerWaitMs)")
+        first_lower_wait = route.index(
+            "lift.wait_score_drop_complete(kScoreDropWaitTimeoutMs)"
+        )
         first_outtake = route.index(
             "set_claw_piston(true);",
             first_lower_wait,
@@ -757,7 +760,12 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertLess(startup_stage_zero, first_stage_two_request)
         self.assertIn("slider_right.brake()", route)
         self.assertIn("slider_left.brake()", route)
-        self.assertIn("stage2_lowered_target", route)
+        self.assertEqual(
+            route.count(
+                "lift.start_score_drop_for(kScoreDropPower, kScoreDropPulseMs)"
+            ),
+            2,
+        )
         self.assertIn("second_score_stage_not_ready", route)
         self.assertNotIn("Path2WristService", route)
         self.assertIn("continuously holds its recorded", route)
