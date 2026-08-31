@@ -383,7 +383,7 @@ bool run_selected_red_auton() {
   // ADI-D is active-low: extend for the Toggle, then return to retracted.
   clamp_piston.set_value(false);
   clamp_output_high.store(false, std::memory_order_release);
-  pros::delay(1000);
+  pros::delay(700);
   clamp_piston.set_value(true);
   clamp_output_high.store(true, std::memory_order_release);
   pros::delay(200);

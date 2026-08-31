@@ -19,7 +19,7 @@ constexpr Point kToggle{72.0, 0.0};
 constexpr Point kGoal{48.0, 24.0};
 // Production stack (24,-24), shifted one inch to the opposite side of the
 // original line after the prior correction moved the boomerang farther away.
-constexpr Point kStackA{24.0, 25.0};
+constexpr Point kStackA{24.0, 25.5};
 constexpr Point kStackB{48.0, 48.0};
 constexpr Point kFinal{48.0, 60.0};  // Path coordinate (60,-48).
 
@@ -29,9 +29,9 @@ constexpr double kStartHeadingDeg = 0.0;
 constexpr double kStartPositionErrorIn = 1.0;
 constexpr double kToggleSignedDistanceIn = 7.0;
 constexpr double kToggleReturnDistanceIn = 6.0;
-constexpr int kTogglePower = 90;
-constexpr int kToggleReturnPower = 80;
-constexpr int kPhase1DrivePower = 90;
+constexpr int kTogglePower = 75;
+constexpr int kToggleReturnPower = 65;
+constexpr int kPhase1DrivePower = 75;
 constexpr double kPhase2GoalClearanceIn = 13.0;
 
 // Legal navigation poses outside the mapped Goal/wall exclusions.

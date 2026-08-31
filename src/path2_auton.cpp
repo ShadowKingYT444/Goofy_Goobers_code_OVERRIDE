@@ -20,7 +20,6 @@ bool path2_imu_anchor_valid = false;
 double path2_gps_heading_rotation_deg = 0.0;
 bool path2_gps_heading_anchor_valid = false;
 std::uint32_t path2_prefer_gps_until_ms = 0;
-void path2_brake_drive();
 
 double path2_field_heading_from_imu(double imu_cw_deg) {
   if (!path2_imu_anchor_valid || !std::isfinite(imu_cw_deg)) return NAN;
@@ -46,68 +45,6 @@ bool path2_field_heading_from_gps(double& heading_deg) {
   heading_deg = std::remainder(
       project_pose.heading_deg + path2_gps_heading_rotation_deg, 360.0);
   return std::isfinite(heading_deg);
-}
-
-bool path2_gps_turn(double target_heading_deg,
-                    double tolerance_deg = 4.0) {
-  constexpr std::uint32_t kTimeoutMs = 3000;
-  constexpr std::uint32_t kSettleMs = 100;
-  constexpr double kKp = 1.55;
-  constexpr double kMinimumPower = 28.0;
-  constexpr double kMaximumPower = 90.0;
-  const std::uint32_t started_ms = pros::millis();
-  std::uint32_t settled_since_ms = 0;
-  double last_error_deg = std::numeric_limits<double>::infinity();
-  const double bounded_tolerance_deg =
-      std::clamp(tolerance_deg, 2.0, 10.0);
-  chassis.drive_mode_set(ez::DISABLE, true);
-
-  while (pros::millis() - started_ms < kTimeoutMs) {
-    if (pros::competition::is_connected() &&
-        pros::competition::is_disabled()) {
-      path2_brake_drive();
-      return false;
-    }
-    double heading_deg = NAN;
-    if (!path2_field_heading_from_gps(heading_deg)) {
-      // GPS is the primary post-score source. A finite IMU is only a transient
-      // fallback while waiting for the next wall-strip GPS frame.
-      heading_deg = path2_field_heading_from_imu(chassis.drive_imu_get());
-      if (!std::isfinite(heading_deg)) {
-        path2_brake_drive();
-        pros::delay(20);
-        continue;
-      }
-    }
-    last_error_deg = std::remainder(target_heading_deg - heading_deg, 360.0);
-    if (std::fabs(last_error_deg) <= bounded_tolerance_deg) {
-      path2_brake_drive();
-      if (settled_since_ms == 0) settled_since_ms = pros::millis();
-      if (pros::millis() - settled_since_ms >= kSettleMs) {
-        std::printf("PATH2_GPS_TURN result=success target=%.1f heading=%.1f\n",
-                    target_heading_deg, heading_deg);
-        std::fflush(stdout);
-        return true;
-      }
-      pros::delay(20);
-      continue;
-    }
-    settled_since_ms = 0;
-    double command = std::clamp(kKp * last_error_deg,
-                                -kMaximumPower, kMaximumPower);
-    if (std::fabs(command) < kMinimumPower) {
-      command = std::copysign(kMinimumPower, command);
-    }
-    const int turn_power = static_cast<int>(std::lround(command));
-    chassis.drive_set(turn_power, -turn_power);
-    pros::delay(20);
-  }
-  path2_brake_drive();
-  const bool usable = std::fabs(last_error_deg) <= 12.0;
-  std::printf("PATH2_GPS_TURN result=timeout target=%.1f error=%.1f continue=%d\n",
-              target_heading_deg, last_error_deg, static_cast<int>(usable));
-  std::fflush(stdout);
-  return usable;
 }
 
 void path2_blank_impact_imu(unsigned duration_ms) {
@@ -251,20 +188,23 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
   // A Goal impact can momentarily rattle the IMU. During the bounded blanking
   // window, use the wall-facing GPS for the absolute heading once, then
   // re-anchor the fast IMU rate signal to that heading for the actual turn.
+  double gps_reanchor_heading_deg = NAN;
   if (pros::millis() < path2_prefer_gps_until_ms) {
-    double gps_heading_deg = NAN;
-    if (path2_field_heading_from_gps(gps_heading_deg)) {
+    if (path2_field_heading_from_gps(gps_reanchor_heading_deg)) {
       path2_imu_anchor_cw_deg = start_imu_cw_deg;
-      path2_field_anchor_heading_deg = gps_heading_deg;
+      path2_field_anchor_heading_deg = gps_reanchor_heading_deg;
       path2_imu_anchor_valid = true;
       std::printf("PATH2_TURN heading_reanchor=gps heading=%.2f imu=%.2f\n",
-                  gps_heading_deg, start_imu_cw_deg);
+                  gps_reanchor_heading_deg, start_imu_cw_deg);
       std::fflush(stdout);
     }
   }
-  const double current_field_heading_deg = start_pose.valid
-      ? start_pose.heading_deg
-      : path2_field_heading_from_imu(start_imu_cw_deg);
+  const double current_field_heading_deg =
+      std::isfinite(gps_reanchor_heading_deg)
+          ? gps_reanchor_heading_deg
+          : (start_pose.valid
+                 ? start_pose.heading_deg
+                 : path2_field_heading_from_imu(start_imu_cw_deg));
   if (!std::isfinite(current_field_heading_deg)) return false;
   if (!start_pose.valid) {
     std::printf("PATH2_TURN heading_source=imu_fallback heading=%.2f\n",
@@ -1131,7 +1071,10 @@ bool localization_two_cup_red_auton() {
   constexpr double kSecondStackPickupHeadingDeg = 225.0;
   // From score 1 onward, wall-strip GPS heading is authoritative. Never cancel
   // the remaining route merely because the impact invalidated IMU/fused pose.
-  path2_gps_turn(kSecondStackPickupHeadingDeg, 4.0);
+  if (!path2_fast_turn(kSecondStackPickupHeadingDeg, false, 3.5)) {
+    std::printf("PATH2 continue=second_stack_turn_degraded\n");
+    std::fflush(stdout);
+  }
   constexpr double kSecondStackCenterTravelIn =
       kStackBTravelIn - kRearPickupReachIn;
   const double second_stack_fast_in =
@@ -1146,7 +1089,7 @@ bool localization_two_cup_red_auton() {
       -std::max(0.0, second_slow_in - kPneumaticGrabLeadIn),
       kSecondStackSlowPower, 2600);
   if (second_stack_drive.disabled) return false;
-  // Begin closing 7 inches before contact, then carry the closing claw
+  // Begin closing 5.5 inches before contact, then carry the closing claw
   // through the remaining approach so it cannot pass the stack before closing.
   set_claw_piston(false);
   pros::delay(100);
@@ -1179,7 +1122,10 @@ bool localization_two_cup_red_auton() {
   // alignment after the (48,-48) pickup is its 180-degree opposite: +90.
   // E. Complete that rear-facing alignment, reverse 12 inches into the Goal,
   // lower from the loaded height, then outtake and retreat.
-  path2_gps_turn(90.0, 4.0);
+  if (!path2_fast_turn(90.0, false, 3.5)) {
+    std::printf("PATH2 continue=second_goal_turn_degraded\n");
+    std::fflush(stdout);
+  }
   const auto second_goal_drive = path2_fast_drive(
       -kStage2GoalDriveIn, kStage2GoalDrivePower, 2600, true, true);
   if (second_goal_drive.disabled || second_goal_drive.traveled_in < 1.0) {
@@ -1219,7 +1165,10 @@ bool localization_two_cup_red_auton() {
   }
   // End the tested route 24 inches clear of the Goal, facing the requested
   // absolute 180-degree heading and holding position.
-  path2_gps_turn(180.0, 4.0);
+  if (!path2_fast_turn(180.0, false, 3.5)) {
+    std::printf("PATH2 continue=final_turn_degraded\n");
+    std::fflush(stdout);
+  }
   // This is the requested competition endpoint: 24 inches clear of the second
   // Goal, lift returned by the full-down pulse, and chassis facing 180 degrees.
   // The old development build called this a phase-4 test stop; it is now the
