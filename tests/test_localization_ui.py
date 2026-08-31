@@ -555,6 +555,8 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         listener_end = main.index("auton select and launch", listener_start)
         listener = main[listener_start:listener_end]
         self.assertIn("E_CONTROLLER_DIGITAL_L2", listener)
+        self.assertIn("selection_pending", listener)
+        self.assertIn("pros::millis() - l2_pressed_ms >= 120", listener)
         self.assertIn("E_CONTROLLER_DIGITAL_B", listener)
         self.assertNotIn("E_CONTROLLER_DIGITAL_A", listener)
         self.assertIn("launch_l2_b", listener)

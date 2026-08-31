@@ -212,7 +212,7 @@ bool update_runtime_pose_editor(pros::Controller& master) {
   return true;
 }
 
-volatile bool opcontrol_auton_running = false;
+std::atomic<bool> opcontrol_auton_running{false};
 // ADI-D is physically inverted: high retracts the cylinder, low extends it.
 std::atomic<bool> clamp_output_high{true};
 
@@ -1754,6 +1754,8 @@ void initialize() {
     bool last_l2 = false;
     bool last_b = false;
     bool l2_press_had_b = false;
+    bool selection_pending = false;
+    std::uint32_t l2_pressed_ms = 0;
     std::uint32_t chord_started_ms = 0;
     bool last_brain_left = false;
     bool last_brain_right = false;
@@ -1780,8 +1782,15 @@ void initialize() {
       const bool touch_pressed =
           touch.touch_status == pros::E_TOUCH_PRESSED ||
           touch.touch_status == pros::E_TOUCH_HELD;
-      if (l2 && !last_l2) l2_press_had_b = b_held;
-      if (l2 && b_held) l2_press_had_b = true;
+      if (l2 && !last_l2) {
+        l2_press_had_b = b_held;
+        selection_pending = !b_held;
+        l2_pressed_ms = pros::millis();
+      }
+      if (l2 && b_held) {
+        l2_press_had_b = true;
+        selection_pending = false;
+      }
       if (l2 && b_held) {
         if (chord_started_ms == 0) chord_started_ms = pros::millis();
         if (launch_armed && selectable &&
@@ -1799,8 +1808,23 @@ void initialize() {
         chord_started_ms = 0;
         if (!l2 && !b_held) launch_armed = true;
       }
+      // A standalone L2 press changes the selection while the button is still
+      // held, so the control gives immediate visible feedback. The short grace
+      // period leaves time for B to join the press without accidentally
+      // changing the selected autonomous before launching it.
+      if (selection_pending && l2 && !b_held && selectable &&
+          pros::millis() - l2_pressed_ms >= 120) {
+        select_red_auton(+1);
+        selection_pending = false;
+        controller.rumble(".");
+      }
       if (!l2 && last_l2) {
-        if (!l2_press_had_b && selectable) select_red_auton(+1);
+        // Preserve quick taps shorter than the 120 ms hold threshold.
+        if (selection_pending && !l2_press_had_b && selectable) {
+          select_red_auton(+1);
+          controller.rumble(".");
+        }
+        selection_pending = false;
         l2_press_had_b = false;
       }
       if (brain_left && !last_brain_left) select_red_auton(-1);
