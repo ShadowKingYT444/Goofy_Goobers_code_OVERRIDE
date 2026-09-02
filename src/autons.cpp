@@ -391,7 +391,7 @@ void update_ai_vision_shadow(PoseEstimate& pose, std::uint32_t now) {
   pose.ai_age_ms = now >= observation.brain_ms ? now - observation.brain_ms : 0;
   pose.ai_reject = observation.reason;
 
-  // update_pose() runs faster than the P8 polling task. A single immutable
+  // update_pose() runs faster than the P6 polling task. A single immutable
   // shadow snapshot must never count as several temporally consistent camera
   // observations merely because the estimator read it several times.
   if (observation.poll_id == 0) {
@@ -2277,7 +2277,7 @@ void run_fused_relative_motion_test() {
   stop_drive_motors();
 
   // A controller-triggered test starts from the estimator that opcontrol has
-  // already been updating. Do not discard valid stopped GPS/P8 corrections by
+  // already been updating. Do not discard valid stopped GPS/P6 corrections by
   // reinitializing from the configured fallback anchor at button press.
   PoseEstimate pose;
   if (telemetry_pose_initialized) {
@@ -5477,7 +5477,7 @@ bool localization_pure_pursuit_endpoint_test() {
   // The start pose is the stationary P7-derived field placement visible in
   // the preflight frame. P7 is used to establish this one-time anchor only;
   // encoder/P6 propagation owns motion and the normal temporal gates decide
-  // whether later GPS/P8 fixes are trustworthy enough for bounded correction.
+  // whether later GPS/P6 fixes are trustworthy enough for bounded correction.
   constexpr localization::FieldPose kStart{29.425, -7.067, 267.074};
   constexpr Waypoint kTarget{3.55, -47.09};
   constexpr double kTargetHeadingDeg = 270.0;

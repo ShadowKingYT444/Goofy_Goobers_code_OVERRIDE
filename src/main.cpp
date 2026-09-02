@@ -30,7 +30,7 @@ constexpr bool RUN_STARTUP_LIDAR_CALIBRATION = false;
 constexpr bool RUN_STARTUP_FORWARD_CALIBRATION = false;
 // Diagnostic-only. Enable for one supervised boot, then restore false.
 constexpr bool RUN_STARTUP_AI_VISION_SCAN = false;
-// One supervised reversible heading sweep for live P8 characterization.
+// One supervised reversible heading sweep for live P6 characterization.
 constexpr bool RUN_STARTUP_AI_VISION_HEADING_SWEEP = false;
 // Diagnostic motion is opt-in for one supervised boot only. Tournament and
 // normal telemetry images must never move the robot during startup.
@@ -115,7 +115,7 @@ constexpr bool RUN_STARTUP_DRIVE_RESPONSE_TEST = false;
 // One supervised sub-inch incremental static-friction characterization.
 constexpr bool RUN_STARTUP_DRIVE_BREAKAWAY_TEST = false;
 // One supervised encoder/IMU propagation test with opportunistic stationary
-// GPS/P8 correction. Restore false immediately after the single run.
+// GPS/P6 correction. Restore false immediately after the single run.
 constexpr bool RUN_STARTUP_FUSED_RELATIVE_MOTION_TEST = false;
 // One supervised bounded turn-autotune boot. Restore false immediately after
 // collecting the paired +/-45 degree trials.
@@ -224,6 +224,8 @@ enum class RedAutonSelection : int {
 std::atomic<int> selected_red_auton{
     static_cast<int>(RedAutonSelection::kTwoCup)};
 std::atomic<bool> auton_selection_locked{false};
+std::atomic<int> detected_distance_port{0};
+std::atomic<int> detected_ai_vision_port{0};
 
 const char* selected_red_auton_name() {
   return selected_red_auton.load(std::memory_order_acquire) ==
@@ -251,6 +253,10 @@ void render_auton_selection() {
     pros::screen::print(pros::E_TEXT_MEDIUM_CENTER, 7,
                         "FULL 1-PIN ROUTE");
   }
+  pros::screen::print(
+      pros::E_TEXT_MEDIUM_CENTER, 9, "DIST P%d   AI P%d",
+      detected_distance_port.load(std::memory_order_acquire),
+      detected_ai_vision_port.load(std::memory_order_acquire));
 }
 
 void select_red_auton(int direction) {
@@ -380,13 +386,11 @@ bool run_selected_red_auton() {
     claw_arm.move(0);
   }, "auton arm hold");
 
-  // ADI-D is active-low: extend for the Toggle, then return to retracted.
+  // ADI-D is active-low. Extend before either autonomous, allow the cylinder
+  // 0.7 seconds to reach full travel, and leave it extended for the route.
   clamp_piston.set_value(false);
   clamp_output_high.store(false, std::memory_order_release);
   pros::delay(700);
-  clamp_piston.set_value(true);
-  clamp_output_high.store(true, std::memory_order_release);
-  pros::delay(200);
 
   // A hotkey test often begins after the robot was repositioned by hand. Motor
   // encoders retain that motion and can have harmless unequal absolute offsets,
@@ -1188,7 +1192,7 @@ void print_distance_frame() {
                      forward_distance.confidence,
                      forward_distance.installed ? "ok" : "no");
     pros::lcd::print(1, "GPS P7 e%.3fm", gps_error_m);
-    pros::lcd::set_text(2, "IMU P12 / AI P8");
+    pros::lcd::set_text(2, "IMU P12 / AI P6");
     pros::lcd::set_text(3, "P9 left slider");
     const auto& vision = ai_vision_shadow_snapshot();
     pros::lcd::print(4, "AI P%u tag=%d %s",
@@ -1480,18 +1484,18 @@ bool ai_vision_heading_characterization() {
   stop_drive_velocity();
   if (!chassis.imu.is_installed() || chassis.imu.is_calibrating() ||
       chassis.imu.get_status() == pros::ImuStatus::error) {
-    std::printf("P8_HEADING event=abort reason=imu_invalid\n");
+    std::printf("P6_HEADING event=abort reason=imu_invalid\n");
     std::fflush(stdout);
     return false;
   }
   const double start_imu_deg = chassis.drive_imu_get();
   if (!std::isfinite(start_imu_deg)) {
-    std::printf("P8_HEADING event=abort reason=imu_nonfinite\n");
+    std::printf("P6_HEADING event=abort reason=imu_nonfinite\n");
     std::fflush(stdout);
     return false;
   }
   std::printf(
-      "P8_HEADING event=start start_imu=%.2f guard_deg=%.1f velocity_rpm=%.1f\n",
+      "P6_HEADING event=start start_imu=%.2f guard_deg=%.1f velocity_rpm=%.1f\n",
       start_imu_deg, kAngleGuardDeg, kTurnVelocityRpm);
   std::fflush(stdout);
 
@@ -1510,7 +1514,7 @@ bool ai_vision_heading_characterization() {
       const double delta_deg = chassis.drive_imu_get() - start_imu_deg;
       if (!std::isfinite(delta_deg) || std::fabs(delta_deg) > kAngleGuardDeg) {
         stop_drive_velocity();
-        std::printf("P8_HEADING event=abort reason=angle_guard delta=%.2f\n",
+        std::printf("P6_HEADING event=abort reason=angle_guard delta=%.2f\n",
                     delta_deg);
         std::fflush(stdout);
         return false;
@@ -1535,7 +1539,7 @@ bool ai_vision_heading_characterization() {
         last_motion_ms = now;
       } else if (now - last_motion_ms > kStallTimeoutMs) {
         stop_drive_velocity();
-        std::printf("P8_HEADING event=abort reason=stall target=%.1f delta=%.2f\n",
+        std::printf("P6_HEADING event=abort reason=stall target=%.1f delta=%.2f\n",
                     target_deg, delta_deg);
         std::fflush(stdout);
         return false;
@@ -1544,7 +1548,7 @@ bool ai_vision_heading_characterization() {
     }
     stop_drive_velocity();
     if (!reached) {
-      std::printf("P8_HEADING event=abort reason=timeout target=%.1f\n",
+      std::printf("P6_HEADING event=abort reason=timeout target=%.1f\n",
                   target_deg);
       std::fflush(stdout);
       return false;
@@ -1575,7 +1579,7 @@ bool ai_vision_heading_characterization() {
     const AiVisionShadowSnapshot vision = ai_vision_shadow_snapshot();
     if (leg_valid > 0) ++visible_legs;
     std::printf(
-        "P8_HEADING event=hold target=%.1f achieved=%.2f valid=%d changed=%d "
+        "P6_HEADING event=hold target=%.1f achieved=%.2f valid=%d changed=%d "
         "repeat=%d tag=%d bearing=%.2f horizontal=%.2f range=%.2f area=%.1f "
         "reason=%s p1_mm=%ld p1_conf=%ld\n",
         target_deg, achieved_deg, leg_valid, leg_changed, leg_repeated,
@@ -1589,7 +1593,7 @@ bool ai_vision_heading_characterization() {
   const double final_delta_deg = chassis.drive_imu_get() - start_imu_deg;
   const bool returned = std::fabs(final_delta_deg) <= 2.0;
   std::printf(
-      "P8_HEADING event=done returned=%d final_delta=%.2f visible_legs=%d "
+      "P6_HEADING event=done returned=%d final_delta=%.2f visible_legs=%d "
       "valid=%d changed=%d repeat=%d\n",
       static_cast<int>(returned), final_delta_deg, visible_legs,
       valid_samples, changed_samples, repeated_samples);
@@ -1655,6 +1659,26 @@ bool recover_scan_start_heading() {
   std::fflush(stdout);
   return success && std::fabs(final_delta_deg - kTargetDeltaDeg) <= 1.2;
 }
+
+void print_smart_port_inventory(const char* phase) {
+  int distance_port = 0;
+  int ai_vision_port = 0;
+  for (std::uint8_t port = 1; port <= 21; ++port) {
+    const int type = static_cast<int>(pros::c::get_plugged_type(port));
+    if (type == static_cast<int>(pros::c::E_DEVICE_DISTANCE)) {
+      distance_port = port;
+    } else if (type == static_cast<int>(pros::c::E_DEVICE_AIVISION)) {
+      ai_vision_port = port;
+    }
+    if (type != 0) {
+      std::printf("DEVICE_PORT phase=%s port=%u type=%d\n", phase,
+                  static_cast<unsigned>(port), type);
+    }
+  }
+  detected_distance_port.store(distance_port, std::memory_order_release);
+  detected_ai_vision_port.store(ai_vision_port, std::memory_order_release);
+  std::fflush(stdout);
+}
 }  // namespace
 
 void initialize() {
@@ -1662,22 +1686,15 @@ void initialize() {
   // able to make a black Brain screen look like a dead user program.
   std::printf("BOOT_STAGE t=%lu stage=entry\n",
               static_cast<unsigned long>(pros::millis()));
-  for (std::uint8_t port = 1; port <= 21; ++port) {
-    const int type = static_cast<int>(pros::c::get_plugged_type(port));
-    if (type != 0) {
-      std::printf("DEVICE_PORT port=%u type=%d\n",
-                  static_cast<unsigned>(port), type);
-    }
-  }
-  std::fflush(stdout);
+  print_smart_port_inventory("boot");
 
   // Full-size 11 W port-4 arm motor. Port 5 supplies the absolute position
   // feedback used by the normal/right position holds in autonomous/opcontrol.
   claw_arm.set_current_limit(2500);
   claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_BRAKE);
   claw_arm.move(0);
-  // Port D is wired active-low: high is the physical retracted state. A then
-  // toggles from this known state instead of inheriting stale mode state.
+  // Port D is wired active-low: high is the physical retracted default. Only
+  // autonomous extends it; opcontrol deliberately has no retract hotkey.
   clamp_piston.set_value(true);
   clamp_output_high.store(true, std::memory_order_release);
 
@@ -1729,6 +1746,9 @@ void initialize() {
               static_cast<unsigned long>(pros::millis()));
   std::fflush(stdout);
   ai_vision_shadow_initialize();
+  // Repeat after slower sensor initialization so a terminal attached just
+  // after upload still receives the live wiring inventory.
+  print_smart_port_inventory("post_init");
   std::printf("BOOT_STAGE t=%lu stage=vision_init_done\n",
               static_cast<unsigned long>(pros::millis()));
   std::fflush(stdout);
@@ -2264,11 +2284,11 @@ void opcontrol() {
     pros::lcd::set_text(6, vision_scan_ok ? "Vision tag found" : "Vision scan no tag");
   }
   if (RUN_STARTUP_AI_VISION_HEADING_SWEEP) {
-    pros::lcd::set_text(6, "P8 sweep in 5 sec");
+    pros::lcd::set_text(6, "P6 sweep in 5 sec");
     pros::delay(5000);
     const bool p8_sweep_ok = ai_vision_heading_characterization();
-    pros::lcd::set_text(6, p8_sweep_ok ? "P8 heading sweep OK"
-                                      : "P8 heading sweep FAIL");
+    pros::lcd::set_text(6, p8_sweep_ok ? "P6 heading sweep OK"
+                                      : "P6 heading sweep FAIL");
   }
   if (RUN_STARTUP_LONG_FUSION_ROUTE) {
     pros::lcd::set_text(6, "Long fusion in 10 sec");
@@ -2289,16 +2309,6 @@ void opcontrol() {
 
   while (true) {
     const bool pose_editor_active = update_runtime_pose_editor(master);
-    const bool piston_toggle_pressed =
-        !pose_editor_active && !opcontrol_auton_running &&
-        !master.get_digital(pros::E_CONTROLLER_DIGITAL_UP) &&
-        master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_A);
-    if (piston_toggle_pressed) {
-      const bool next_output_high =
-          !clamp_output_high.load(std::memory_order_acquire);
-      clamp_output_high.store(next_output_high, std::memory_order_release);
-      clamp_piston.set_value(next_output_high);
-    }
     const bool auton_combo_pressed =
         ENABLE_CONTROLLER_MOTION_DIAGNOSTICS && !pose_editor_active &&
         master.get_digital(pros::E_CONTROLLER_DIGITAL_B) &&

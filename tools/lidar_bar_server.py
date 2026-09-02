@@ -1855,7 +1855,7 @@ def update_latest(frame, serial_port):
                 "connected": True,
                 "serial_port": serial_port,
                 "latest": frame,
-                "message": f"Live on {serial_port}: P1 Distance, P6 IMU, P7 GPS, P8 AI Vision",
+                "message": f"Live on {serial_port}: P1 Distance, P12 IMU, P7 GPS, P6 AI Vision",
                 "rate_hz": rate_hz,
                 "last_sample": frame["sample"],
                 "last_sample_time": now,

@@ -170,7 +170,7 @@ def main() -> None:
             "evidence_kind": "900,000 scheduler-phase simulations",
             "result": (
                 f"drive/IMU/P1 software bound {max(row['latency_max_bound_ms'] or 0 for row in fault['rows'][:4]):.0f} ms; "
-                f"GPS/P8 rejection bound 100 ms; jam watchdog bound 1020 ms"
+                f"GPS/P6 rejection bound 100 ms; jam watchdog bound 1020 ms"
             ),
             "missing": "live unplug/fault injection, transport latency, coast and physical stopping distance",
         },

@@ -186,9 +186,9 @@ inline constexpr double kLidarThetaScale = 0.926770;
 inline constexpr RobotSide kLidarSide = RobotSide::kLeft;
 inline constexpr RobotSide kAiVisionSide = RobotSide::kRight;
 
-// Current live inventory on 2026-08-23 verified AI Vision on Smart Port 8.
+// Live inventory on 2026-09-01 verified AI Vision on Smart Port 6.
 // Runtime auto-discovery remains available as a wiring-change fallback.
-inline constexpr std::uint8_t kAiVisionPort = 8;
+inline constexpr std::uint8_t kAiVisionPort = 6;
 inline constexpr double kAiImageWidthPx = 320.0;
 inline constexpr double kAiImageHeightPx = 240.0;
 inline constexpr double kAiHorizontalFovDeg = 74.0;
@@ -197,13 +197,13 @@ inline constexpr double kAiFocalLengthXPx = 212.34;
 inline constexpr double kAiFocalLengthYPx = 195.82;
 inline constexpr double kAiGoalFaceOffsetIn = 5.61 / 2.0;
 // The official Override field assembly uses VEX's medium Circle21h7 Goal tag.
-// Its printed outer square is 0.875 in (seven 0.125-in cells), but the P8 API's
+// Its printed outer square is 0.875 in (seven 0.125-in cells), but the P6 API's
 // returned corner quad spans the inner five-cell detection square: 0.625 in.
 // A 2026-08-25 tape check at 18.0 in gave 18.60 in from these exact corners
 // with the five-cell span; using the printed outer square incorrectly gave
 // 26.03 in. Keep this semantic distinction explicit in the estimator.
 inline constexpr double kAiTagDetectedSizeIn = 0.625;
-// This replacement robot's P8 AI Vision sensor points robot-forward. Its
+// This replacement robot's P6 AI Vision sensor points robot-forward. Its
 // lens-to-rotation-center translation has not yet been measured, so keep a
 // neutral origin and accept only very small, repeatedly consistent landmark
 // innovations. The tight two-inch gate and 0.15-inch step prevent an unknown
