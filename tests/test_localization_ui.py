@@ -539,7 +539,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kAiVisionPort = 6", localization_config)
         self.assertIn("claw_arm.set_current_limit(2500)", main)
         self.assertIn("kArmRightTargetDeg = 21.18", main)
-        self.assertIn("kArmNormalTargetDeg = 65.0", main)
+        self.assertIn("kArmNormalTargetDeg = 66.0", main)
         self.assertIn("kArmNormalToleranceDeg = 5.0", main)
         self.assertIn("kArmPositionKp = 1.35", main)
         self.assertIn("kArmPositionKd = 0.10", main)

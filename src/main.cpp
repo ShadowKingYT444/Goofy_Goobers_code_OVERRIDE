@@ -330,13 +330,13 @@ int apply_controller_deadband(int value) {
 constexpr double kArmRightTargetDeg = 21.18;
 // Port-5 absolute angle recorded at the desired default/start-of-match pickup
 // orientation on 2026-09-04. Autonomous and opcontrol actively hold it.
-constexpr double kArmNormalTargetDeg = 65.0;
+constexpr double kArmNormalTargetDeg = 66.0;
 constexpr double kArmNormalToleranceDeg = 5.0;
 constexpr double kArmPositionKp = 1.35;
 constexpr double kArmPositionKd = 0.10;
 constexpr double kArmPositionMaxPower = 70.0;
 constexpr double kArmPositionMinPower = 16.0;
-// P5 angle increases when the arm returns down toward its 65-degree
+// P5 angle increases when the arm returns down toward its 66-degree
 // match/default pose. Give only that direction a quicker response.
 constexpr double kArmPositionDownKp = 2.10;
 constexpr double kArmPositionDownMaxPower = 110.0;
