@@ -374,13 +374,11 @@ bool path2_nav_ok(navigation::Result result, const char* step) {
               step, navigation::result_name(result));
   std::fflush(stdout);
   navigation::stop();
-  upper_intake.move(0);
   return false;
 }
 
 void path2_stop_all() {
   navigation::stop();
-  upper_intake.move(0);
 }
 
 bool path2_config_ready() {
@@ -403,6 +401,15 @@ bool path2_config_ready() {
   };
 
   need_double("start_heading_deg", kStartHeadingDeg);
+  need_double("blue_start_heading_deg", kBlueStartHeadingDeg);
+  need_double("blue_start_x", kBlueStart.x);
+  need_double("blue_start_y", kBlueStart.y);
+  need_double("blue_goal_x", kBlueGoal.x);
+  need_double("blue_goal_y", kBlueGoal.y);
+  need_double("blue_stack_a_x", kBlueStackA.x);
+  need_double("blue_stack_a_y", kBlueStackA.y);
+  need_double("blue_stack_b_x", kBlueStackB.x);
+  need_double("blue_stack_b_y", kBlueStackB.y);
   need_double("start_position_error_in", kStartPositionErrorIn);
   need_double("toggle_signed_distance_in", kToggleSignedDistanceIn);
   need_double("toggle_return_distance_in", kToggleReturnDistanceIn);
@@ -913,8 +920,26 @@ bool path2_score_cup_and_exit(Path2LiftService& lift, int stage,
 
 }  // namespace
 
-bool localization_two_cup_red_auton() {
+bool localization_two_cup_auton(bool blue_side) {
   using namespace path2_config;
+  const Path2Point route_start = blue_side ? kBlueStart : kStart;
+  const Path2Point route_goal = blue_side ? kBlueGoal : kGoal;
+  const Path2Point route_stack_a = blue_side ? kBlueStackA : kStackA;
+  const Path2Point route_stack_b = blue_side ? kBlueStackB : kStackB;
+  const double route_start_heading_deg =
+      blue_side ? kBlueStartHeadingDeg : kStartHeadingDeg;
+  // Reflection across field X=Y maps heading h to 90-h and reverses the sign
+  // of relative turns. Distances and mechanism actions remain unchanged.
+  const double first_goal_turn_delta_deg = blue_side ? 75.0 : -75.0;
+  const double first_stack_score_heading_deg = blue_side ? 270.0 : 180.0;
+  const double second_stack_pickup_heading_deg = 225.0;
+  const double second_stack_score_heading_deg = blue_side ? 0.0 : 90.0;
+  const double final_heading_deg = blue_side ? 270.0 : 180.0;
+  const double phase2_goal_clearance_in = blue_side
+      ? kBluePhase2GoalClearanceIn : kPhase2GoalClearanceIn;
+  // Close 0.75 in later on the red Stack-B approach. Blue retains its initial
+  // mirror value until it has its own physical qualification run.
+  const double second_stack_grab_lead_in = blue_side ? 5.2 : 4.45;
   default_constants();
   path2_stop_all();
   // Competition setup starts the lift physically at rest, and initialize()
@@ -930,14 +955,14 @@ bool localization_two_cup_red_auton() {
     std::fflush(stdout);
     return false;
   }
-  // run_selected_red_auton() owns the arm and continuously holds its recorded
+  // run_selected_auton() owns the arm and continuously holds its recorded
   // normal position throughout this route.
-  if (!navigation::init(kStart.x, kStart.y,
-                        kStartHeadingDeg, kStartPositionErrorIn)) {
+  if (!navigation::init(route_start.x, route_start.y,
+                        route_start_heading_deg, kStartPositionErrorIn)) {
     return false;
   }
   path2_imu_anchor_cw_deg = chassis.drive_imu_get();
-  path2_field_anchor_heading_deg = kStartHeadingDeg;
+  path2_field_anchor_heading_deg = route_start_heading_deg;
   path2_imu_anchor_valid = std::isfinite(path2_imu_anchor_cw_deg);
   const auto gps_start_position = gps_7.get_position();
   const double gps_start_heading_cw_deg = gps_7.get_heading();
@@ -954,7 +979,7 @@ bool localization_two_cup_red_auton() {
             gps_start_position.x, gps_start_position.y,
             gps_start_heading_cw_deg);
     path2_gps_heading_rotation_deg = std::remainder(
-        kStartHeadingDeg - gps_project_start.heading_deg, 360.0);
+        route_start_heading_deg - gps_project_start.heading_deg, 360.0);
   }
   path2_prefer_gps_until_ms = 0;
 
@@ -962,8 +987,8 @@ bool localization_two_cup_red_auton() {
   lift.request(0);
 
   // A. Front hits the Toggle once, immediately backs all the way to the
-  // starting position to create turning clearance, then turns 60 degrees
-  // clockwise and reverses 11 inches to the preload Goal. These short legs
+  // starting position to create turning clearance, then turns 75 degrees
+  // toward its alliance's preload Goal and reverses into it. These short legs
   // deliberately use the aggressive Path 2 power settings and tight
   // deadlines so Phase 1 chains quickly.
   const auto toggle = path2_fast_drive(
@@ -977,11 +1002,11 @@ bool localization_two_cup_red_auton() {
   if (toggle_return.disabled) return false;
   // This alignment only needs to be accurate enough for the short preload
   // docking leg. Do not spend multiple seconds chasing sub-degree settling.
-  if (!path2_fast_turn(-75.0, true, 5.0, 1400, 30)) {
+  if (!path2_fast_turn(first_goal_turn_delta_deg, true, 5.0, 1400, 30)) {
     return false;
   }
   const auto preload_reverse = path2_fast_drive(
-      -11.0, kPhase1DrivePower, 1800);
+      -kPhase1PreloadReverseIn, kPhase1DrivePower, 1900);
   if (preload_reverse.disabled) return false;
   path2_blank_impact_imu(600);
   navigation::update();
@@ -1005,15 +1030,15 @@ bool localization_two_cup_red_auton() {
   // above the Goal. Retreat farther away from the Goal before curving rear-first
   // toward the next cup so the boomerang has enough room to align its approach.
   auto goal_clearance = path2_fast_drive(
-      kPhase2GoalClearanceIn, kPhase1DrivePower, 2000);
+      phase2_goal_clearance_in, kPhase1DrivePower, 2200);
   if (goal_clearance.disabled) return false;
-  if (goal_clearance.traveled_in < kPhase2GoalClearanceIn - 0.25) {
+  if (goal_clearance.traveled_in < phase2_goal_clearance_in - 0.25) {
     goal_clearance = path2_fast_drive(
-        kPhase2GoalClearanceIn - goal_clearance.traveled_in,
+        phase2_goal_clearance_in - goal_clearance.traveled_in,
         kPhase1DrivePower, 1200);
     if (goal_clearance.disabled) return false;
   }
-  if (!path2_approach_stack(kStackA, true,
+  if (!path2_approach_stack(route_stack_a, true,
                             "stack A boomerang approach")) return false;
 
   // Phase 2 ends at the stack coordinate. The ADI-E claw begins closing for
@@ -1026,7 +1051,7 @@ bool localization_two_cup_red_auton() {
   }
 
   // C. Pull the captured stack fully into the claw, then begin raising Stage 1
-  // asynchronously. Turn to the starting-frame 180-degree heading, reverse 24
+  // asynchronously. Turn to the alliance-mirrored scoring heading, reverse 24
   // inches into the Goal, pulse the lift down, then outtake and retreat.
   auto extra_capture = path2_fast_drive(
       -kStage1ExtraCaptureIn, kStage1ExtraCapturePower, 2000);
@@ -1060,7 +1085,7 @@ bool localization_two_cup_red_auton() {
                 cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
-  if (!path2_fast_turn(180.0)) return false;
+  if (!path2_fast_turn(first_stack_score_heading_deg)) return false;
   const auto goal_drive = path2_fast_drive(
       -kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true);
   if (goal_drive.disabled || goal_drive.traveled_in < 1.0) return false;
@@ -1113,10 +1138,15 @@ bool localization_two_cup_red_auton() {
   // correct tested direction is absolute 225 degrees (the user's 135-degree
   // frame). Computing it from the noisy post-retreat pose over-rotated toward
   // the mirrored Goal at path (48,-24), while a relative +45 inherited error.
-  constexpr double kSecondStackPickupHeadingDeg = 225.0;
+  std::printf(
+      "PATH2_ALLIANCE side=%s goal=%.2f,%.2f stack_a=%.2f,%.2f "
+      "stack_b=%.2f,%.2f\n",
+      blue_side ? "blue" : "red", route_goal.x, route_goal.y,
+      route_stack_a.x, route_stack_a.y, route_stack_b.x, route_stack_b.y);
+  std::fflush(stdout);
   // From score 1 onward, wall-strip GPS heading is authoritative. Never cancel
   // the remaining route merely because the impact invalidated IMU/fused pose.
-  if (!path2_fast_turn(kSecondStackPickupHeadingDeg, false, 3.5)) {
+  if (!path2_fast_turn(second_stack_pickup_heading_deg, false, 3.5)) {
     std::printf("PATH2 continue=second_stack_turn_degraded\n");
     std::fflush(stdout);
   }
@@ -1127,11 +1157,10 @@ bool localization_two_cup_red_auton() {
   auto second_stack_drive = path2_fast_drive(
       -second_stack_fast_in, kSecondStackApproachPower, 2200);
   if (second_stack_drive.disabled) return false;
-  constexpr double kPneumaticGrabLeadIn = 5.2;
   const double second_slow_in =
       kSecondStackCenterTravelIn - second_stack_fast_in;
   second_stack_drive = path2_fast_drive(
-      -std::max(0.0, second_slow_in - kPneumaticGrabLeadIn),
+      -std::max(0.0, second_slow_in - second_stack_grab_lead_in),
       kSecondStackSlowPower, 2600);
   if (second_stack_drive.disabled) return false;
   // Begin closing 5.2 inches before contact, then carry the closing claw
@@ -1139,7 +1168,7 @@ bool localization_two_cup_red_auton() {
   set_claw_piston(false);
   pros::delay(100);
   second_stack_drive = path2_fast_drive(
-      -kPneumaticGrabLeadIn, kSecondStackSlowPower, 1200);
+      -second_stack_grab_lead_in, kSecondStackSlowPower, 1200);
   if (second_stack_drive.disabled) return false;
   pros::delay(50);
 
@@ -1167,12 +1196,12 @@ bool localization_two_cup_red_auton() {
   // alignment after the (48,-48) pickup is its 180-degree opposite: +90.
   // E. Complete that rear-facing alignment, reverse into the Goal, pulse the
   // lift down, then outtake and retreat.
-  if (!path2_fast_turn(90.0, false, 3.5)) {
+  if (!path2_fast_turn(second_stack_score_heading_deg, false, 3.5)) {
     std::printf("PATH2 continue=second_goal_turn_degraded\n");
     std::fflush(stdout);
   }
   const auto second_goal_drive = path2_fast_drive(
-      -kStage2GoalDriveIn, kStage2GoalDrivePower, 2600, true, true);
+      -kStage2GoalDriveIn, kStage2GoalDrivePower, 3600, true, true);
   if (second_goal_drive.disabled || second_goal_drive.traveled_in < 1.0) {
     return false;
   }
@@ -1201,9 +1230,9 @@ bool localization_two_cup_red_auton() {
     std::fflush(stdout);
     return false;
   }
-  // End the tested route 24 inches clear of the Goal, facing the requested
-  // absolute 180-degree heading and holding position.
-  if (!path2_fast_turn(180.0, false, 3.5)) {
+  // End the tested route 24 inches clear of the Goal, facing the mirrored
+  // alliance-specific final heading and holding position.
+  if (!path2_fast_turn(final_heading_deg, false, 3.5)) {
     std::printf("PATH2 continue=final_turn_degraded\n");
     std::fflush(stdout);
   }
@@ -1215,4 +1244,12 @@ bool localization_two_cup_red_auton() {
   std::printf("PATH2 complete=1\n");
   std::fflush(stdout);
   return true;
+}
+
+bool localization_two_cup_red_auton() {
+  return localization_two_cup_auton(false);
+}
+
+bool localization_two_cup_blue_auton() {
+  return localization_two_cup_auton(true);
 }

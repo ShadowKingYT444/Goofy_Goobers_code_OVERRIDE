@@ -23,7 +23,7 @@ D4_RE = re.compile(
     r"p1=(?P<p1_mm>-?\d+),(?P<p1_conf>-?\d+),(?P<p1_installed>[01]) "
     rf"m17=(?P<m17>{NUMBER_RE}) m18=(?P<m18>{NUMBER_RE}) "
     rf"m11=(?P<m11>{NUMBER_RE}) m13=(?P<m13>{NUMBER_RE}) "
-    r"h5=(?P<h5>-?\d+) "
+    rf"h(?:5|15)=(?P<h5>-?\d+)(?: h(?:5|15)abs={NUMBER_RE})? "
     rf"imu=(?P<imu>{NUMBER_RE}) rawimu=(?P<rawimu>{NUMBER_RE}) "
     r"imust=(?P<imust>-?\d+) "
     rf"(?:imugyro=(?P<imu_gyro_x>{NUMBER_RE}),(?P<imu_gyro_y>{NUMBER_RE}),"

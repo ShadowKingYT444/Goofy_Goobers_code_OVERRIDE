@@ -1,5 +1,15 @@
 # MoreVex localization handoff
 
+## Port-map correction (2026-09-04; supersedes port references below)
+
+The current map is drive P17/P18 left and P11/P13 right, IMU P12, rear-facing
+Distance P1, AI Vision P6, GPS P7, claw-arm Rotation feedback P5, and
+longitudinal odometry Rotation P15. P15 is working and mounted at the rotation
+center; the old lateral-fusion path is disabled pending a dedicated
+longitudinal integration. Toggle is
+active-low ADI-D and must remain extended once autonomous begins. P1 must not
+gate forward travel. The upper intake has been removed and P14 is empty.
+
 ## Live resume (2026-08-25; supersedes the runtime warning below)
 
 The Brain user runtime recovered after a real power cycle and slot 4 emitted
@@ -28,7 +38,7 @@ square; the older 0.875-in ranges below are superseded. Current evidence:
 - `reports/sensor_campaign_2026-08-25/imu_calibration_experiment/summary.json`
 - `reports/sensor_campaign_2026-08-25/goal_completion_audit.md`
 
-## Current verified state (2026-08-23; supersedes the 2026-07-10 section)
+## Historical verified state (2026-08-23; superseded by 2026-09-04 above)
 
 This is a replacement robot. Do not use the older port map or claim that its
 four-sensor LiDAR/P20 camera is present.

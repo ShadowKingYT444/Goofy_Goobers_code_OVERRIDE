@@ -99,11 +99,13 @@ inline constexpr double kDriveTrackWidthIn =
 inline constexpr double kDeadReckoningScaleEnvelopeFraction = 0.0215542987;
 inline constexpr double kDeadReckoningHeadingEnvelopeDeg = 2.0;
 
-// Current navigation sensor geometry. The forward Distance sensor measures
-// along the robot's +forward axis. The GPS lens points robot-right, 90 degrees
-// clockwise from forward, and is mounted 6 inches right and 6 inches behind
-// the robot's rotation center.
-inline constexpr std::uint8_t kForwardDistancePort = 1;
+// Current navigation sensor geometry. The Distance sensor on port 1 points
+// along the robot's negative/rear axis, not along +forward. Never use its
+// reading as a forward collision or Toggle-range measurement. The GPS lens
+// points robot-right, 90 degrees clockwise from forward, and is mounted 6
+// inches right and 6 inches behind the robot's rotation center.
+inline constexpr std::uint8_t kRearDistancePort = 1;
+inline constexpr bool kDistanceSensorFacesForward = false;
 inline constexpr double kForwardObstacleStopIn = 8.0;
 // A dangerously close return stops on the first poll. A return in the wider
 // 4-8 inch warning band must persist beyond one nominal sensor refresh so a
@@ -160,24 +162,22 @@ inline constexpr double kGpsMaxCorrectionAngularRateDegS = 12.0;
 inline constexpr double kGpsMaxRepeatedObservationDriveIn = 0.50;
 inline constexpr double kGpsMaxRepeatedObservationHeadingDeg = 2.0;
 
-// Confirmed 2-inch VEX omni tracking wheel at the rear center, mounted like a
-// centered rear license plate and oriented to roll with sideways displacement.
-// It is passive: it measures lateral slide/push but does not make the robot
-// strafe. Its left/right mount offset is zero; only its rearward lever arm
-// contributes wheel travel during pure rotation.
-inline constexpr double kSideOdomWheelDiameterIn = 2.0;
+// The 2-inch VEX tracking wheel on P15 is mounted at the robot rotation center
+// and measures longitudinal/forward displacement. A live commanded-forward
+// run changed P15 coherently; it must not be injected as lateral displacement.
+inline constexpr double kForwardOdomWheelDiameterIn = 2.0;
+// The first run resembled a 5:7 transfer, but a repeat over-read severely and
+// continued spinning after the drivetrain stopped. No fixed transfer ratio is
+// valid until the two-wheel coupling and ground contact are repaired.
+inline constexpr double kForwardOdomSensorToGroundRatio = 1.0;
+// Legacy name retained only for the disabled lateral estimator path.
+inline constexpr double kSideOdomWheelDiameterIn = kForwardOdomWheelDiameterIn;
 inline constexpr double kSideOdomRawToRobotRightSign = 1.0;
-// Port 5 enumerates, but two live rotation sweeps produced only 0-0.002 in of
-// travel where the configured rear lever arm predicts several inches. Treat
-// the tracker as mechanically disconnected until its wheel/coupling is fixed;
-// retaining its raw telemetry makes that repair easy to verify.
+// The existing estimator slot is lateral-only. Keep it disabled until P15 is
+// integrated through a dedicated longitudinal-odometer path. Port 5 remains
+// separate claw-arm feedback; old P5 odometry trials are irrelevant.
 inline constexpr bool kSideOdomEnabled = false;
-// 2026-07-10 paired 12 deg correlation: pooled eight-segment IMU fit using the
-// now-confirmed 2-inch tracking-wheel diameter.
-// Large-angle live validation supersedes the noisy micro-turn fit. The first
-// 80.80-degree turn moved the fit from 2.5665 to 4.43 inches; a second
-// 73.74-degree return left 0.97 inches residual, refining the lever to 5.18.
-inline constexpr double kSideOdomRearOffsetIn = 5.18;
+inline constexpr double kSideOdomRearOffsetIn = 0.0;
 
 // Pooled eight-segment LiDAR/IMU slope was 1.079016. Scale raw wall theta so
 // its change matches the independently measured IMU change (fitted RMSE 0.42°).

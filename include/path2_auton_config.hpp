@@ -17,22 +17,38 @@ constexpr double kUnset = std::numeric_limits<double>::quiet_NaN();
 constexpr Point kStart{63.0, 0.0};
 constexpr Point kToggle{72.0, 0.0};
 constexpr Point kGoal{48.0, 24.0};
-// Aim slightly to the right of the measured first-stack center so the
-// boomerang finishes with the rear claw aligned instead of clipping the stack.
-constexpr Point kStackA{24.4, 25.5};
+// Final first rear-claw pickup target from the latest field test.
+constexpr Point kStackA{24.5, 26.1};
 constexpr Point kStackB{48.0, 48.0};
 constexpr Point kFinal{48.0, 60.0};  // Path coordinate (60,-48).
+
+// Blue coordinates are explicit so later blue-side tuning cannot alter red.
+// Stack A is the exact origin-opposite of the red Stack-A target.
+constexpr Point kBlueStart{0.0, 63.0};
+constexpr Point kBlueToggle{0.0, 72.0};
+constexpr Point kBlueGoal{24.0, 48.0};
+constexpr Point kBlueStackA{-24.5, -26.1};
+constexpr Point kBlueStackB{48.0, 48.0};
+constexpr Point kBlueFinal{60.0, 48.0};
 
 // Starting placement and one-contact Toggle move. Toggle distance is signed:
 // positive means the robot front hits it, negative means the rear hits it.
 constexpr double kStartHeadingDeg = 0.0;
+constexpr double kBlueStartHeadingDeg = 90.0;
 constexpr double kStartPositionErrorIn = 1.0;
 constexpr double kToggleSignedDistanceIn = 7.0;
 constexpr double kToggleReturnDistanceIn = 6.0;
 constexpr int kTogglePower = 75;
 constexpr int kToggleReturnPower = 65;
 constexpr int kPhase1DrivePower = 75;
-constexpr double kPhase2GoalClearanceIn = 13.5;
+// After the first -75-degree turn, reverse one inch farther into the preload
+// Goal than the previous 11-inch tune so the mechanism fully reaches it.
+constexpr double kPhase1PreloadReverseIn = 12.0;
+// Back another 1.5 inches clear of the preload Goal before turning toward
+// Stack A. The signed drive direction is selected by the route; this magnitude
+// is identical for the origin-opposite blue route.
+constexpr double kPhase2GoalClearanceIn = 16.5;
+constexpr double kBluePhase2GoalClearanceIn = 16.5;
 
 // Legal navigation poses outside the mapped Goal/wall exclusions.
 // The scoring edge is approximately 12 inches from robot center. Stage two
@@ -74,7 +90,7 @@ constexpr int kOuttakeUpperPower = 127;
 constexpr int kOuttakeCounterPower = 110;
 constexpr int kPreloadPinUpperPower = 0;
 constexpr int kPreloadPinCounterPower = 110;
-constexpr unsigned kPreloadDepositMs = 200;
+constexpr unsigned kPreloadDepositMs = 350;
 
 // Match the cascade PID's validated stage stopping band. Requiring +/-5 here
 // while the controller brakes at +/-16 caused a guaranteed scoring timeout.
@@ -82,7 +98,7 @@ constexpr double kLiftReadyToleranceDeg = 16.0;
 constexpr unsigned kLiftReadyTimeoutMs = 5000;
 constexpr int kSafeFinalLiftStage = 0;
 constexpr double kScoreLoweringDeg = 15.0;
-constexpr double kStage1ExtraCaptureIn = 2.0;
+constexpr double kStage1ExtraCaptureIn = 1.0;
 constexpr int kStage1ExtraCapturePower = 70;
 constexpr double kStage1GoalDriveIn = 24.0;
 constexpr int kStage1GoalDrivePower = 80;
@@ -101,7 +117,7 @@ constexpr unsigned kScoreStageReadyTimeoutMs = 400;
 
 constexpr double kStage2ExtraCaptureIn = 4.5;
 constexpr int kStage2ExtraCapturePower = 70;
-constexpr double kStage2GoalDriveIn = 16.0;
+constexpr double kStage2GoalDriveIn = 24.0;
 constexpr int kStage2GoalDrivePower = 80;
 constexpr double kStage2ScoreRetreatIn = 24.0;
 constexpr int kStage2ScoreRetreatPower = 95;

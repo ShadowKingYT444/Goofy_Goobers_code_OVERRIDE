@@ -21,7 +21,7 @@ BAUD_RATE = 115200
 HTTP_PORT = 8774
 PORTS = (1,)
 DRIVE_MOTORS = (17, 18, 11, 13)
-HORIZONTAL_ODOMETER_PORT = 5
+HORIZONTAL_ODOMETER_PORT = 15
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_PIXELS_PER_INCH = 30.0
@@ -42,7 +42,8 @@ D4_RE = re.compile(
     r"p1=(?P<p1_mm>-?\d+),(?P<p1_conf>-?\d+),(?P<p1_inst>\d+)"
     rf"(?: m17=(?P<m17>{MOTOR_VALUE_RE}) m18=(?P<m18>{MOTOR_VALUE_RE}) "
     rf"m11=(?P<m11>{MOTOR_VALUE_RE}) m13=(?P<m13>{MOTOR_VALUE_RE}))?"
-    rf"(?: h5=(?P<h5>{INTEGER_VALUE_RE}))?"
+    rf"(?: h(?:5|15)=(?P<h5>{INTEGER_VALUE_RE})"
+    rf"(?: h(?:5|15)abs={MOTOR_VALUE_RE})?)?"
     rf"(?: imu=(?P<imu>{MOTOR_VALUE_RE}) rawimu=(?P<rawimu>{MOTOR_VALUE_RE}) "
     rf"imust=(?P<imust>{INTEGER_VALUE_RE}))?"
     rf"(?: imugyro=(?P<imu_gyro_x>{MOTOR_VALUE_RE}),(?P<imu_gyro_y>{MOTOR_VALUE_RE}),"
@@ -255,7 +256,7 @@ HTML = """<!doctype html>
               <div class="pose-value" id="cal-track-width">--.-- in</div>
             </div>
             <div>
-              <div class="theta-label">Rear Lever</div>
+              <div class="theta-label">Odom Lever Arm</div>
               <div class="pose-value" id="cal-rear-lever">--.-- in</div>
             </div>
             <div>
@@ -1336,7 +1337,7 @@ HTML = """<!doctype html>
         const sensor = document.createElement("article");
         sensor.className = "label";
         sensor.innerHTML = `
-          <div class="port">Forward Distance / Port ${port}</div>
+          <div class="port">Rear Distance / Port ${port}</div>
           <div class="mm" id="mm-${port}">---- mm</div>
           <div class="inch" id="in-${port}">--.-- in</div>
           <div class="conf" id="conf-${port}">conf -- / 63</div>`;

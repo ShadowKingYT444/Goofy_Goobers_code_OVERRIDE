@@ -25,10 +25,10 @@ CAPTURE_SPEC.loader.exec_module(CAPTURE)
 
 
 class VisionTelemetryTests(unittest.TestCase):
-    def test_dashboard_labels_match_current_single_forward_distance_robot(self):
+    def test_dashboard_labels_match_current_single_rear_distance_robot(self):
         source = SERVER_PATH.read_text(encoding="utf-8")
         self.assertIn("VEX Multi-Sensor Localization", source)
-        self.assertIn("Forward Distance / Port ${port}", source)
+        self.assertIn("Rear Distance / Port ${port}", source)
         self.assertIn("Legacy four-sensor wall fit is disabled", source)
         self.assertNotIn("LiDAR Ports 6-9", source)
         self.assertNotIn("4x LiDAR Current Line", source)
@@ -110,6 +110,21 @@ class VisionTelemetryTests(unittest.TestCase):
         self.assertIsNotNone(fault_frame)
         self.assertTrue(math.isinf(fault_frame["m17"]))
         self.assertTrue(math.isnan(fault_frame["imu"]))
+
+    def test_current_h15_telemetry_is_backward_compatible(self):
+        line = (
+            "D4 s=12 t=320 p1=738,46,1 "
+            "m17=0.0 m18=0.0 m11=0.0 m13=0.0 h15=123 h15abs=45.67 "
+            "imu=3.22 rawimu=3.22 imust=18 "
+            "gps7=-1.3354,0.2467,308.13,0.0098,1 errno=0 gpsgyro=-0.52"
+        )
+        captured = CAPTURE.parse_frame(line, 2.0)
+        dashboard = SERVER.parse_d4(line)
+        self.assertIsNotNone(captured)
+        self.assertEqual(captured["h5"], 123)
+        self.assertEqual(
+            dashboard["odometer"]["15"]["position_centideg"], 123
+        )
 
     def test_capture_pipeline_preserves_raw_imu_rate_and_acceleration(self):
         line = (
@@ -238,7 +253,7 @@ class VisionTelemetryTests(unittest.TestCase):
         self.assertAlmostEqual(pose["rear"], 2.5665)
         self.assertAlmostEqual(pose["lidar_scale"], 0.926770)
 
-    def test_current_d4_schema_preserves_forward_distance_and_gps(self):
+    def test_current_d4_schema_preserves_rear_distance_and_gps(self):
         frame = SERVER.parse_d4(
             "D4 s=10 t=200 p1=1016,6,1 "
             "m17=1.0 m18=2.0 m11=3.0 m13=4.0 h5=50 "
@@ -410,7 +425,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kAiPositionGain = 0.10", config)
         self.assertIn("proven_reacquisition", source)
         self.assertIn('pose.ai_reject = "face_ambiguous"', source)
-        self.assertIn("kSideOdomRearOffsetIn = 5.18", config)
+        self.assertIn("kSideOdomRearOffsetIn = 0.0", config)
         self.assertIn("kSideOdomEnabled = false", config)
         for official_entry in (
             '{"top_red_neutral", 4,',
@@ -500,8 +515,8 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
     def test_claw_and_wrist_controls_match_current_mapping(self):
         subsystems = (ROOT / "include" / "subsystems.hpp").read_text(encoding="utf-8")
         main = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
-        self.assertIn("Drive chassis({17, 18},\n              {-11, -13},\n              12,", main)
-        self.assertIn("GPS P7 / IMU P12", main)
+        self.assertIn("Drive chassis({17, 18},\n              {-11, -13},\n              14,", main)
+        self.assertIn("GPS P7 / IMU P14", main)
         self.assertIn("clamp_piston('D')", subsystems)
         self.assertIn("claw_piston('E')", subsystems)
         self.assertIn("set_claw_piston(bool extended)", subsystems)
@@ -511,12 +526,24 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("claw_toggle_pressed", main)
         self.assertIn("set_claw_piston(!claw_piston_extended.load", main)
         self.assertIn("claw_arm(4, pros::v5::MotorGears::green)", subsystems)
+        self.assertNotIn("upper_intake", subsystems)
+        self.assertIn("pros::Rotation claw_arm_rotation(5)", main)
+        self.assertIn("pros::Rotation horizontal_odom(15)", main)
+        self.assertIn("pros::Distance distance_1(localization::kRearDistancePort)", main)
+        localization_config = (
+            ROOT / "include" / "localization_config.hpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("kAiVisionPort = 6", localization_config)
         self.assertIn("claw_arm.set_current_limit(2500)", main)
-        self.assertIn("kArmRightTargetDeg = 278.17", main)
-        self.assertIn("kArmNormalTargetDeg = 324.66", main)
+        self.assertIn("kArmRightTargetDeg = 21.18", main)
+        self.assertIn("kArmNormalTargetDeg = 62.49", main)
         self.assertIn("kArmNormalToleranceDeg = 5.0", main)
         self.assertIn("kArmPositionKp = 1.35", main)
         self.assertIn("kArmPositionKd = 0.10", main)
+        self.assertIn("kArmPositionDownKp = 1.80", main)
+        self.assertIn("kArmPositionDownMaxPower = 90.0", main)
+        self.assertIn("kArmPositionDownMinPower = 20.0", main)
+        self.assertIn("moving_down_toward_normal", main)
         self.assertIn("ArmPositionController", main)
         self.assertIn("arm_position_controller.update(arm_position_target_deg)", main)
         self.assertIn("arm_position_target_deg = kArmNormalTargetDeg", main)
@@ -530,7 +557,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertNotIn("piston_toggle_pressed", main)
         self.assertNotIn("clamp_output_high.store(next_output_high", main)
         self.assertNotIn("clamp_piston.set_value(next_output_high)", main)
-        auton_dispatch = main.index("bool run_selected_red_auton() {")
+        auton_dispatch = main.index("bool run_selected_auton() {")
         piston_auton = main.index("clamp_piston.set_value(false)", auton_dispatch)
         route_dispatch = main.index("localization_two_cup_red_auton()", piston_auton)
         self.assertLess(piston_auton, route_dispatch)
@@ -547,6 +574,20 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertNotIn("kAutonArmLoweringPower", main)
         self.assertNotIn("horizontal_odom.reset_position()", main[auton_dispatch:route_dispatch])
         self.assertIn("ARM_NORMAL target", startup)
+        self.assertIn("TOGGLE_STATE phase=initialize output=1", main)
+
+        opcontrol_start = main.index("void opcontrol()")
+        opcontrol_loop = main.index("while (true) {", opcontrol_start)
+        self.assertNotIn(
+            "clamp_piston.set_value(false)", main[opcontrol_start:opcontrol_loop]
+        )
+
+        hotkey_start = main.index("void start_toggle_far_goal_auton()")
+        hotkey_end = main.index("void start_pid_autotune()", hotkey_start)
+        self.assertIn(
+            "TOGGLE_STATE phase=hotkey_auton output=0",
+            main[hotkey_start:hotkey_end],
+        )
 
     def test_l2_b_starts_exact_far_goal_auton(self):
         main = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
@@ -557,8 +598,16 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         listener = main[listener_start:listener_end]
         self.assertIn("E_CONTROLLER_DIGITAL_L2", listener)
         self.assertIn("l2_tap_count", listener)
-        self.assertIn("now - last_l2_tap_ms > 1200", listener)
+        self.assertIn("kSelectionTapWindowMs = 2000", listener)
+        self.assertIn("now - l2_sequence_started_ms > kSelectionTapWindowMs", listener)
         self.assertIn("if (l2_tap_count >= 3)", listener)
+        self.assertIn("if (b_held && !last_b)", listener)
+        self.assertIn("l2_sequence_started_ms = 0", listener)
+        self.assertNotIn("kL2DebounceMs", listener)
+        self.assertNotIn("kMinimumL2PressMs", listener)
+        self.assertNotIn("kReleaseRearmMs", listener)
+        self.assertIn("AUTON SELECT %d/3", listener)
+        self.assertEqual(main.count("advance_auton();"), 1)
         self.assertIn("E_CONTROLLER_DIGITAL_B", listener)
         self.assertNotIn("E_CONTROLLER_DIGITAL_A", listener)
         self.assertIn("launch_l2_b", listener)
@@ -592,14 +641,14 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
 
         self.assertIn('"1 Pin Auto Red"', main)
         self.assertIn('"2 Cup Auto Red"', main)
+        self.assertIn('"1 Pin Auto Blue"', main)
         self.assertIn(
-            "selected_red_auton{\n    static_cast<int>(RedAutonSelection::kTwoCup)}",
+            "selected_auton{\n    static_cast<int>(AutonSelection::kTwoCupRed)}",
             main,
         )
-        self.assertIn("pros::lcd::read_buttons()", main)
-        self.assertIn("brain_buttons & LCD_BTN_LEFT", main)
-        self.assertIn("brain_buttons & LCD_BTN_RIGHT", main)
-        self.assertIn("pros::screen::touch_status()", main)
+        self.assertIn("constexpr int kAutonCount = 4", main)
+        self.assertNotIn("pros::lcd::read_buttons()", main)
+        self.assertNotIn("pros::screen::touch_status()", main)
         self.assertIn("pros::screen::print(pros::E_TEXT_LARGE_CENTER", main)
         self.assertIn("TEST LIMIT: THROUGH 2ND SCORE", main)
         self.assertIn("wrist_normal_position_pressed", main)
@@ -607,16 +656,59 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("opcontrol_auton_running) return", main)
         self.assertIn("while (true) {", main)
         self.assertIn("auton_selection_locked.store(false", main)
-        self.assertIn("(current + step + kAutonCount) % kAutonCount", main)
-        self.assertIn("run_selected_red_auton();", main)
+        disabled_start = main.index("void disabled()")
+        disabled_end = main.index("void competition_initialize()", disabled_start)
+        self.assertIn(
+            "auton_selection_locked.store(false", main[disabled_start:disabled_end]
+        )
+        self.assertIn(
+            "(static_cast<int>(current) + 1) % kAutonCount", main
+        )
+        for current, following in (
+            ("kOnePinRed", "kTwoCupRed"),
+            ("kTwoCupRed", "kOnePinBlue"),
+            ("kOnePinBlue", "kTwoCupBlue"),
+            ("kTwoCupBlue", "kOnePinRed"),
+        ):
+            self.assertIn(
+                f"next_auton_selection(AutonSelection::{current}) ==\n"
+                f"              AutonSelection::{following}",
+                main,
+            )
+        self.assertIn("run_selected_auton();", main)
+        competition_auton = main[
+            main.index("void autonomous()") : main.index("void opcontrol()")
+        ]
+        self.assertIn("run_selected_auton();", competition_auton)
+        dispatch = main[
+            main.index("bool run_selected_auton() {") :
+            main.index("bool drive_positions_are_zeroed()")
+        ]
+        for dispatch_target in (
+            "localization_simple_red_goal_hotkey_auton();",
+            "localization_two_cup_red_auton();",
+            "localization_simple_blue_goal_hotkey_auton();",
+            "localization_two_cup_blue_auton();",
+        ):
+            self.assertEqual(dispatch.count(dispatch_target), 1)
         self.assertIn("localization_two_cup_red_auton", header)
+        self.assertIn("localization_two_cup_blue_auton", header)
+        self.assertIn('"2 Cup Auto Blue"', main)
+        self.assertIn("localization_two_cup_blue_auton();", main)
+        self.assertIn("localization_simple_blue_goal_hotkey_auton", header)
+        self.assertIn("localization_simple_blue_goal_hotkey_auton();", main)
 
         self.assertIn("kStart{63.0, 0.0}", config)
         self.assertIn("kGoal{48.0, 24.0}", config)
-        self.assertIn("kStackA{24.4, 25.5}", config)
+        self.assertIn("kStackA{24.5, 26.1}", config)
         self.assertIn("kStackB{48.0, 48.0}", config)
         self.assertIn("kFinal{48.0, 60.0}", config)
         self.assertIn("kStartHeadingDeg = 0.0", config)
+        self.assertIn("kBlueStart{0.0, 63.0}", config)
+        self.assertIn("kBlueGoal{24.0, 48.0}", config)
+        self.assertIn("kBlueStackA{-24.5, -26.1}", config)
+        self.assertIn("kBlueStackB{48.0, 48.0}", config)
+        self.assertIn("kBlueStartHeadingDeg = 90.0", config)
         self.assertIn("kToggleReturnDistanceIn = 6.0", config)
         self.assertIn("kTogglePower = 75", config)
         self.assertIn("kToggleReturnPower = 65", config)
@@ -630,8 +722,10 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kRearClawExtensionIn = 1.0", config)
         self.assertIn("kRearPickupReachIn", config)
         self.assertIn("kScoreLoweringDeg = 15.0", config)
-        self.assertIn("kPhase2GoalClearanceIn = 13.5", config)
-        self.assertIn("kStage1ExtraCaptureIn = 2.0", config)
+        self.assertIn("kPhase2GoalClearanceIn = 16.5", config)
+        self.assertIn("kBluePhase2GoalClearanceIn = 16.5", config)
+        self.assertIn("kPreloadDepositMs = 350", config)
+        self.assertIn("kStage1ExtraCaptureIn = 1.0", config)
         self.assertIn("kStage1ExtraCapturePower = 70", config)
         self.assertIn("kStage1GoalDriveIn = 24.0", config)
         self.assertIn("kStage1GoalDrivePower = 80", config)
@@ -642,7 +736,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kStage1ScoreRetreatPower = 95", config)
         self.assertIn("kStage1ScoreRetreatIn = 9.75", config)
         self.assertIn("kStage2ExtraCaptureIn = 4.5", config)
-        self.assertIn("kStage2GoalDriveIn = 16.0", config)
+        self.assertIn("kStage2GoalDriveIn = 24.0", config)
         self.assertIn("kSecondStackApproachPower = 60", config)
         self.assertIn("kSecondStackSlowPower = 38", config)
         self.assertIn("kFirstCupLiftStage = 1", config)
@@ -653,9 +747,15 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kStage2ScoreRetreatIn = 24.0", config)
         self.assertIn("kTestStopAfterPhase = 0", config)
 
-        self.assertIn("path2_fast_turn(-75.0, true, 5.0, 1400, 30)", route)
+        self.assertIn("first_goal_turn_delta_deg = blue_side ? 75.0 : -75.0", route)
         self.assertIn(
-            "path2_fast_drive(\n      -11.0, kPhase1DrivePower", route
+            "path2_fast_turn(first_goal_turn_delta_deg, true, 5.0, 1400, 30)",
+            route,
+        )
+        self.assertIn("kPhase1PreloadReverseIn = 12.0", config)
+        self.assertIn(
+            "path2_fast_drive(\n      -kPhase1PreloadReverseIn, kPhase1DrivePower",
+            route,
         )
         self.assertIn("kPreloadPinUpperPower", route)
         self.assertIn("kPreloadPinCounterPower", route)
@@ -669,7 +769,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("robot_center_target", route)
         self.assertIn("pickup_reach", route)
         self.assertIn("constexpr double kPneumaticGrabLeadIn = 9.7", route)
-        self.assertIn("constexpr double kPneumaticGrabLeadIn = 5.2", route)
+        self.assertIn("second_stack_grab_lead_in = blue_side ? 5.2 : 4.45", route)
         slow_capture = route.index(
             "const auto capture_result = navigation::drive_relative("
         )
@@ -686,7 +786,8 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         )
         first_raise = route.index("lift.request(kFirstCupLiftStage)")
         self.assertLess(first_extra, first_raise)
-        self.assertIn("path2_fast_turn(180.0)", route)
+        self.assertIn("first_stack_score_heading_deg = blue_side ? 270.0 : 180.0", route)
+        self.assertIn("path2_fast_turn(first_stack_score_heading_deg)", route)
         self.assertIn("target_imu_cw_deg", route)
         self.assertIn("settle_tolerance_deg = 2.5", route)
         self.assertIn("final_error_deg <= tolerance_deg + 1.5", route)
@@ -721,7 +822,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertLess(first_lower_wait, first_outtake)
         self.assertLess(first_outtake, first_retreat)
         self.assertIn("test_stop=phase_3_after_first_cup_score", route)
-        self.assertIn("kSecondStackPickupHeadingDeg = 225.0", route)
+        self.assertIn("second_stack_pickup_heading_deg = 225.0", route)
         self.assertIn("completed=first_stack_deposit next=second_stack", route)
         self.assertEqual(route.count("lift.start_full_down_for(500)"), 2)
         self.assertIn("cascade_lift::set_manual_power(-127)", route)
@@ -732,7 +833,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertLess(first_home_wait, first_retreat_start)
         self.assertLess(first_retreat_start, first_pulse_wait)
         second_stack_turn = route.index(
-            "path2_fast_turn(kSecondStackPickupHeadingDeg, false, 3.5)"
+            "path2_fast_turn(second_stack_pickup_heading_deg, false, 3.5)"
         )
         self.assertLess(first_home_wait, second_stack_turn)
         self.assertIn("kSecondStackCenterTravelIn", route)
@@ -748,7 +849,11 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertLess(second_extra, second_raise)
         self.assertNotIn("lift_home_timeout_after_retreat", route)
         self.assertNotIn("stage_2_home_timeout_after_retreat", route)
-        self.assertIn("path2_fast_turn(90.0, false, 3.5)", route)
+        self.assertIn("second_stack_score_heading_deg = blue_side ? 0.0 : 90.0", route)
+        self.assertIn(
+            "path2_fast_turn(second_stack_score_heading_deg, false, 3.5)",
+            route,
+        )
         self.assertIn("cascade_lift::clear_fault()", route)
         self.assertNotIn("path2_home_lift_at_bottom", route)
         self.assertNotIn("abort=lift_bottom_home_failed", route)
@@ -773,9 +878,9 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("second_score_stage_not_ready", route)
         self.assertNotIn("Path2WristService", route)
         self.assertIn("continuously holds its recorded", route)
-        route_start = route.index("bool localization_two_cup_red_auton()")
+        route_start = route.index("bool localization_two_cup_auton(bool blue_side)")
         self.assertNotIn("claw_arm.move(0)", route[route_start:])
-        self.assertIn("if (!path2_fast_turn(180.0)) return false;", route)
+        self.assertIn("if (!path2_fast_turn(first_stack_score_heading_deg)) return false;", route)
         self.assertNotIn("test_stop=phase_4_after_second_stack_score", route)
         self.assertIn("explicit successful end of the complete two-cup route", route)
         self.assertIn("second_remaining", route)
@@ -783,16 +888,19 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kStage2ScoreRetreatIn, kStage2ScoreRetreatPower", route)
 
         one_pin_start = autons.index(
-            "bool localization_simple_red_goal_hotkey_auton()"
+            "bool localization_simple_one_pin_goal_hotkey_auton(bool blue_side)"
         )
         one_pin_end = autons.index(
             "bool localization_simple_red_goal_finish_correction()",
             one_pin_start,
         )
         one_pin = autons[one_pin_start:one_pin_end]
-        self.assertIn("kStart{54.0, -13.6076952, 0.0}", one_pin)
-        self.assertIn("kGoal{48.0, -24.0}", one_pin)
-        self.assertIn("kGoalTurnDeg = 60.0", one_pin)
+        self.assertIn("FieldPose{-54.0, 13.6076952, 180.0}", one_pin)
+        self.assertIn("FieldPose{54.0, -13.6076952, 0.0}", one_pin)
+        self.assertIn("Waypoint{-48.0, 24.0}", one_pin)
+        self.assertIn("Waypoint{48.0, -24.0}", one_pin)
+        self.assertIn("kGoalTurnDeg = blue_side ? 240.0 : 60.0", one_pin)
+        self.assertIn("kPostGoalHeadingDeg = blue_side ? 180.0 : 0.0", one_pin)
         self.assertIn("kGoalContactIn = 12.0", one_pin)
         self.assertIn("toggle_ram = navigation::drive_relative(\n      6.0, 78, 1800, false, true, true", one_pin)
         self.assertIn("toggle_return = navigation::drive_relative(\n      -6.0, 68, 2600, true, true, true", one_pin)
@@ -801,8 +909,9 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kStackReverseIn = 24.0", one_pin)
         self.assertIn("kStackClampLeadIn = 1.0", one_pin)
         self.assertIn("goal_retreat = navigation::drive_relative(\n      kGoalExitIn", one_pin)
-        self.assertIn("kFinalStack{24.0, 0.0}", one_pin)
-        self.assertIn("0.0, 70, 1400, true, true", one_pin)
+        self.assertIn("Waypoint{-24.0, 0.0}", one_pin)
+        self.assertIn("Waypoint{24.0, 0.0}", one_pin)
+        self.assertIn("kPostGoalHeadingDeg, 70, 1400, true, true", one_pin)
         self.assertIn("-(kStackReverseIn - kStackClampLeadIn)", one_pin)
         self.assertIn("-kStackClampLeadIn, 38, 1600", one_pin)
         self.assertIn("ONE_PIN_NEW", one_pin)
@@ -1280,7 +1389,9 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
     def test_controller_pose_editor_is_fail_closed(self):
         source = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
         self.assertIn("update_runtime_pose_editor", source)
-        self.assertIn("pose_editor_active ? 0", source)
+        self.assertIn("const int forward_power = pose_editor_active", source)
+        self.assertIn("const int turn_power = pose_editor_active", source)
+        self.assertIn("!pose_editor_active ? slider_power : 0", source)
         self.assertIn("A=SAVE", source)
         self.assertNotIn("poll_host_commands();", source)
 

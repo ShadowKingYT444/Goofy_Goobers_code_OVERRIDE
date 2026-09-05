@@ -884,6 +884,12 @@ ForwardObstacleObservation read_forward_obstacle() {
 }
 
 bool forward_obstacle_requires_stop(const char* phase) {
+  // P1 is mounted on the negative/rear side of this robot. Its range cannot
+  // safely gate forward travel; doing so previously confused the wall behind
+  // the robot with an obstacle or Toggle in front of it.
+  if constexpr (!localization::kDistanceSensorFacesForward) {
+    return false;
+  }
   static std::uint32_t close_started_ms = 0;
   static std::uint32_t last_close_poll_ms = 0;
   static bool pending_logged = false;
@@ -4287,14 +4293,12 @@ void localization_all_mechanisms_test() {
   };
 
   stop_drive_motors();
-  upper_intake.move(0);
   counter_rollers.move(0);
   claw_arm.move(0);
   std::printf(
-      "MECH_TEST event=inventory intake_installed=%d counter_installed=%d "
+      "MECH_TEST event=inventory counter_installed=%d "
       "claw_installed=%d slider_right_installed=%d slider_left_installed=%d "
       "slider_rotation_installed=%d\n",
-      static_cast<int>(upper_intake.is_installed()),
       static_cast<int>(counter_rollers.is_installed()),
       static_cast<int>(claw_arm.is_installed()),
       static_cast<int>(slider_right.is_installed()),
@@ -4302,8 +4306,6 @@ void localization_all_mechanisms_test() {
       static_cast<int>(slider_rotation_sensor.is_installed()));
   std::fflush(stdout);
 
-  pulse(upper_intake, "upper_intake_p15", 25, "intake_positive");
-  pulse(upper_intake, "upper_intake_p15", -25, "intake_return");
   pulse(counter_rollers, "counter_rollers_p3", 25, "counter_positive");
   pulse(counter_rollers, "counter_rollers_p3", -25, "counter_return");
   pulse(claw_arm, "claw_arm_p4", 20, "claw_positive");
@@ -4322,7 +4324,6 @@ void localization_all_mechanisms_test() {
   clamp_piston.set_value(false);
   std::printf("MECH_TEST event=complete clamp_safe_state=0\n");
   std::fflush(stdout);
-  upper_intake.move(0);
   counter_rollers.move(0);
   claw_arm.move(0);
   stop_drive_motors();
@@ -4330,7 +4331,6 @@ void localization_all_mechanisms_test() {
 
 void localization_clamp_picture_test() {
   stop_drive_motors();
-  upper_intake.move(0);
   counter_rollers.move(0);
   claw_arm.move(0);
   slider_right.move(0);
@@ -5706,14 +5706,21 @@ bool localization_pure_pursuit_endpoint_test() {
   return ok && arrived && final_error_in <= 2.0;
 }
 
-bool localization_simple_red_goal_hotkey_auton() {
-  // Repositioned one-pin route. A twelve-inch backward vector at +60 degrees
-  // terminates at the requested Goal coordinate (48,-24), so its matching
-  // start anchor is (54,-13.6077) at heading zero after returning from Toggle.
-  constexpr localization::FieldPose kStart{54.0, -13.6076952, 0.0};
-  constexpr Waypoint kGoal{48.0, -24.0};
-  constexpr Waypoint kFinalStack{24.0, 0.0};
-  constexpr double kGoalTurnDeg = 60.0;
+bool localization_simple_one_pin_goal_hotkey_auton(bool blue_side) {
+  // Blue is the exact 180-degree field-center mirror of the qualified red
+  // route: (x,y)->(-x,-y), with every absolute heading shifted by 180 deg.
+  // Signed travel, powers, mechanism timing, and phase order remain identical.
+  const localization::FieldPose kStart = blue_side
+      ? localization::FieldPose{-54.0, 13.6076952, 180.0}
+      : localization::FieldPose{54.0, -13.6076952, 0.0};
+  const Waypoint kGoal = blue_side
+      ? Waypoint{-48.0, 24.0}
+      : Waypoint{48.0, -24.0};
+  const Waypoint kFinalStack = blue_side
+      ? Waypoint{-24.0, 0.0}
+      : Waypoint{24.0, 0.0};
+  const double kGoalTurnDeg = blue_side ? 240.0 : 60.0;
+  const double kPostGoalHeadingDeg = blue_side ? 180.0 : 0.0;
   constexpr double kGoalContactIn = 12.0;
   constexpr double kGoalExitIn = 13.5;
   constexpr double kStackReverseIn = 24.0;
@@ -5785,7 +5792,7 @@ bool localization_simple_red_goal_hotkey_auton() {
   // One lower-power turn toward zero. Do not retry or wait on a precision
   // settle: those gates were stopping the remainder of the autonomous.
   const navigation::Result zero_turn = navigation::turn_to(
-      0.0, 70, 1400, true, true);
+      kPostGoalHeadingDeg, 70, 1400, true, true);
   const bool zero_turn_attempted =
       zero_turn == navigation::Result::kSuccess ||
       zero_turn == navigation::Result::kTurnFailed;
@@ -5816,9 +5823,9 @@ bool localization_simple_red_goal_hotkey_auton() {
   pros::delay(50);
 
   std::printf(
-      "ONE_PIN_NEW toggle=%s/%s goal=%.2f,%.2f turn=%s contact=%s "
+      "ONE_PIN_NEW alliance=%s toggle=%s/%s goal=%.2f,%.2f turn=%s contact=%s "
       "retreat=%s zero=%s stack=%.2f,%.2f approach=%s capture=%s ok=%d\n",
-      navigation::result_name(toggle_ram),
+      blue_side ? "blue" : "red", navigation::result_name(toggle_ram),
       navigation::result_name(toggle_return), kGoal.x, kGoal.y,
       navigation::result_name(goal_turn),
       navigation::result_name(goal_contact),
@@ -5830,6 +5837,14 @@ bool localization_simple_red_goal_hotkey_auton() {
   std::fflush(stdout);
   navigation::stop();
   return stack_reached;
+}
+
+bool localization_simple_red_goal_hotkey_auton() {
+  return localization_simple_one_pin_goal_hotkey_auton(false);
+}
+
+bool localization_simple_blue_goal_hotkey_auton() {
+  return localization_simple_one_pin_goal_hotkey_auton(true);
 }
 
 bool localization_simple_red_goal_hotkey_auton_legacy() {

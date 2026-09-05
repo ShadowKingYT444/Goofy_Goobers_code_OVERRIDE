@@ -1,5 +1,22 @@
 # Master Fusion System: Next Implementation
 
+## 2026-09-04 replacement-robot port correction
+
+- Production drive is P17/P18 left, P11/P13 right, with IMU P12.
+- P1 is rear/negative-axis Distance, P6 AI Vision, and P7 GPS.
+- P5 is claw-arm Rotation feedback; P15 is the working, center-mounted
+  longitudinal/forward odometry Rotation sensor. The legacy lateral fusion
+  path is disabled pending a dedicated P15 longitudinal integration.
+- Toggle is the active-low ADI-D piston. Autonomous and driver control now
+  extend it on entry and never retract it during the game.
+- P14 is empty because the upper intake has been removed; no P14 motor object
+  or controller command remains in production.
+- Forward route collision logic no longer consumes rear-facing P1 as though it
+  observed the space ahead. A dedicated rear/reverse safety policy is still
+  needed.
+- D4 telemetry now identifies the odometer as `h15`; host parsers retain
+  compatibility with saved `h5` logs.
+
 ## 2026-08-25 PID-tuning update
 
 - Live paired +/-45-degree tuning selected fused turn gains `kP=1.8`,
@@ -36,7 +53,7 @@ Authoritative current evidence is in
 `reports/sensor_campaign_2026-08-25/live_resume_addendum.md` and
 `reports/sensor_campaign_2026-08-25/goal_completion_audit.md`.
 
-## 2026-08-23 superseding current-state note
+## 2026-08-23 historical replacement-state note (superseded above)
 
 The historical design text below predates the replacement robot and is not a
 hardware/deployment record. Current authoritative state:
@@ -128,9 +145,11 @@ The proposed final behavior is:
   The bounded four-segment turn calibration now logs all four motor encoders,
   field-frame IMU heading, LiDAR wall theta, and rear tracking-wheel rotation,
   then fits effective track width from measured motion.
-- The confirmed 2-inch rear-center omni tracking wheel is oriented laterally.
-  It uses raw sign +1 and a pooled effective rear lever arm of 2.5665 inches.
-  A measured sideways push remains useful validation, not a missing diameter.
+- The 2-inch center-mounted tracking wheel on P15 measures longitudinal travel.
+  One run resembled an exact 5:7 transfer, but the immediate repeat over-read
+  8.114 in against 5.823 in of paired-encoder travel and kept spinning during
+  braking. No fixed correction is valid. Repair/preload the coupled wheels and
+  repeat against tape before integrating P15 into localization.
 - LiDAR/IMU calibration compares angle changes at each stationary endpoint and
   reports scale plus RMS residual. Raw LiDAR absolute theta is not compared
   across different wall identities.

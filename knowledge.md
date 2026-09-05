@@ -2,6 +2,21 @@
 
 Append durable technical facts here whenever new hardware behavior, calibration, API behavior, failure mode, or operating procedure is learned. Use ISO timestamps and distinguish measured facts from provisional assumptions.
 
+## 2026-09-04T00:00:00-07:00 - Current replacement-robot wiring correction
+
+- Current source and operator wiring report agree on P17/P18 left drive,
+  P11/P13 right drive, P12 IMU, P6 AI Vision, and P7 GPS.
+- Operator-confirmed P1 points along the rear/negative robot axis. It is not a
+  forward collision or Toggle-range sensor.
+- P5 is claw-arm Rotation feedback. The working longitudinal/forward odometry
+  Rotation sensor is P15 and is mounted at the robot rotation center. Previous
+  P5 odometry evidence measured the wrong mechanism and does not describe P15.
+- Toggle actuation is active-low ADI-D and must stay physically extended after
+  autonomous starts. Firmware now establishes that state on entry to both
+  autonomous and driver control.
+- The upper intake has been removed and P14 is physically empty. Production no
+  longer declares or commands a P14 intake motor.
+
 ## 2026-08-25T20:46:32-07:00 - Live power-cycle recovery and P6 calibration variability
 
 - A real Brain power cycle restored CPU1/user telemetry and proved the former
@@ -29,7 +44,7 @@ Append durable technical facts here whenever new hardware behavior, calibration,
   of frames at 6/63 median confidence. Availability and quality are strongly
   scene/target dependent; P1 remains a forward stop, not localization truth.
 
-## 2026-08-23T06:25:00-07:00 - Replacement robot (current; supersedes 2026-07 hardware below)
+## 2026-08-23T06:25:00-07:00 - Prior replacement map (superseded 2026-09-04)
 
 - Current drivetrain is P17/P18 left and P11/P13 right; P6 is its IMU, P7 GPS,
   P1 forward Distance, P8 AI Vision, and P5 the inactive lateral tracker. The

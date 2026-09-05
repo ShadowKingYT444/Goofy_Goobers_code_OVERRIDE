@@ -1,5 +1,12 @@
 # Navigation library
 
+> **2026-09-04 port correction:** live device-type enumeration confirms IMU
+> P14 (type 6) and the controller radio on P10 (type 8). The robot also uses AI Vision
+> P6, GPS P7, rear-facing Distance P1, claw Rotation P5, and longitudinal
+> odometry Rotation P15. P1 does not protect forward travel. P15 is a
+> center-mounted forward tracker; the legacy lateral path remains disabled
+> until P15 is integrated correctly. Older P5 results were claw-arm feedback.
+
 > **2026-08-25 safety hold:** do not treat a successful `navigation::init()` as
 > sufficient motion authority yet. One API-ready P6 calibration stayed quiet
 > initially, then crossed 0.50 degrees of false rotation after 183.4 seconds

@@ -27,21 +27,22 @@ This file applies to the repository root and all descendants. This is a VEX V5 C
 
 | Device | Configuration |
 |---|---|
-| Drive left motors | Smart Ports `17` and `18`, both reversed (`-17`, `-18`) |
-| Drive right motors | Smart Ports `11` and `13` |
-| Chassis IMU | Smart Port `6` |
+| Drive left motors | Smart Ports `17` and `18` |
+| Drive right motors | Smart Ports `11` and `13`, both reversed (`-11`, `-13`) |
+| Chassis IMU | Smart Port `14` (live device type `6`, Inertial) |
 | Drive setup | `2.75 in` wheels, `450 RPM`, ratio `1.0`, as passed to `Drive chassis(...)` |
-| Forward Distance/ToF sensor | Smart Port `1`, pointing robot-forward |
+| Rear/negative-axis Distance sensor | Smart Port `1`, pointing opposite robot-forward |
 | VEX GPS sensor | Smart Port `7`; lens points robot-right (90° clockwise from forward), mounted 6 in right and 6 in behind robot center |
-| Horizontal tracking odometer | Rotation sensor on Smart Port `5` |
+| Claw-arm feedback | Rotation sensor on Smart Port `5` |
+| Forward/longitudinal tracking odometer | Rotation sensor on Smart Port `15`, mounted at robot center |
 | Slider left motor | Smart Port `9`, reversed (`-9`) |
 | Slider right motor | Smart Port `2` |
 | Slider rotation sensor | Smart Port `16` |
-| Clamp piston | ADI port `A` |
+| Toggle piston | ADI port `D`, active-low; extend at autonomous start and keep extended for the game |
 | Claw arm motor | Smart Port `4` |
-| Upper intake motor | Smart Port `14` |
-| Counter-rollers motor | Smart Port `15` |
-| VEX AI Vision sensor | Smart Port `8` |
+| Smart Port `10` | Controller radio when paired (live device type `8`) |
+| Counter-rollers motor | Smart Port `3` |
+| VEX AI Vision sensor | Smart Port `6` |
 
 Motor reversal signs are intentional calibration. Do not remove a leading `-` merely to make port numbers look uniform.
 
@@ -52,13 +53,15 @@ The estimator is a multi-sensor fusion system. Preserve the distinction between 
 ### Continuous propagation
 
 - Drivetrain motor encoders estimate forward/longitudinal displacement.
-- The horizontal tracking wheel on rotation port `5` estimates lateral displacement.
+- The working tracking wheel on rotation port `15` measures longitudinal
+  displacement and is mounted at the robot's rotation center. Do not feed it
+  into the legacy lateral-odometry term.
 - The IMU supplies high-rate short-term heading. It is useful for continuity but drifts and must not be treated as permanently absolute.
 
 ### Correction sources
 
-- The single forward Distance/ToF sensor on port `1` provides obstacle range along the robot's forward axis. It cannot independently estimate wall-relative heading.
-- Use the forward range opportunistically for collision avoidance and wall-distance corrections only when robot heading and field geometry make the observed wall unambiguous.
+- The single Distance/ToF sensor on port `1` points along the robot's negative/rear axis. It must not be used as forward collision or forward Toggle range.
+- Use its rear-facing range opportunistically only for reverse collision avoidance or wall-distance correction when robot heading and field geometry make the observed wall unambiguous.
 - VEX AI Vision/AprilTag observations provide landmark-based/global corrections when a known goal tag is visible. The camera-to-robot extrinsic transform, field tag pose, ambiguity handling, and measurement confidence must be explicit.
 
 ### Fusion invariants
