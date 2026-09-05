@@ -857,10 +857,10 @@ bool path2_approach_stack(Path2Point target, bool reverse,
       target.x, target.y, robot_center_target.x, robot_center_target.y,
       pickup_reach, final_distance);
   std::fflush(stdout);
-  // Close the longer pneumatic claw 9.7 inches before its calibrated contact
+  // Close the longer pneumatic claw 9.4 inches before its calibrated contact
   // point, then finish the approach while it is already closing around the
   // stack. This avoids driving past the stack before the piston can capture it.
-  constexpr double kPneumaticGrabLeadIn = 9.7;
+  constexpr double kPneumaticGrabLeadIn = 9.4;
   const double before_grab =
       std::max(0.0, final_distance - kPneumaticGrabLeadIn);
   if (before_grab > 0.05) {
@@ -941,8 +941,8 @@ bool localization_two_cup_auton(bool blue_side) {
   const double final_heading_deg = blue_side ? 270.0 : 180.0;
   const double phase2_goal_clearance_in = blue_side
       ? kBluePhase2GoalClearanceIn : kPhase2GoalClearanceIn;
-  // Close another 0.25 in later than the previous tune on both alliances.
-  const double second_stack_grab_lead_in = blue_side ? 4.95 : 4.20;
+  // Close 0.3 in later than the previous tune on both alliances.
+  const double second_stack_grab_lead_in = blue_side ? 4.65 : 3.90;
   default_constants();
   path2_stop_all();
   // Competition setup starts the lift physically at rest, and initialize()
@@ -1045,7 +1045,7 @@ bool localization_two_cup_auton(bool blue_side) {
                             "stack A boomerang approach")) return false;
 
   // Phase 2 ends at the stack coordinate. The ADI-E claw begins closing for
-  // the final 9.7 inches based on the latest loaded test.
+  // the final 9.4 inches based on the latest loaded test.
   if constexpr (kTestStopAfterPhase == 2) {
     path2_stop_all();
     std::printf("PATH2 test_stop=phase_2_after_first_cup_capture\n");

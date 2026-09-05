@@ -848,10 +848,12 @@ recovery.
 - Final field tune: preload Goal turn magnitude is 77 degrees, Stack A uses
   its physical `(24,24)` coordinate with exact blue origin mirror, and Stack B
   clamp timing is 0.25 inch later on each alliance route.
-- The claw-arm normal/drop target is 66 degrees and its faster downward hold
+- The claw-arm normal/drop target is 64.7 degrees and its faster downward hold
   begins asynchronously during the 600-ms Toggle deployment. Before anchoring
   navigation, drivetrain startup waits only if that arm is still outside its
   normal tolerance, preventing arm motion from corrupting the first IMU turn.
 - In driver control, each standalone controller A-button press toggles the
   active-low Toggle piston on ADI-D. The binding is disabled while autonomous
   owns the robot, and X+Y pose-editor mode retains A as its Save button.
+- Both two-cup pickup clamps engage 0.3 inches later: Stack A's pneumatic lead
+  is 9.4 inches, while Stack B uses 3.90 inches red / 4.65 inches blue.
