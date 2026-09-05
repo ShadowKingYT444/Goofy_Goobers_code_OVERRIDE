@@ -330,13 +330,13 @@ int apply_controller_deadband(int value) {
 constexpr double kArmRightTargetDeg = 21.18;
 // Port-5 absolute angle recorded at the desired default/start-of-match pickup
 // orientation on 2026-09-04. Autonomous and opcontrol actively hold it.
-constexpr double kArmNormalTargetDeg = 62.49;
+constexpr double kArmNormalTargetDeg = 63.2;
 constexpr double kArmNormalToleranceDeg = 5.0;
 constexpr double kArmPositionKp = 1.35;
 constexpr double kArmPositionKd = 0.10;
 constexpr double kArmPositionMaxPower = 70.0;
 constexpr double kArmPositionMinPower = 16.0;
-// P5 angle increases when the arm returns down toward its 62.49-degree
+// P5 angle increases when the arm returns down toward its 63.2-degree
 // match/default pose. Give only that direction a quicker response.
 constexpr double kArmPositionDownKp = 1.80;
 constexpr double kArmPositionDownMaxPower = 90.0;
@@ -2223,6 +2223,293 @@ void print_smart_port_inventory(const char* phase) {
   std::fflush(stdout);
 }
 
+struct DualAiDiagnosticObservation {
+  bool valid{false};
+  std::uint8_t port{0};
+  int tag_id{-1};
+  int object_count{0};
+  double horizontal_range_in{NAN};
+  double bearing_right_deg{NAN};
+  const char* reason{"not_read"};
+};
+
+bool configure_dual_ai_diagnostic_port(std::uint8_t port) {
+  if (static_cast<int>(pros::c::get_plugged_type(port)) !=
+      static_cast<int>(pros::c::E_DEVICE_AIVISION)) {
+    std::printf("AI_COMPARE event=config port=%u configured=0 reason=missing\n",
+                static_cast<unsigned>(port));
+    std::fflush(stdout);
+    return false;
+  }
+  errno = 0;
+  const int reset = pros::c::aivision_reset(port);
+  const int family = pros::c::aivision_set_tag_family_override(
+      port, pros::TAG_CIRCLE_21H7);
+  const int disable = pros::c::aivision_disable_detection_types(
+      port, pros::E_AIVISION_MODE_COLORS |
+                pros::E_AIVISION_MODE_OBJECTS |
+                pros::E_AIVISION_MODE_COLOR_MERGE);
+  const int enable = pros::c::aivision_enable_detection_types(
+      port, pros::E_AIVISION_MODE_TAGS);
+  const int enabled = pros::c::aivision_get_enabled_detection_types(port);
+  const bool configured = reset == 1 && family == 1 && disable == 1 &&
+                          enable == 1 &&
+                          enabled == pros::E_AIVISION_MODE_TAGS;
+  std::printf(
+      "AI_COMPARE event=config port=%u configured=%d reset=%d family=%d "
+      "disable=%d enable=%d enabled=%d errno=%d\n",
+      static_cast<unsigned>(port), static_cast<int>(configured), reset,
+      family, disable, enable, enabled, errno);
+  std::fflush(stdout);
+  return configured;
+}
+
+DualAiDiagnosticObservation read_dual_ai_diagnostic(std::uint8_t port) {
+  DualAiDiagnosticObservation result;
+  result.port = port;
+  if (static_cast<int>(pros::c::get_plugged_type(port)) !=
+      static_cast<int>(pros::c::E_DEVICE_AIVISION)) {
+    result.reason = "missing";
+    return result;
+  }
+  errno = 0;
+  const int count = pros::c::aivision_get_object_count(port);
+  result.object_count = count;
+  if (count < 0 || count > 24) {
+    result.reason = "count_error";
+    return result;
+  }
+  bool found = false;
+  pros::aivision_object_s_t best{};
+  double best_area = -1.0;
+  for (int index = 0; index < count; ++index) {
+    const auto object = pros::c::aivision_get_object(
+        port, static_cast<std::uint32_t>(index));
+    if (object.type != pros::E_AIVISION_DETECTED_TAG) continue;
+    const auto& tag = object.object.tag;
+    const double twice_area =
+        static_cast<double>(tag.x0) * tag.y1 -
+        static_cast<double>(tag.y0) * tag.x1 +
+        static_cast<double>(tag.x1) * tag.y2 -
+        static_cast<double>(tag.y1) * tag.x2 +
+        static_cast<double>(tag.x2) * tag.y3 -
+        static_cast<double>(tag.y2) * tag.x3 +
+        static_cast<double>(tag.x3) * tag.y0 -
+        static_cast<double>(tag.y3) * tag.x0;
+    const double area = std::fabs(twice_area) * 0.5;
+    if (area > best_area) {
+      best = object;
+      best_area = area;
+      found = true;
+    }
+  }
+  if (!found) {
+    result.reason = count == 0 ? "no_object" : "no_tag";
+    return result;
+  }
+
+  const auto& tag = best.object.tag;
+  const auto edge = [](int x0, int y0, int x1, int y1) {
+    return std::hypot(static_cast<double>(x1 - x0),
+                      static_cast<double>(y1 - y0));
+  };
+  const std::array<double, 4> edges{
+      edge(tag.x0, tag.y0, tag.x1, tag.y1),
+      edge(tag.x1, tag.y1, tag.x2, tag.y2),
+      edge(tag.x2, tag.y2, tag.x3, tag.y3),
+      edge(tag.x3, tag.y3, tag.x0, tag.y0)};
+  const auto [minimum_edge, maximum_edge] =
+      std::minmax_element(edges.begin(), edges.end());
+  if (*minimum_edge < localization::kAiMinTagEdgePx ||
+      *minimum_edge <= 0.0 ||
+      *maximum_edge / *minimum_edge > localization::kAiMaxTagEdgeRatio ||
+      best_area < 40.0) {
+    result.reason = "geometry";
+    return result;
+  }
+  const double horizontal_edge = 0.5 * (edges[0] + edges[2]);
+  const double vertical_edge = 0.5 * (edges[1] + edges[3]);
+  const double center_x = 0.25 * (tag.x0 + tag.x1 + tag.x2 + tag.x3);
+  const double depth = 0.5 *
+      (localization::kAiFocalLengthXPx *
+           localization::kAiTagDetectedSizeIn / horizontal_edge +
+       localization::kAiFocalLengthYPx *
+           localization::kAiTagDetectedSizeIn / vertical_edge);
+  const double right = depth *
+      (center_x - localization::kAiImageWidthPx * 0.5) /
+      localization::kAiFocalLengthXPx;
+  result.tag_id = best.id;
+  result.horizontal_range_in = std::hypot(depth, right);
+  result.bearing_right_deg = std::atan2(right, depth) * 180.0 /
+                             3.14159265358979323846;
+  if (!std::isfinite(result.horizontal_range_in) ||
+      result.horizontal_range_in < localization::kAiMinUsableRangeIn ||
+      result.horizontal_range_in > localization::kAiMaxUsableRangeIn) {
+    result.reason = "range";
+    return result;
+  }
+  result.valid = true;
+  result.reason = "valid";
+  return result;
+}
+
+bool dual_ai_robot_stationary() {
+  constexpr double kMaximumMotorRpm = 2.0;
+  for (const auto& motor : chassis.left_motors) {
+    const double rpm = motor.get_actual_velocity();
+    if (!std::isfinite(rpm) || std::fabs(rpm) > kMaximumMotorRpm) return false;
+  }
+  for (const auto& motor : chassis.right_motors) {
+    const double rpm = motor.get_actual_velocity();
+    if (!std::isfinite(rpm) || std::fabs(rpm) > kMaximumMotorRpm) return false;
+  }
+  const auto gyro = chassis.imu.get_gyro_rate();
+  return std::isfinite(gyro.z) && std::fabs(gyro.z) <= 3.0;
+}
+
+void emit_dual_ai_pose_comparison(const DualAiDiagnosticObservation& vision,
+                                  std::uint32_t stationary_ms) {
+  const auto fused = navigation::current_pose();
+  const auto gps_position = gps_7.get_position();
+  const double gps_heading_cw_deg = gps_7.get_heading();
+  const double gps_error_in = gps_7.get_error() * 39.37007874015748;
+  const auto gps = localization::vex_gps_to_project_robot_pose(
+      gps_position.x, gps_position.y, gps_heading_cw_deg);
+  const bool gps_valid = gps_7.is_installed() &&
+      std::isfinite(gps.x_in) && std::isfinite(gps.y_in) &&
+      std::isfinite(gps.heading_deg) && std::isfinite(gps_error_in) &&
+      gps_error_in >= 0.0 &&
+      gps_error_in <= localization::kGpsMaxReportedErrorIn;
+  const bool fused_valid = fused.valid && std::isfinite(fused.x_in) &&
+                           std::isfinite(fused.y_in) &&
+                           std::isfinite(fused.heading_deg);
+  const double reference_heading_deg = fused_valid
+      ? fused.heading_deg : (gps_valid ? gps.heading_deg : NAN);
+  if (!vision.valid || !std::isfinite(reference_heading_deg)) {
+    std::printf(
+        "AI_COMPARE t=%lu stationary_ms=%lu port=%u tag=%d valid=0 "
+        "reason=%s gps_valid=%d fused_valid=%d\n",
+        static_cast<unsigned long>(pros::millis()),
+        static_cast<unsigned long>(stationary_ms),
+        static_cast<unsigned>(vision.port), vision.tag_id, vision.reason,
+        static_cast<int>(gps_valid), static_cast<int>(fused_valid));
+    std::fflush(stdout);
+    return;
+  }
+
+  // P6 points robot-forward; P8 points robot-right. Camera translations are
+  // intentionally zero until measured, so this qualification reports the
+  // resulting disagreement instead of feeding it into autonomous control.
+  const double camera_yaw_right_deg = vision.port == 8 ? 90.0 : 0.0;
+  const double camera_heading_deg =
+      reference_heading_deg - camera_yaw_right_deg;
+  const double global_bearing_rad =
+      (camera_heading_deg + vision.bearing_right_deg) *
+      3.14159265358979323846 / 180.0;
+  constexpr std::array<std::array<double, 2>, 4> kFaceNormals{{
+      {{1.0, 0.0}}, {{0.0, 1.0}}, {{-1.0, 0.0}}, {{0.0, -1.0}},
+  }};
+  bool found_candidate = false;
+  double best_x = NAN;
+  double best_y = NAN;
+  double best_gps_delta = NAN;
+  double best_fused_delta = NAN;
+  double best_score = INFINITY;
+  int candidate_count = 0;
+  for (const auto& landmark : localization::kGoalTagLandmarks) {
+    if (landmark.tag_id != vision.tag_id) continue;
+    for (const auto& normal : kFaceNormals) {
+      const double face_x = landmark.x_in +
+          normal[0] * localization::kAiGoalFaceOffsetIn;
+      const double face_y = landmark.y_in +
+          normal[1] * localization::kAiGoalFaceOffsetIn;
+      const double camera_x = face_x - vision.horizontal_range_in *
+          std::cos(global_bearing_rad);
+      const double camera_y = face_y - vision.horizontal_range_in *
+          std::sin(global_bearing_rad);
+      // Only the outward side of a Goal face can be observed.
+      if ((camera_x - face_x) * normal[0] +
+              (camera_y - face_y) * normal[1] <= 0.0) {
+        continue;
+      }
+      ++candidate_count;
+      const double gps_delta = gps_valid
+          ? std::hypot(camera_x - gps.x_in, camera_y - gps.y_in) : NAN;
+      const double fused_delta = fused_valid
+          ? std::hypot(camera_x - fused.x_in, camera_y - fused.y_in) : NAN;
+      const double score = (gps_valid ? gps_delta : 0.0) +
+                           (fused_valid ? fused_delta : 0.0);
+      if (score < best_score) {
+        best_score = score;
+        best_x = camera_x;
+        best_y = camera_y;
+        best_gps_delta = gps_delta;
+        best_fused_delta = fused_delta;
+        found_candidate = true;
+      }
+    }
+  }
+  const double gps_fused_delta = gps_valid && fused_valid
+      ? std::hypot(gps.x_in - fused.x_in, gps.y_in - fused.y_in) : NAN;
+  const int reference_count = static_cast<int>(gps_valid) +
+                              static_cast<int>(fused_valid);
+  const double mean_delta = reference_count > 0
+      ? ((gps_valid ? best_gps_delta : 0.0) +
+         (fused_valid ? best_fused_delta : 0.0)) / reference_count
+      : NAN;
+  // Diagnostic display scale: 100% at zero disagreement and 0% at 12 inches.
+  const double similarity_pct = found_candidate && std::isfinite(mean_delta)
+      ? std::clamp(100.0 * (1.0 - mean_delta / 12.0), 0.0, 100.0)
+      : 0.0;
+  std::printf(
+      "AI_COMPARE t=%lu stationary_ms=%lu port=%u mount=%s tag=%d "
+      "range=%.2f bearing=%.2f candidates=%d vision_xy=%.2f,%.2f "
+      "gps_xy=%.2f,%.2f gps_rms=%.2f vision_gps_delta=%.2f "
+      "fused_xy=%.2f,%.2f vision_fused_delta=%.2f gps_fused_delta=%.2f "
+      "similarity_pct=%.1f correction_applied=0 valid=%d\n",
+      static_cast<unsigned long>(pros::millis()),
+      static_cast<unsigned long>(stationary_ms),
+      static_cast<unsigned>(vision.port), vision.port == 8 ? "right" : "front",
+      vision.tag_id, vision.horizontal_range_in, vision.bearing_right_deg,
+      candidate_count, best_x, best_y, gps.x_in, gps.y_in, gps_error_in,
+      best_gps_delta, fused.x_in, fused.y_in, best_fused_delta,
+      gps_fused_delta, similarity_pct, static_cast<int>(found_candidate));
+  std::fflush(stdout);
+  const int line = vision.port == 8 ? 5 : 4;
+  pros::lcd::print(line, "AI P%u G%.1f F%.1f %3.0f%%",
+                   static_cast<unsigned>(vision.port), best_gps_delta,
+                   best_fused_delta, similarity_pct);
+}
+
+void dual_ai_stationary_comparison_loop() {
+  constexpr std::array<std::uint8_t, 2> kPorts{6, 8};
+  for (const auto port : kPorts) configure_dual_ai_diagnostic_port(port);
+  pros::delay(750);
+  std::uint32_t stationary_since_ms = 0;
+  while (true) {
+    const bool autonomous_active = opcontrol_auton_running ||
+        (pros::competition::is_autonomous() &&
+         !pros::competition::is_disabled());
+    if (!autonomous_active || !dual_ai_robot_stationary()) {
+      stationary_since_ms = 0;
+      pros::delay(50);
+      continue;
+    }
+    const std::uint32_t now = pros::millis();
+    if (stationary_since_ms == 0) stationary_since_ms = now;
+    const std::uint32_t stationary_ms = now - stationary_since_ms;
+    if (stationary_ms < 300) {
+      pros::delay(50);
+      continue;
+    }
+    for (const auto port : kPorts) {
+      emit_dual_ai_pose_comparison(read_dual_ai_diagnostic(port),
+                                   stationary_ms);
+    }
+    pros::delay(100);
+  }
+}
+
 void arm_calibration_logger_loop() {
   std::uint32_t last_screen_ms = 0;
   while (true) {
@@ -2468,6 +2755,11 @@ void initialize() {
               static_cast<unsigned long>(pros::millis()));
   std::fflush(stdout);
   ai_vision_shadow_initialize();
+  // Independent diagnostics owner for P6/P8. It remains idle unless an
+  // autonomous routine is active and the robot has been stationary for 300ms.
+  // Results are display/log only; AI pose correction is disabled in config.
+  pros::Task::create(dual_ai_stationary_comparison_loop,
+                     "dual AI compare");
   // Repeat after slower sensor initialization so a terminal attached just
   // after upload still receives the live wiring inventory.
   print_smart_port_inventory("post_init");
@@ -3216,7 +3508,9 @@ void opcontrol() {
       std::fflush(stdout);
       last_drive_health_ms = drive_health_now_ms;
     }
-    ai_vision_shadow_update();
+    // During a hotkey autonomous, the stationary diagnostic task owns P6/P8
+    // reads. Avoid concurrent Smart Port calls from the driver-control loop.
+    if (!opcontrol_auton_running) ai_vision_shadow_update();
     if (!opcontrol_auton_running) {
       localization_telemetry_update();
     }

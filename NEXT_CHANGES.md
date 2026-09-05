@@ -814,3 +814,20 @@ recovery.
   sensor is assigned a non-conflicting port and its rigid geometry recalibrated.
 - The claw pneumatic is now confirmed on three-wire ADI port H. L1 opens it and
   L2 closes it. Claw-arm motor rotation temporarily uses Right/Down arrows.
+
+## 2026-09-05 Dual AI Qualification Observer
+
+- Autonomous now has a diagnostics-only background observer for AI Vision
+  Smart Ports 6 (forward-facing) and 8 (right-facing).
+- It polls only after drivetrain velocity and IMU angular rate indicate at
+  least 300 ms of stationary time. It performs no actuator writes and does not
+  call the estimator update function.
+- Each accepted tag sample is associated with the closest mapped Goal-face
+  hypothesis using the current heading. `AI_COMPARE` reports the provisional
+  camera-derived X/Y, GPS X/Y, fused X/Y, all pairwise errors in inches, and a
+  display-only similarity percentage (100% at zero mean error, 0% at 12 in).
+- `correction_applied=0` is invariant and
+  `kAiVisionPoseCorrectionEnabled=false`; these readings cannot alter an auton.
+- P6/P8 camera translations are still assumed zero. Treat the comparison as a
+  qualification measurement until both lens-to-robot-center offsets are
+  physically measured and stationary field trials establish accuracy.

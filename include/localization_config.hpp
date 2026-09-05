@@ -211,7 +211,10 @@ inline constexpr double kAiTagDetectedSizeIn = 0.625;
 inline constexpr double kAiCameraForwardOffsetIn = 0.0;
 inline constexpr double kAiCameraRightOffsetIn = 0.0;
 inline constexpr double kAiCameraYawRightDeg = 0.0;
-inline constexpr bool kAiVisionPoseCorrectionEnabled = true;
+// Qualification mode: AI Vision is polled by an independent stationary-only
+// observer during autonomous, but its estimate must not modify fused pose or
+// drivetrain commands until the two camera mounts are measured and compared.
+inline constexpr bool kAiVisionPoseCorrectionEnabled = false;
 inline constexpr int kAiRequiredConsistentObservations = 5;
 // A larger but still plausible innovation may be recovered only after a much
 // longer run of the same unambiguous physical Goal/face. Corrections remain

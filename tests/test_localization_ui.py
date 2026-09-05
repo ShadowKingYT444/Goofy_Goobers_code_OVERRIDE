@@ -411,7 +411,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         config = (ROOT / "include" / "localization_config.hpp").read_text(
             encoding="utf-8"
         )
-        self.assertIn("kAiVisionPoseCorrectionEnabled = true", config)
+        self.assertIn("kAiVisionPoseCorrectionEnabled = false", config)
         self.assertIn("kAiCameraYawRightDeg = 0.0", config)
         self.assertIn("kAiMaxPositionInnovationIn = 2.0", config)
         self.assertIn("kAiMaxPositionStepIn = 0.15", config)
@@ -536,7 +536,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kAiVisionPort = 6", localization_config)
         self.assertIn("claw_arm.set_current_limit(2500)", main)
         self.assertIn("kArmRightTargetDeg = 21.18", main)
-        self.assertIn("kArmNormalTargetDeg = 62.49", main)
+        self.assertIn("kArmNormalTargetDeg = 63.2", main)
         self.assertIn("kArmNormalToleranceDeg = 5.0", main)
         self.assertIn("kArmPositionKp = 1.35", main)
         self.assertIn("kArmPositionKd = 0.10", main)
@@ -700,13 +700,13 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
 
         self.assertIn("kStart{63.0, 0.0}", config)
         self.assertIn("kGoal{48.0, 24.0}", config)
-        self.assertIn("kStackA{24.5, 26.1}", config)
+        self.assertIn("kStackA{23.0, 26.5}", config)
         self.assertIn("kStackB{48.0, 48.0}", config)
         self.assertIn("kFinal{48.0, 60.0}", config)
         self.assertIn("kStartHeadingDeg = 0.0", config)
         self.assertIn("kBlueStart{0.0, 63.0}", config)
         self.assertIn("kBlueGoal{24.0, 48.0}", config)
-        self.assertIn("kBlueStackA{-24.5, -26.1}", config)
+        self.assertIn("kBlueStackA{-23.0, -26.5}", config)
         self.assertIn("kBlueStackB{48.0, 48.0}", config)
         self.assertIn("kBlueStartHeadingDeg = 90.0", config)
         self.assertIn("kToggleReturnDistanceIn = 6.0", config)
@@ -734,7 +734,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kScoreDropWaitTimeoutMs = 180", config)
         self.assertIn("kStage1OuttakeLeadMs = 100", config)
         self.assertIn("kStage1ScoreRetreatPower = 95", config)
-        self.assertIn("kStage1ScoreRetreatIn = 9.75", config)
+        self.assertIn("kStage1ScoreRetreatIn = 9.25", config)
         self.assertIn("kStage2ExtraCaptureIn = 4.5", config)
         self.assertIn("kStage2GoalDriveIn = 24.0", config)
         self.assertIn("kSecondStackApproachPower = 60", config)
@@ -1167,6 +1167,28 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         main = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
         self.assertIn('"AI P%u tag=%d %s"', main)
         self.assertIn('"AI P%u T%d %-3s"', main)
+
+    def test_dual_ai_auton_comparison_is_stationary_and_observer_only(self):
+        main = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
+        config = (ROOT / "include" / "localization_config.hpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("constexpr std::array<std::uint8_t, 2> kPorts{6, 8}", main)
+        self.assertIn("stationary_ms < 300", main)
+        self.assertIn("dual_ai_robot_stationary()", main)
+        self.assertIn("vision.port == 8 ? 90.0 : 0.0", main)
+        self.assertIn("vision_gps_delta=%.2f", main)
+        self.assertIn("vision_fused_delta=%.2f", main)
+        self.assertIn("gps_fused_delta=%.2f", main)
+        self.assertIn("similarity_pct=%.1f correction_applied=0", main)
+        self.assertIn('pros::Task::create(dual_ai_stationary_comparison_loop,', main)
+        self.assertIn("kAiVisionPoseCorrectionEnabled = false", config)
+        start = main.index("void dual_ai_stationary_comparison_loop()")
+        end = main.index("void arm_calibration_logger_loop()", start)
+        observer = main[start:end]
+        self.assertNotIn("navigation::update()", observer)
+        self.assertNotIn("chassis.drive_set", observer)
+        self.assertNotIn("motor.move(", observer)
 
     def test_ai_vision_prefers_a_usable_tag_over_a_larger_clipped_tag(self):
         source = (ROOT / "src" / "ai_vision_localization.cpp").read_text(
