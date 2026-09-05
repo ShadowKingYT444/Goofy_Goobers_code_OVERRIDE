@@ -838,11 +838,10 @@ recovery.
   degrees. Stage 4 remains at the measured 1717.20-degree physical ceiling.
 - Upward lift P/floor/limits are increased for faster concurrent raising;
   downward behavior and the hard-stop envelope are unchanged.
-- Two-cup reverse Goal approaches now use 68/127 power, taper over their last
-  12 inches, and seat at 28/127 instead of entering at 80/127 and tapering only
-  over the last 7 inches.
+- Loaded-stack reverse Goal approaches now use 68/127 power, taper over their
+  last 12 inches, and seat at 28/127. The preload approach remains on its
+  proven fixed 75/127 profile so low-power false stalls cannot shift Stack A.
 - Goal turns retain the proven route-relative/field targets and execute on the
   P14 IMU without a forced P7 re-anchor. The complete turn controller and
   per-turn settle settings are restored to the last field-working revision.
-- Post-contact IMU blanking is reduced from 600 ms to 300 ms so phases chain
-  sooner while retaining a short impact rejection interval.
+- Post-contact IMU blanking remains at the field-proven 600 ms.

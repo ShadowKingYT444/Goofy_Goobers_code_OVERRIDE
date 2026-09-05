@@ -417,7 +417,6 @@ bool path2_config_ready() {
   need_double("toggle_return_distance_in", kToggleReturnDistanceIn);
   need_power("toggle_power", kTogglePower);
   need_power("toggle_return_power", kToggleReturnPower);
-  need_power("preload_goal_drive_power", kPreloadGoalDrivePower);
   need_double("goal_staging_x", kGoalStaging.x);
   need_double("goal_staging_y", kGoalStaging.y);
   need_double("goal_dock_reverse_in", kGoalDockReverseIn);
@@ -484,7 +483,7 @@ bool path2_config_ready() {
   }
   const int configured_powers[] = {
       kTogglePower, kGoalDockPower, kGoalAlignmentBumpPower,
-      kToggleReturnPower, kPreloadGoalDrivePower,
+      kToggleReturnPower,
       kFastDrivePower, kStackApproachPower, kSlowStackPower,
       kSecondStackApproachPower, kSecondStackSlowPower, kTurnPower,
       kStage1GoalDrivePower, kStage1ScoreRetreatPower,
@@ -1009,9 +1008,9 @@ bool localization_two_cup_auton(bool blue_side) {
     return false;
   }
   const auto preload_reverse = path2_fast_drive(
-      -kPhase1PreloadReverseIn, kPreloadGoalDrivePower, 2200, true, true);
+      -kPhase1PreloadReverseIn, kPhase1DrivePower, 1900);
   if (preload_reverse.disabled) return false;
-  path2_blank_impact_imu(300);
+  path2_blank_impact_imu(600);
   navigation::update();
   const auto first_goal_pose = navigation::current_pose();
   std::printf("PATH2 first_goal x=%.3f y=%.3f heading=%.3f\n",
@@ -1092,7 +1091,7 @@ bool localization_two_cup_auton(bool blue_side) {
   const auto goal_drive = path2_fast_drive(
       -kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true);
   if (goal_drive.disabled || goal_drive.traveled_in < 1.0) return false;
-  path2_blank_impact_imu(300);
+  path2_blank_impact_imu(600);
   // Confirm Stage 1 at the first Goal. It has been rising asynchronously
   // throughout the turn and drive, so this normally returns immediately.
   if (!lift.wait_ready(kFirstCupLiftStage, kLiftReadyToleranceDeg,
@@ -1208,7 +1207,7 @@ bool localization_two_cup_auton(bool blue_side) {
   if (second_goal_drive.disabled || second_goal_drive.traveled_in < 1.0) {
     return false;
   }
-  path2_blank_impact_imu(300);
+  path2_blank_impact_imu(600);
   // Confirm Stage 2 at the second Goal before performing the 100-degree drop.
   if (!lift.wait_ready(kSecondCupLiftStage, kLiftReadyToleranceDeg,
                        kScoreStageReadyTimeoutMs)) {

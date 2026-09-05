@@ -757,10 +757,9 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         )
         self.assertIn("kPhase1PreloadReverseIn = 12.0", config)
         self.assertIn(
-            "path2_fast_drive(\n      -kPhase1PreloadReverseIn, kPreloadGoalDrivePower",
+            "path2_fast_drive(\n      -kPhase1PreloadReverseIn, kPhase1DrivePower",
             route,
         )
-        self.assertIn("kPreloadGoalDrivePower = 68", config)
         self.assertIn("kPreloadPinUpperPower", route)
         self.assertIn("kPreloadPinCounterPower", route)
         self.assertIn("-kToggleReturnDistanceIn", route)

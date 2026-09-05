@@ -41,7 +41,6 @@ constexpr double kToggleReturnDistanceIn = 6.0;
 constexpr int kTogglePower = 75;
 constexpr int kToggleReturnPower = 65;
 constexpr int kPhase1DrivePower = 75;
-constexpr int kPreloadGoalDrivePower = 68;
 // After the first -75-degree turn, reverse one inch farther into the preload
 // Goal than the previous 11-inch tune so the mechanism fully reaches it.
 constexpr double kPhase1PreloadReverseIn = 12.0;
