@@ -505,9 +505,12 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kDownPmvPerDeg = 60.0", cascade)
         self.assertIn("kDownDmvPerDegPerS = 14.0", cascade)
         self.assertIn("kPidDownwardVoltageLimitMv = 9000.0", cascade)
-        self.assertIn("kMinimumUpwardPidMv = 5000.0", cascade)
+        self.assertIn("kPmvPerDeg = 36.0", cascade)
+        self.assertIn("kMinimumUpwardPidMv = 6000.0", cascade)
+        self.assertIn("kPidVoltageLimitMv = 12000.0", cascade)
+        self.assertIn("kShortStageUpwardLimitMv = 11000.0", cascade)
         self.assertIn("kMinimumDownwardPidMv = 4000.0", cascade)
-        self.assertIn("427.59, 757.62, 1140.56, 1717.20", cascade)
+        self.assertIn("513.11, 909.14, 1368.67, 1717.20", cascade)
         self.assertIn("kStagePositionToleranceDeg = 16.0", cascade)
         self.assertIn("kZeroPositionToleranceDeg = 1.5", cascade)
         self.assertIn("LiDAR correction remains fail-closed", autons)
@@ -728,7 +731,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kStage1ExtraCaptureIn = 1.0", config)
         self.assertIn("kStage1ExtraCapturePower = 70", config)
         self.assertIn("kStage1GoalDriveIn = 24.0", config)
-        self.assertIn("kStage1GoalDrivePower = 80", config)
+        self.assertIn("kStage1GoalDrivePower = 68", config)
         self.assertIn("kScoreDropPower = 100", config)
         self.assertIn("kScoreDropPulseMs = 100", config)
         self.assertIn("kScoreDropWaitTimeoutMs = 180", config)
@@ -747,16 +750,17 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kStage2ScoreRetreatIn = 24.0", config)
         self.assertIn("kTestStopAfterPhase = 0", config)
 
-        self.assertIn("first_goal_turn_delta_deg = blue_side ? 75.0 : -75.0", route)
+        self.assertIn("first_goal_heading_deg = blue_side ? 165.0 : 285.0", route)
         self.assertIn(
-            "path2_fast_turn(first_goal_turn_delta_deg, true, 5.0, 1400, 30)",
+            "path2_goal_facing_turn(first_goal_heading_deg, 2.75, 1700)",
             route,
         )
         self.assertIn("kPhase1PreloadReverseIn = 12.0", config)
         self.assertIn(
-            "path2_fast_drive(\n      -kPhase1PreloadReverseIn, kPhase1DrivePower",
+            "path2_fast_drive(\n      -kPhase1PreloadReverseIn, kPreloadGoalDrivePower",
             route,
         )
+        self.assertIn("kPreloadGoalDrivePower = 68", config)
         self.assertIn("kPreloadPinUpperPower", route)
         self.assertIn("kPreloadPinCounterPower", route)
         self.assertIn("-kToggleReturnDistanceIn", route)
@@ -787,7 +791,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         first_raise = route.index("lift.request(kFirstCupLiftStage)")
         self.assertLess(first_extra, first_raise)
         self.assertIn("first_stack_score_heading_deg = blue_side ? 270.0 : 180.0", route)
-        self.assertIn("path2_fast_turn(first_stack_score_heading_deg)", route)
+        self.assertIn("path2_goal_facing_turn(first_stack_score_heading_deg)", route)
         self.assertIn("target_imu_cw_deg", route)
         self.assertIn("settle_tolerance_deg = 2.5", route)
         self.assertIn("final_error_deg <= tolerance_deg + 1.5", route)
@@ -803,8 +807,8 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("first_score_stage_not_ready", route)
         self.assertIn("-kStage1GoalDriveIn", route)
         self.assertIn("progressive_goal_decel", route)
-        self.assertIn("kGoalDecelZoneIn = 7.0", route)
-        self.assertIn("kGoalContactPower = 32", route)
+        self.assertIn("kGoalDecelZoneIn = 12.0", route)
+        self.assertIn("kGoalContactPower = 28", route)
         self.assertIn(
             "-kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true",
             route,
@@ -851,7 +855,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertNotIn("stage_2_home_timeout_after_retreat", route)
         self.assertIn("second_stack_score_heading_deg = blue_side ? 0.0 : 90.0", route)
         self.assertIn(
-            "path2_fast_turn(second_stack_score_heading_deg, false, 3.5)",
+            "path2_goal_facing_turn(second_stack_score_heading_deg)",
             route,
         )
         self.assertIn("cascade_lift::clear_fault()", route)
@@ -880,7 +884,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("continuously holds its recorded", route)
         route_start = route.index("bool localization_two_cup_auton(bool blue_side)")
         self.assertNotIn("claw_arm.move(0)", route[route_start:])
-        self.assertIn("if (!path2_fast_turn(first_stack_score_heading_deg)) return false;", route)
+        self.assertIn("if (!path2_goal_facing_turn(first_stack_score_heading_deg)) return false;", route)
         self.assertNotIn("test_stop=phase_4_after_second_stack_score", route)
         self.assertIn("explicit successful end of the complete two-cup route", route)
         self.assertIn("second_remaining", route)

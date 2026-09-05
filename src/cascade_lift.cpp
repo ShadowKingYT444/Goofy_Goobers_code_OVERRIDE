@@ -14,10 +14,10 @@ namespace {
 // The installed port-16 sensor decreases while positive motor power raises the
 // lift, so expose upward travel as positive throughout the lift subsystem.
 constexpr double kSensorDirection = -1.0;
-constexpr double kPmvPerDeg = 30.0;
+constexpr double kPmvPerDeg = 36.0;
 // Lowering needs a more decisive response than raising: gravity/load friction
 // made the old 30 mV/deg, 5 V-capped controller take several seconds to home.
-// Keep the proven upward profile while using a separately damped down profile.
+// Keep the downward profile separately damped from the faster upward profile.
 constexpr double kDownPmvPerDeg = 60.0;
 constexpr double kImvPerDegS = 0.0;
 constexpr double kDmvPerDegPerS = 10.0;
@@ -27,11 +27,11 @@ constexpr double kGravityMv = 0.0;  // Tune after the five heights are validated
 // 3 V upward and stalls about 30 degrees above bottom at 2.5 V downward.
 // These floors keep it moving through static friction; D still removes power
 // near a fast approach, and the position/velocity band brakes at the target.
-constexpr double kMinimumUpwardPidMv = 5000.0;
+constexpr double kMinimumUpwardPidMv = 6000.0;
 constexpr double kMinimumDownwardPidMv = 4000.0;
-constexpr double kPidVoltageLimitMv = 10000.0;
+constexpr double kPidVoltageLimitMv = 12000.0;
 constexpr double kPidDownwardVoltageLimitMv = 9000.0;
-constexpr double kShortStageUpwardLimitMv = 9000.0;
+constexpr double kShortStageUpwardLimitMv = 11000.0;
 constexpr double kVelocityFilterAlpha = 0.20;
 constexpr double kIntegralZoneDeg = 40.0;
 constexpr double kIntegralLimitDegS = 100.0;
@@ -47,10 +47,11 @@ constexpr std::uint32_t kBottomConfirmMs = 300;
 constexpr double kStallVelocityDegS = 4.0;
 constexpr double kStallOutputMv = 7000.0;
 constexpr std::uint32_t kStallTimeoutMs = 350;
-// Empirical port-16 multi-turn positions measured on 2026-08-30 from the
-// freshly reset stage-0/rest position. Stage 4 is the physical maximum.
+// The scoring stages are 20% above the original 2026-08-30 measurements so
+// the cups clear the Goal. Stage 4 remains at the measured physical maximum;
+// never scale a commanded target beyond the validated hard-stop envelope.
 constexpr std::array<double, kStageCount> kStageCalibrationDeg = {
-    427.59, 757.62, 1140.56, 1717.20};
+    513.11, 909.14, 1368.67, 1717.20};
 
 struct State {
   Snapshot data;

@@ -831,3 +831,17 @@ recovery.
 - P6/P8 camera translations are still assumed zero. Treat the comparison as a
   qualification measurement until both lens-to-robot-center offsets are
   physically measured and stationary field trials establish accuracy.
+
+## 2026-09-05 Lift and Goal-Approach Retune
+
+- Scoring lift stages 1-3 are 20% higher at 513.11, 909.14, and 1368.67
+  degrees. Stage 4 remains at the measured 1717.20-degree physical ceiling.
+- Upward lift P/floor/limits are increased for faster concurrent raising;
+  downward behavior and the hard-stop envelope are unchanged.
+- Two-cup reverse Goal approaches now use 68/127 power, taper over their last
+  12 inches, and seat at 28/127 instead of entering at 80/127 and tapering only
+  over the last 7 inches.
+- Goal-facing turns take one valid P7 absolute-heading re-anchor, execute on
+  the P14 IMU at 2.25-2.75-degree tolerance, and settle for only 20 ms.
+- Post-contact IMU blanking is reduced from 600 ms to 300 ms so phases chain
+  sooner while retaining a short impact rejection interval.

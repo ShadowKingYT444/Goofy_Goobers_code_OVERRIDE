@@ -136,8 +136,10 @@ Path2FastDriveResult path2_fast_drive(double distance_in, int full_power,
                     ? std::min(full_power, 50)
                     : full_power;
     if (progressive_goal_decel) {
-      constexpr double kGoalDecelZoneIn = 7.0;
-      constexpr int kGoalContactPower = 32;
+      // Goal approaches retain useful transit speed, then taper over the last
+      // foot so the rear mechanism seats instead of slamming into the Goal.
+      constexpr double kGoalDecelZoneIn = 12.0;
+      constexpr int kGoalContactPower = 28;
       if (remaining_in <= kGoalDecelZoneIn) {
         const double fraction = std::clamp(
             remaining_in / kGoalDecelZoneIn, 0.0, 1.0);
@@ -307,6 +309,18 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
   return final_error_deg <= tolerance_deg + 1.5;
 }
 
+// Goal alignment gets one bounded absolute-heading correction from P7 when
+// its reported error is valid, then completes on the fast P14 IMU loop. This
+// avoids steering on slow/noisy GPS samples while still removing accumulated
+// field-heading drift before a reverse scoring approach.
+bool path2_goal_facing_turn(double heading_deg,
+                            double settle_tolerance_deg = 2.25,
+                            unsigned timeout_ms = 1900) {
+  path2_prefer_gps_until_ms = pros::millis() + 250;
+  return path2_fast_turn(heading_deg, false, settle_tolerance_deg,
+                         timeout_ms, 20);
+}
+
 // A transient turn settle timeout must not silently discard every later phase.
 // Retry against the absolute target so the second attempt corrects only the
 // remaining error (rather than applying the relative delta twice). If the IMU
@@ -415,6 +429,7 @@ bool path2_config_ready() {
   need_double("toggle_return_distance_in", kToggleReturnDistanceIn);
   need_power("toggle_power", kTogglePower);
   need_power("toggle_return_power", kToggleReturnPower);
+  need_power("preload_goal_drive_power", kPreloadGoalDrivePower);
   need_double("goal_staging_x", kGoalStaging.x);
   need_double("goal_staging_y", kGoalStaging.y);
   need_double("goal_dock_reverse_in", kGoalDockReverseIn);
@@ -481,7 +496,7 @@ bool path2_config_ready() {
   }
   const int configured_powers[] = {
       kTogglePower, kGoalDockPower, kGoalAlignmentBumpPower,
-      kToggleReturnPower,
+      kToggleReturnPower, kPreloadGoalDrivePower,
       kFastDrivePower, kStackApproachPower, kSlowStackPower,
       kSecondStackApproachPower, kSecondStackSlowPower, kTurnPower,
       kStage1GoalDrivePower, kStage1ScoreRetreatPower,
@@ -928,9 +943,8 @@ bool localization_two_cup_auton(bool blue_side) {
   const Path2Point route_stack_b = blue_side ? kBlueStackB : kStackB;
   const double route_start_heading_deg =
       blue_side ? kBlueStartHeadingDeg : kStartHeadingDeg;
-  // Reflection across field X=Y maps heading h to 90-h and reverses the sign
-  // of relative turns. Distances and mechanism actions remain unchanged.
-  const double first_goal_turn_delta_deg = blue_side ? 75.0 : -75.0;
+  // Reflection across field X=Y maps heading h to 90-h. Distances and
+  // mechanism actions remain unchanged.
   const double first_stack_score_heading_deg = blue_side ? 270.0 : 180.0;
   const double second_stack_pickup_heading_deg = 225.0;
   const double second_stack_score_heading_deg = blue_side ? 0.0 : 90.0;
@@ -1000,15 +1014,16 @@ bool localization_two_cup_auton(bool blue_side) {
   const auto toggle_return = path2_fast_drive(
       -kToggleReturnDistanceIn, kToggleReturnPower, 1600);
   if (toggle_return.disabled) return false;
-  // This alignment only needs to be accurate enough for the short preload
-  // docking leg. Do not spend multiple seconds chasing sub-degree settling.
-  if (!path2_fast_turn(first_goal_turn_delta_deg, true, 5.0, 1400, 30)) {
+  // Use the route's absolute field heading so any earlier Toggle impact error
+  // cannot carry into the preload Goal approach.
+  const double first_goal_heading_deg = blue_side ? 165.0 : 285.0;
+  if (!path2_goal_facing_turn(first_goal_heading_deg, 2.75, 1700)) {
     return false;
   }
   const auto preload_reverse = path2_fast_drive(
-      -kPhase1PreloadReverseIn, kPhase1DrivePower, 1900);
+      -kPhase1PreloadReverseIn, kPreloadGoalDrivePower, 2200, true, true);
   if (preload_reverse.disabled) return false;
-  path2_blank_impact_imu(600);
+  path2_blank_impact_imu(300);
   navigation::update();
   const auto first_goal_pose = navigation::current_pose();
   std::printf("PATH2 first_goal x=%.3f y=%.3f heading=%.3f\n",
@@ -1085,11 +1100,11 @@ bool localization_two_cup_auton(bool blue_side) {
                 cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
-  if (!path2_fast_turn(first_stack_score_heading_deg)) return false;
+  if (!path2_goal_facing_turn(first_stack_score_heading_deg)) return false;
   const auto goal_drive = path2_fast_drive(
       -kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true);
   if (goal_drive.disabled || goal_drive.traveled_in < 1.0) return false;
-  path2_blank_impact_imu(600);
+  path2_blank_impact_imu(300);
   // Confirm Stage 1 at the first Goal. It has been rising asynchronously
   // throughout the turn and drive, so this normally returns immediately.
   if (!lift.wait_ready(kFirstCupLiftStage, kLiftReadyToleranceDeg,
@@ -1196,7 +1211,7 @@ bool localization_two_cup_auton(bool blue_side) {
   // alignment after the (48,-48) pickup is its 180-degree opposite: +90.
   // E. Complete that rear-facing alignment, reverse into the Goal, pulse the
   // lift down, then outtake and retreat.
-  if (!path2_fast_turn(second_stack_score_heading_deg, false, 3.5)) {
+  if (!path2_goal_facing_turn(second_stack_score_heading_deg)) {
     std::printf("PATH2 continue=second_goal_turn_degraded\n");
     std::fflush(stdout);
   }
@@ -1205,7 +1220,7 @@ bool localization_two_cup_auton(bool blue_side) {
   if (second_goal_drive.disabled || second_goal_drive.traveled_in < 1.0) {
     return false;
   }
-  path2_blank_impact_imu(600);
+  path2_blank_impact_imu(300);
   // Confirm Stage 2 at the second Goal before performing the 100-degree drop.
   if (!lift.wait_ready(kSecondCupLiftStage, kLiftReadyToleranceDeg,
                        kScoreStageReadyTimeoutMs)) {

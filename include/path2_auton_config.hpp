@@ -41,6 +41,7 @@ constexpr double kToggleReturnDistanceIn = 6.0;
 constexpr int kTogglePower = 75;
 constexpr int kToggleReturnPower = 65;
 constexpr int kPhase1DrivePower = 75;
+constexpr int kPreloadGoalDrivePower = 68;
 // After the first -75-degree turn, reverse one inch farther into the preload
 // Goal than the previous 11-inch tune so the mechanism fully reaches it.
 constexpr double kPhase1PreloadReverseIn = 12.0;
@@ -101,7 +102,7 @@ constexpr double kScoreLoweringDeg = 15.0;
 constexpr double kStage1ExtraCaptureIn = 1.0;
 constexpr int kStage1ExtraCapturePower = 70;
 constexpr double kStage1GoalDriveIn = 24.0;
-constexpr int kStage1GoalDrivePower = 80;
+constexpr int kStage1GoalDrivePower = 68;
 constexpr int kScoreDropPower = 100;
 constexpr unsigned kScoreDropPulseMs = 100;
 constexpr unsigned kScoreDropWaitTimeoutMs = 180;
@@ -118,7 +119,7 @@ constexpr unsigned kScoreStageReadyTimeoutMs = 400;
 constexpr double kStage2ExtraCaptureIn = 4.5;
 constexpr int kStage2ExtraCapturePower = 70;
 constexpr double kStage2GoalDriveIn = 24.0;
-constexpr int kStage2GoalDrivePower = 80;
+constexpr int kStage2GoalDrivePower = 68;
 constexpr double kStage2ScoreRetreatIn = 24.0;
 constexpr int kStage2ScoreRetreatPower = 95;
 
