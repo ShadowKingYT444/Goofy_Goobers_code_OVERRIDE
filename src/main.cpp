@@ -450,9 +450,20 @@ bool run_selected_auton() {
   // A hotkey test often begins after the robot was repositioned by hand. Motor
   // encoders retain that motion and can have harmless unequal absolute offsets,
   // which the fused-navigation preflight otherwise rejects before any drive
-  // command. Re-anchor at the autonomous handoff, but do not wait for the arm:
-  // its background controller continues descending concurrently through the
-  // Toggle cycle and first-Goal approach.
+  // command. Let the faster asynchronous arm reach its normal pose before
+  // anchoring navigation; arm motion during this handoff can shake the IMU and
+  // make the first turn fail before it ever commands the drivetrain.
+  const std::uint32_t arm_settle_started_ms = pros::millis();
+  while (pros::millis() - arm_settle_started_ms < 800) {
+    const double arm_angle_deg =
+        static_cast<double>(claw_arm_rotation.get_angle()) / 100.0;
+    if (std::fabs(shortest_arm_error_deg(
+            kArmNormalTargetDeg, arm_angle_deg)) <=
+        kArmNormalToleranceDeg) {
+      break;
+    }
+    pros::delay(20);
+  }
   chassis.drive_set(0, 0);
   chassis.pid_targets_reset();
   chassis.drive_mode_set(ez::DISABLE, true);

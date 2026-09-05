@@ -571,7 +571,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("pros::Task arm_normal_hold_task", main[auton_dispatch:route_dispatch])
         self.assertIn("controller.update(kArmNormalTargetDeg)", main[auton_dispatch:route_dispatch])
         self.assertIn("pros::delay(600);", startup)
-        self.assertNotIn("arm_settle_started_ms", startup)
+        self.assertIn("arm_settle_started_ms", startup)
         self.assertNotIn("pros::delay(200);", startup)
         self.assertIn("motor.tare_position()", startup)
         self.assertIn("AUTON_DRIVE_ANCHOR", startup)
