@@ -3360,6 +3360,7 @@ void opcontrol() {
   bool pid_tune_combo_was_pressed = false;
   std::uint32_t last_drive_health_ms = 0;
   bool claw_toggle_was_pressed = false;
+  bool toggle_piston_was_pressed = false;
   bool arm_position_hold_active = false;
   double arm_position_target_deg = kArmNormalTargetDeg;
   ArmPositionController arm_position_controller;
@@ -3396,6 +3397,20 @@ void opcontrol() {
     if (!opcontrol_auton_running) {
       constexpr double kOpcontrolDriveScale = 1.0;
       constexpr int kMechanismPower = 127;
+      const bool toggle_piston_pressed =
+          !pose_editor_active &&
+          master.get_digital(pros::E_CONTROLLER_DIGITAL_A);
+      if (toggle_piston_pressed && !toggle_piston_was_pressed) {
+        const bool next_output_high = !clamp_output_high.load(
+            std::memory_order_acquire);
+        clamp_piston.set_value(next_output_high);
+        clamp_output_high.store(next_output_high, std::memory_order_release);
+        std::printf("TOGGLE_STATE phase=opcontrol_a output=%d physical=%s\n",
+                    static_cast<int>(next_output_high),
+                    next_output_high ? "retracted" : "extended");
+        std::fflush(stdout);
+      }
+      toggle_piston_was_pressed = toggle_piston_pressed;
       const bool claw_toggle_pressed =
           !pose_editor_active &&
           master.get_digital(pros::E_CONTROLLER_DIGITAL_L1);
@@ -3498,6 +3513,11 @@ void opcontrol() {
         claw_arm.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
         claw_arm.move(0);
       }
+    } else {
+      // Do not turn an A press held through autonomous completion into a
+      // surprise piston edge when driver control ownership returns.
+      toggle_piston_was_pressed = master.get_digital(
+          pros::E_CONTROLLER_DIGITAL_A);
     }
 
     print_distance_frame();

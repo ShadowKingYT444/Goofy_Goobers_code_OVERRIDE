@@ -852,3 +852,6 @@ recovery.
   begins asynchronously during the 600-ms Toggle deployment. Before anchoring
   navigation, drivetrain startup waits only if that arm is still outside its
   normal tolerance, preventing arm motion from corrupting the first IMU turn.
+- In driver control, each standalone controller A-button press toggles the
+  active-low Toggle piston on ADI-D. The binding is disabled while autonomous
+  owns the robot, and X+Y pose-editor mode retains A as its Save button.
