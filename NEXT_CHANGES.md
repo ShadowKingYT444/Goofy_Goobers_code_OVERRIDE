@@ -845,3 +845,6 @@ recovery.
   P14 IMU without a forced P7 re-anchor. The complete turn controller and
   per-turn settle settings are restored to the last field-working revision.
 - Post-contact IMU blanking remains at the field-proven 600 ms.
+- Final field tune: preload Goal turn magnitude is 77 degrees, Stack A uses
+  its physical `(24,24)` coordinate with exact blue origin mirror, and Stack B
+  clamp timing is 0.25 inch later on each alliance route.

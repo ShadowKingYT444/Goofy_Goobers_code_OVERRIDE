@@ -703,13 +703,13 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
 
         self.assertIn("kStart{63.0, 0.0}", config)
         self.assertIn("kGoal{48.0, 24.0}", config)
-        self.assertIn("kStackA{23.0, 26.5}", config)
+        self.assertIn("kStackA{24.0, 24.0}", config)
         self.assertIn("kStackB{48.0, 48.0}", config)
         self.assertIn("kFinal{48.0, 60.0}", config)
         self.assertIn("kStartHeadingDeg = 0.0", config)
         self.assertIn("kBlueStart{0.0, 63.0}", config)
         self.assertIn("kBlueGoal{24.0, 48.0}", config)
-        self.assertIn("kBlueStackA{-23.0, -26.5}", config)
+        self.assertIn("kBlueStackA{-24.0, -24.0}", config)
         self.assertIn("kBlueStackB{48.0, 48.0}", config)
         self.assertIn("kBlueStartHeadingDeg = 90.0", config)
         self.assertIn("kToggleReturnDistanceIn = 6.0", config)
@@ -750,7 +750,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("kStage2ScoreRetreatIn = 24.0", config)
         self.assertIn("kTestStopAfterPhase = 0", config)
 
-        self.assertIn("first_goal_turn_delta_deg = blue_side ? 75.0 : -75.0", route)
+        self.assertIn("first_goal_turn_delta_deg = blue_side ? 77.0 : -77.0", route)
         self.assertIn(
             "path2_fast_turn(first_goal_turn_delta_deg, true, 5.0, 1400, 30)",
             route,
@@ -772,7 +772,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("robot_center_target", route)
         self.assertIn("pickup_reach", route)
         self.assertIn("constexpr double kPneumaticGrabLeadIn = 9.7", route)
-        self.assertIn("second_stack_grab_lead_in = blue_side ? 5.2 : 4.45", route)
+        self.assertIn("second_stack_grab_lead_in = blue_side ? 4.95 : 4.20", route)
         slow_capture = route.index(
             "const auto capture_result = navigation::drive_relative("
         )

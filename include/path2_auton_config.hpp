@@ -17,8 +17,8 @@ constexpr double kUnset = std::numeric_limits<double>::quiet_NaN();
 constexpr Point kStart{63.0, 0.0};
 constexpr Point kToggle{72.0, 0.0};
 constexpr Point kGoal{48.0, 24.0};
-// Final first rear-claw pickup target from the latest field test.
-constexpr Point kStackA{23.0, 26.5};
+// Physical center of the first pin stack supplied by the field operator.
+constexpr Point kStackA{24.0, 24.0};
 constexpr Point kStackB{48.0, 48.0};
 constexpr Point kFinal{48.0, 60.0};  // Path coordinate (60,-48).
 
@@ -27,7 +27,7 @@ constexpr Point kFinal{48.0, 60.0};  // Path coordinate (60,-48).
 constexpr Point kBlueStart{0.0, 63.0};
 constexpr Point kBlueToggle{0.0, 72.0};
 constexpr Point kBlueGoal{24.0, 48.0};
-constexpr Point kBlueStackA{-23.0, -26.5};
+constexpr Point kBlueStackA{-24.0, -24.0};
 constexpr Point kBlueStackB{48.0, 48.0};
 constexpr Point kBlueFinal{60.0, 48.0};
 

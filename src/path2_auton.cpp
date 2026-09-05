@@ -932,16 +932,17 @@ bool localization_two_cup_auton(bool blue_side) {
       blue_side ? kBlueStartHeadingDeg : kStartHeadingDeg;
   // Reflection across field X=Y maps heading h to 90-h and reverses the sign
   // of relative turns. Distances and mechanism actions remain unchanged.
-  const double first_goal_turn_delta_deg = blue_side ? 75.0 : -75.0;
+  // Two extra degrees move the reverse approach about 0.4 in away from the
+  // observed left-side miss over the 12-in preload drive.
+  const double first_goal_turn_delta_deg = blue_side ? 77.0 : -77.0;
   const double first_stack_score_heading_deg = blue_side ? 270.0 : 180.0;
   const double second_stack_pickup_heading_deg = 225.0;
   const double second_stack_score_heading_deg = blue_side ? 0.0 : 90.0;
   const double final_heading_deg = blue_side ? 270.0 : 180.0;
   const double phase2_goal_clearance_in = blue_side
       ? kBluePhase2GoalClearanceIn : kPhase2GoalClearanceIn;
-  // Close 0.75 in later on the red Stack-B approach. Blue retains its initial
-  // mirror value until it has its own physical qualification run.
-  const double second_stack_grab_lead_in = blue_side ? 5.2 : 4.45;
+  // Close another 0.25 in later than the previous tune on both alliances.
+  const double second_stack_grab_lead_in = blue_side ? 4.95 : 4.20;
   default_constants();
   path2_stop_all();
   // Competition setup starts the lift physically at rest, and initialize()
@@ -1165,7 +1166,7 @@ bool localization_two_cup_auton(bool blue_side) {
       -std::max(0.0, second_slow_in - second_stack_grab_lead_in),
       kSecondStackSlowPower, 2600);
   if (second_stack_drive.disabled) return false;
-  // Begin closing 5.2 inches before contact, then carry the closing claw
+  // Begin closing at the alliance-tuned lead distance, then carry the claw
   // through the remaining approach so it cannot pass the stack before closing.
   set_claw_piston(false);
   pros::delay(100);
