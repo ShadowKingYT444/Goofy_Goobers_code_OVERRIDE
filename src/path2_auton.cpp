@@ -167,21 +167,21 @@ Path2FastDriveResult path2_fast_drive(double distance_in, int full_power,
 }
 
 bool path2_fast_turn(double heading_deg, bool relative = false,
-                     double settle_tolerance_deg = 2.0,
-                     unsigned timeout_ms = 2200,
-                     unsigned settle_ms = 20) {
+                     double settle_tolerance_deg = 2.5,
+                     unsigned timeout_ms = 2600,
+                     unsigned settle_ms = 40) {
   // Execute the requested global delta against the raw, continuous IMU
   // rotation. The fused pose establishes the field target once, but GPS/LiDAR
   // corrections cannot move the target underneath the controller mid-turn.
   // This also avoids a strict public-API timeout suppressing the rest of Path2.
   const double tolerance_deg =
       std::clamp(settle_tolerance_deg, 1.0, 8.0);
-  constexpr double kTurnKp = 1.90;
-  constexpr double kTurnKd = 0.075;
+  constexpr double kTurnKp = 1.65;
+  constexpr double kTurnKd = 0.055;
   constexpr double kRateFilter = 0.30;
-  constexpr double kMinimumMovingPower = 27.0;
-  constexpr double kBrakeZoneDeg = 22.0;
-  constexpr double kBrakeZonePower = 46.0;
+  constexpr double kMinimumMovingPower = 30.0;
+  constexpr double kBrakeZoneDeg = 15.0;
+  constexpr double kBrakeZonePower = 52.0;
 
   navigation::update();
   const auto start_pose = navigation::current_pose();
@@ -306,9 +306,7 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
       "PATH2_TURN result=timeout target=%.2f heading=%.2f error=%.2f\n",
       target_heading_deg, final_heading_deg, final_error_deg);
   std::fflush(stdout);
-  // Never report a usable scoring alignment outside the requested 3-degree
-  // maximum, even when the normal settle window expires.
-  return final_error_deg <= std::min(3.0, tolerance_deg + 0.75);
+  return final_error_deg <= tolerance_deg + 1.5;
 }
 
 // A transient turn settle timeout must not silently discard every later phase.
@@ -316,7 +314,7 @@ bool path2_fast_turn(double heading_deg, bool relative = false,
 // remaining error (rather than applying the relative delta twice). If the IMU
 // and fused pose remain healthy and the retry ends reasonably close, chain on.
 bool path2_chain_turn(double heading_deg, bool relative = false,
-                      double settle_tolerance_deg = 2.5) {
+                      double settle_tolerance_deg = 4.0) {
   navigation::update();
   const auto start_pose = navigation::current_pose();
   const double start_imu_cw_deg = chassis.drive_imu_get();
@@ -336,7 +334,7 @@ bool path2_chain_turn(double heading_deg, bool relative = false,
   }
   std::printf("PATH2_CHAIN retry_turn target=%.2f\n", absolute_target_deg);
   std::fflush(stdout);
-  if (path2_fast_turn(absolute_target_deg, false, 2.5, 1200, 20)) return true;
+  if (path2_fast_turn(absolute_target_deg, false, 5.0)) return true;
   navigation::update();
   const auto final_pose = navigation::current_pose();
   const double imu_deg = chassis.drive_imu_get();
@@ -346,7 +344,7 @@ bool path2_chain_turn(double heading_deg, bool relative = false,
   if (!std::isfinite(final_heading_deg)) return false;
   const double final_error_deg = std::fabs(std::remainder(
       absolute_target_deg - final_heading_deg, 360.0));
-  const bool safe_to_chain = final_error_deg <= 3.0;
+  const bool safe_to_chain = final_error_deg <= 10.0;
   std::printf(
       "PATH2_CHAIN turn_retry_end target=%.2f heading=%.2f error=%.2f "
       "continue=%d\n",
@@ -1005,9 +1003,9 @@ bool localization_two_cup_auton(bool blue_side) {
   const auto toggle_return = path2_fast_drive(
       -kToggleReturnDistanceIn, kToggleReturnPower, 1600);
   if (toggle_return.disabled) return false;
-  // Preserve the proven route-relative target, but require a tight finish and
-  // only a 20-ms settle so the next motion can begin immediately.
-  if (!path2_fast_turn(first_goal_turn_delta_deg, true, 2.5, 1700, 20)) {
+  // This alignment only needs to be accurate enough for the short preload
+  // docking leg. Do not spend multiple seconds chasing sub-degree settling.
+  if (!path2_fast_turn(first_goal_turn_delta_deg, true, 5.0, 1400, 30)) {
     return false;
   }
   const auto preload_reverse = path2_fast_drive(
@@ -1090,8 +1088,7 @@ bool localization_two_cup_auton(bool blue_side) {
                 cascade_lift::snapshot().position_deg);
     std::fflush(stdout);
   }
-  if (!path2_fast_turn(first_stack_score_heading_deg, false, 2.0,
-                       2200, 20)) return false;
+  if (!path2_fast_turn(first_stack_score_heading_deg)) return false;
   const auto goal_drive = path2_fast_drive(
       -kStage1GoalDriveIn, kStage1GoalDrivePower, 3000, true, true);
   if (goal_drive.disabled || goal_drive.traveled_in < 1.0) return false;
@@ -1152,8 +1149,7 @@ bool localization_two_cup_auton(bool blue_side) {
   std::fflush(stdout);
   // From score 1 onward, wall-strip GPS heading is authoritative. Never cancel
   // the remaining route merely because the impact invalidated IMU/fused pose.
-  if (!path2_fast_turn(second_stack_pickup_heading_deg, false, 2.5,
-                       2200, 20)) {
+  if (!path2_fast_turn(second_stack_pickup_heading_deg, false, 3.5)) {
     std::printf("PATH2 continue=second_stack_turn_degraded\n");
     std::fflush(stdout);
   }
@@ -1203,8 +1199,7 @@ bool localization_two_cup_auton(bool blue_side) {
   // alignment after the (48,-48) pickup is its 180-degree opposite: +90.
   // E. Complete that rear-facing alignment, reverse into the Goal, pulse the
   // lift down, then outtake and retreat.
-  if (!path2_fast_turn(second_stack_score_heading_deg, false, 2.0,
-                       2200, 20)) {
+  if (!path2_fast_turn(second_stack_score_heading_deg, false, 3.5)) {
     std::printf("PATH2 continue=second_goal_turn_degraded\n");
     std::fflush(stdout);
   }
@@ -1240,7 +1235,7 @@ bool localization_two_cup_auton(bool blue_side) {
   }
   // End the tested route 24 inches clear of the Goal, facing the mirrored
   // alliance-specific final heading and holding position.
-  if (!path2_fast_turn(final_heading_deg, false, 2.5, 2200, 20)) {
+  if (!path2_fast_turn(final_heading_deg, false, 3.5)) {
     std::printf("PATH2 continue=final_turn_degraded\n");
     std::fflush(stdout);
   }

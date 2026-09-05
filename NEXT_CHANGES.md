@@ -842,7 +842,7 @@ recovery.
   12 inches, and seat at 28/127 instead of entering at 80/127 and tapering only
   over the last 7 inches.
 - Goal turns retain the proven route-relative/field targets and execute on the
-  P14 IMU without a forced P7 re-anchor. They use 2.0-2.5-degree tolerances,
-  a 20-ms settle, and never accept a timed-out endpoint beyond 3 degrees.
+  P14 IMU without a forced P7 re-anchor. The complete turn controller and
+  per-turn settle settings are restored to the last field-working revision.
 - Post-contact IMU blanking is reduced from 600 ms to 300 ms so phases chain
   sooner while retaining a short impact rejection interval.

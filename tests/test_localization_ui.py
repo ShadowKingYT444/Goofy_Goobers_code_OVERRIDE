@@ -752,7 +752,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
 
         self.assertIn("first_goal_turn_delta_deg = blue_side ? 75.0 : -75.0", route)
         self.assertIn(
-            "path2_fast_turn(first_goal_turn_delta_deg, true, 2.5, 1700, 20)",
+            "path2_fast_turn(first_goal_turn_delta_deg, true, 5.0, 1400, 30)",
             route,
         )
         self.assertIn("kPhase1PreloadReverseIn = 12.0", config)
@@ -769,7 +769,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("reverse, true, true", route)
         self.assertIn("recovered_pose.valid", route)
         self.assertIn("PATH2_CHAIN retry_turn", route)
-        self.assertIn("final_error_deg <= 3.0", route)
+        self.assertIn("final_error_deg <= 10.0", route)
         self.assertIn("robot_center_target", route)
         self.assertIn("pickup_reach", route)
         self.assertIn("constexpr double kPneumaticGrabLeadIn = 9.7", route)
@@ -791,10 +791,10 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         first_raise = route.index("lift.request(kFirstCupLiftStage)")
         self.assertLess(first_extra, first_raise)
         self.assertIn("first_stack_score_heading_deg = blue_side ? 270.0 : 180.0", route)
-        self.assertIn("path2_fast_turn(first_stack_score_heading_deg, false, 2.0", route)
+        self.assertIn("path2_fast_turn(first_stack_score_heading_deg)", route)
         self.assertIn("target_imu_cw_deg", route)
-        self.assertIn("settle_tolerance_deg = 2.0", route)
-        self.assertIn("std::min(3.0, tolerance_deg + 0.75)", route)
+        self.assertIn("settle_tolerance_deg = 2.5", route)
+        self.assertIn("final_error_deg <= tolerance_deg + 1.5", route)
         self.assertIn(
             "lift.start_score_drop_for(kScoreDropPower, kScoreDropPulseMs)",
             route,
@@ -837,7 +837,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertLess(first_home_wait, first_retreat_start)
         self.assertLess(first_retreat_start, first_pulse_wait)
         second_stack_turn = route.index(
-            "path2_fast_turn(second_stack_pickup_heading_deg, false, 2.5,"
+            "path2_fast_turn(second_stack_pickup_heading_deg, false, 3.5)"
         )
         self.assertLess(first_home_wait, second_stack_turn)
         self.assertIn("kSecondStackCenterTravelIn", route)
@@ -855,7 +855,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertNotIn("stage_2_home_timeout_after_retreat", route)
         self.assertIn("second_stack_score_heading_deg = blue_side ? 0.0 : 90.0", route)
         self.assertIn(
-            "path2_fast_turn(second_stack_score_heading_deg, false, 2.0,",
+            "path2_fast_turn(second_stack_score_heading_deg, false, 3.5)",
             route,
         )
         self.assertIn("cascade_lift::clear_fault()", route)
@@ -884,7 +884,7 @@ class FirmwareSafetyInvariantTests(unittest.TestCase):
         self.assertIn("continuously holds its recorded", route)
         route_start = route.index("bool localization_two_cup_auton(bool blue_side)")
         self.assertNotIn("claw_arm.move(0)", route[route_start:])
-        self.assertIn("path2_fast_turn(first_stack_score_heading_deg, false, 2.0", route)
+        self.assertIn("if (!path2_fast_turn(first_stack_score_heading_deg)) return false;", route)
         self.assertNotIn("test_stop=phase_4_after_second_stack_score", route)
         self.assertIn("explicit successful end of the complete two-cup route", route)
         self.assertIn("second_remaining", route)
