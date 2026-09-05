@@ -330,17 +330,17 @@ int apply_controller_deadband(int value) {
 constexpr double kArmRightTargetDeg = 21.18;
 // Port-5 absolute angle recorded at the desired default/start-of-match pickup
 // orientation on 2026-09-04. Autonomous and opcontrol actively hold it.
-constexpr double kArmNormalTargetDeg = 63.2;
+constexpr double kArmNormalTargetDeg = 65.0;
 constexpr double kArmNormalToleranceDeg = 5.0;
 constexpr double kArmPositionKp = 1.35;
 constexpr double kArmPositionKd = 0.10;
 constexpr double kArmPositionMaxPower = 70.0;
 constexpr double kArmPositionMinPower = 16.0;
-// P5 angle increases when the arm returns down toward its 63.2-degree
+// P5 angle increases when the arm returns down toward its 65-degree
 // match/default pose. Give only that direction a quicker response.
-constexpr double kArmPositionDownKp = 1.80;
-constexpr double kArmPositionDownMaxPower = 90.0;
-constexpr double kArmPositionDownMinPower = 20.0;
+constexpr double kArmPositionDownKp = 2.10;
+constexpr double kArmPositionDownMaxPower = 110.0;
+constexpr double kArmPositionDownMinPower = 24.0;
 constexpr double kArmPositionBrakeBandDeg = 1.25;
 
 double shortest_arm_error_deg(double target_deg, double current_deg) {
@@ -442,27 +442,17 @@ bool run_selected_auton() {
   }, "auton arm hold");
 
   // ADI-D is active-low. Extend before either autonomous, allow the cylinder
-  // 0.7 seconds to reach full travel, and leave it extended for the route.
+  // 0.6 seconds to reach full travel, and leave it extended for the route.
   clamp_piston.set_value(false);
   clamp_output_high.store(false, std::memory_order_release);
-  pros::delay(700);
+  pros::delay(600);
 
   // A hotkey test often begins after the robot was repositioned by hand. Motor
   // encoders retain that motion and can have harmless unequal absolute offsets,
   // which the fused-navigation preflight otherwise rejects before any drive
-  // command. Re-anchor every drivetrain encoder at the actual autonomous
-  // handoff, after allowing the arm motion to settle so it cannot shake the IMU.
-  const std::uint32_t arm_settle_started_ms = pros::millis();
-  while (pros::millis() - arm_settle_started_ms < 800) {
-    const double arm_angle_deg =
-        static_cast<double>(claw_arm_rotation.get_angle()) / 100.0;
-    if (std::fabs(shortest_arm_error_deg(
-            kArmNormalTargetDeg, arm_angle_deg)) <=
-        kArmNormalToleranceDeg) {
-      break;
-    }
-    pros::delay(20);
-  }
+  // command. Re-anchor at the autonomous handoff, but do not wait for the arm:
+  // its background controller continues descending concurrently through the
+  // Toggle cycle and first-Goal approach.
   chassis.drive_set(0, 0);
   chassis.pid_targets_reset();
   chassis.drive_mode_set(ez::DISABLE, true);

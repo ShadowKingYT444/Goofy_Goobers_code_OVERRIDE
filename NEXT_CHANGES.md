@@ -848,3 +848,6 @@ recovery.
 - Final field tune: preload Goal turn magnitude is 77 degrees, Stack A uses
   its physical `(24,24)` coordinate with exact blue origin mirror, and Stack B
   clamp timing is 0.25 inch later on each alliance route.
+- The claw-arm normal/drop target is 65 degrees. Autonomous starts its faster
+  downward hold asynchronously, waits only 600 ms for Toggle deployment, and
+  no longer blocks drivetrain startup waiting for the arm to settle.
