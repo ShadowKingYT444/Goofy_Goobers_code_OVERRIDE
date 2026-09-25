@@ -93,7 +93,8 @@ void opcontrol() {
     bool clamp_pressed = false;
     bool claw_pressed = false;
     uint32_t next_lift_report = 0;
-
+    volatile bool arm_auto_moving = false;
+    volatile bool arm_auto_cancelled = false;
 
     while (true) {
         // Preserve the old single-stick arcade behavior and turn direction.
@@ -119,13 +120,14 @@ void opcontrol() {
             clamp_pressed = !clamp_pressed;
             clamp_piston.set_value(clamp_pressed);
         }
+        
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_Y)) {
-            slider_left.move(127);
-            slider_right.move(127);
-            pros::delay(150);
-        }
-        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
-            moveArm(530);
+            arm_auto_cancelled = false;
+            pros::Task([&arm_auto_moving, &arm_auto_cancelled] {
+                arm_auto_moving = true;
+                moveArm(530, &arm_auto_cancelled);
+                arm_auto_moving = false;
+            });
         }
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
             slider_left.move(-127);
@@ -141,19 +143,33 @@ void opcontrol() {
             claw_piston.set_value(claw_pressed);
         }
         // B prints a snapshot of the arm degrees on demand.
-        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
-            print_arm_degrees();
-        }
+        
         constexpr double ARM_MAX_DEG = 550.2;
         constexpr double ARM_MIN_DEG = 0.0;
+        const bool manual_arm_input =
+            master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) ||
+            master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN);
+        if (manual_arm_input && arm_auto_moving) {
+            // Manual input has priority over the automatic Y move.
+            arm_auto_cancelled = true;
+            pros::delay(20);
+        }
         double arm_deg = claw_sensor.get_position()/100.0;
-        int arm = (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT)&& arm_deg < ARM_MAX_DEG)
-                            ? -127
-                            : ((master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN)&& arm_deg > ARM_MIN_DEG)
-                                   ? 127
-                                   : 0);
-        claw_arm.move(arm);
-        gps_reset::test();
+        if (!arm_auto_moving) {
+            double arm_deg = claw_sensor.get_position() / 100.0;
+
+                int arm =
+                    (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) &&
+                    arm_deg < ARM_MAX_DEG)
+                        ? -127
+                        : ((master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN) &&
+                            arm_deg > ARM_MIN_DEG)
+                            ? 127
+                            : 0);
+
+                claw_arm.move(arm);
+            }
+        //gps_reset::test();
         pros::delay(20);
     }
 }

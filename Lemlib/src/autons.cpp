@@ -39,11 +39,13 @@ void moveLift(double targetDeg) {
     slider_left.brake();
     slider_right.brake();
 }
-void moveArm(double targetDeg) {
+void moveArm(double targetDeg, volatile bool* cancel) {
     const double kP = 0.55;
     const double tolerance = 3.0;
 
     while (true) {
+        if (cancel != nullptr && *cancel)
+            break;
         double current = claw_sensor.get_position() / 100.0;
         double error = targetDeg - current;
 
