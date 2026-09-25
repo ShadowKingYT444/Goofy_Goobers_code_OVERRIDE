@@ -1,7 +1,7 @@
 #include "main.h"
 #include "autons.hpp"
 #include "titanselect/titanselect.hpp"
-#include "aivision_reset/aivision_reset.hpp"
+#include "gps_reset/gps_reset.hpp"
 ts::auton one_pin("1 Pin", one_pin_auton);
 ts::auton three_pin("3 Pin", three_pin_auton);
 // Drive wiring and direction match the old Goofy Goobers project.
@@ -9,18 +9,18 @@ pros::MotorGroup left_motors({-17, -18}, pros::MotorGears::blue);
 pros::MotorGroup right_motors({11, 13}, pros::MotorGears::blue);
 pros::Imu imu(14);
 // Reversed because the raw sensors decreased for front/right motion.
-pros::Rotation vertical_odom(-15);
-pros::Rotation horizontal_odom(-1);
-pros::Motor side_toggle(6);
+//pros::Rotation vertical_odom(-15);
+//pros::Rotation horizontal_odom(-1);
+pros::Motor side_toggle(4);
 pros::adi::DigitalOut claw_piston('B');
 lemlib::Drivetrain drivetrain(&left_motors, &right_motors,
                               12, lemlib::Omniwheel::NEW_275, 450, 2);
 // 
-lemlib::TrackingWheel vertical_wheel(&vertical_odom, lemlib::Omniwheel::NEW_2, -0.6
-    , 1.0);
-lemlib::TrackingWheel horizontal_wheel(&horizontal_odom, lemlib::Omniwheel::NEW_2, -7.96, 1.0);
-lemlib::OdomSensors sensors(&vertical_wheel, nullptr,
-                            &horizontal_wheel, nullptr, &imu);
+//lemlib::TrackingWheel vertical_wheel(&vertical_odom, lemlib::Omniwheel::NEW_2, -0.6
+ //   , 1.0);
+//lemlib::TrackingWheel horizontal_wheel(&horizontal_odom, lemlib::Omniwheel::NEW_2, -7.96, 1.0);
+lemlib::OdomSensors sensors(nullptr, nullptr, nullptr, nullptr, &imu);
+
 // Keep slew disabled while the independent autotuner identifies P and D.
 lemlib::ControllerSettings lateral_controller(6.0, 0, 3, 0, 1, 100, 3, 500, 0);
 lemlib::ControllerSettings angular_controller(2, 0, 10, 3, 1, 100, 3, 500, 0);
@@ -48,19 +48,11 @@ void initialize() {
     lift_sensor.reset_position();
     pros::lcd::initialize();
     chassis.calibrate();
-    avreset::CameraMount camera;
     claw_piston.set_value(true);
-    clamp_piston.set_value(true);
-    // Measure from robot rotation center -> AI Vision lens.
-    // Rear-mounted camera means forward offset should be NEGATIVE.
-    camera.forward_in = -2.75; // CHANGE THIS
-    camera.right_in = -4.5;   // CHANGE THIS if off-center
-    camera.yaw_deg = 180.0;  // rear-facing camera
+    clamp_piston.set_value(false);
+    gpsreset::init(chassis, 10, /*forward_in=*/7.0, /*right_in=*/4.5);
 
-    avreset::init(chassis, 10, camera);
     chassis.setPose(0, 0, 180);  // Same starting pose as the 3-pin auton.
-    const bool tag_reset = avreset::reset();
-    pros::lcd::print(7, "TAG 2 RESET %s", tag_reset ? "OK" : "FAIL");
     //ts::selector::get()->display();
 
     pros::Task screen_task([]() {
@@ -73,24 +65,14 @@ void initialize() {
             pros::lcd::print(1, "T %.2f", pose.theta);
 
             pros::lcd::print(
-                2, "V %.2f",
-                vertical_wheel.getDistanceTraveled()
-            );
-
-            pros::lcd::print(
-                3, "H %.2f",
-                horizontal_wheel.getDistanceTraveled()
-            );
-
-            pros::lcd::print(
-                4, "IMU %.2f",
+                2, "IMU %.2f",
                 imu.get_rotation()
             );
             pros::lcd::print(
-                5, "Lift %.2f deg", lift_deg
+                3, "Lift %.2f deg", lift_deg
             );
             pros::lcd::print(
-                6, "Claw %.2f deg", claw_deg
+                4, "Claw %.2f deg", claw_deg
             );
 
             pros::delay(100);
@@ -127,11 +109,11 @@ void opcontrol() {
         
         slider_left.move(-lift);
         slider_right.move(-lift);
-        const int spin = (master.get_digital(pros::E_CONTROLLER_DIGITAL_R1)
-                             ? 50
+        const int spin = (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2)
+                             ? 67
                 
                                     : 0);
-        side_toggle(spin);
+        side_toggle.move(spin);
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_A) &&
             !master.get_digital(pros::E_CONTROLLER_DIGITAL_UP)) {
             clamp_pressed = !clamp_pressed;
@@ -141,6 +123,9 @@ void opcontrol() {
             slider_left.move(127);
             slider_right.move(127);
             pros::delay(150);
+        }
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
+            moveArm(530);
         }
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
             slider_left.move(-127);
@@ -159,8 +144,8 @@ void opcontrol() {
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
             print_arm_degrees();
         }
-        constexpr double ARM_MAX_DEG = 0.2;
-        constexpr double ARM_MIN_DEG = -550.0;
+        constexpr double ARM_MAX_DEG = 550.2;
+        constexpr double ARM_MIN_DEG = 0.0;
         double arm_deg = claw_sensor.get_position()/100.0;
         int arm = (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT)&& arm_deg < ARM_MAX_DEG)
                             ? -127
@@ -168,7 +153,7 @@ void opcontrol() {
                                    ? 127
                                    : 0);
         claw_arm.move(arm);
-        avreset::test();
+        gps_reset::test();
         pros::delay(20);
     }
 }

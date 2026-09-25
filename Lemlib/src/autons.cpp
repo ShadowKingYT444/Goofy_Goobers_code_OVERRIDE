@@ -1,13 +1,13 @@
 #include "autons.hpp"
 #include "main.h"
-#include "aivision_reset/aivision_reset.hpp"
 #include "lemlib/pid.hpp"
-
+#include "gps_reset/gps_reset.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+
 void moveLift(double targetDeg) {
     const double kP = 0.35;
     const double tolerance = 8.0;
@@ -39,6 +39,45 @@ void moveLift(double targetDeg) {
     slider_left.brake();
     slider_right.brake();
 }
+void moveArm(double targetDeg) {
+    const double kP = 0.55;
+    const double tolerance = 3.0;
+
+    while (true) {
+        double current = claw_sensor.get_position() / 100.0;
+        double error = targetDeg - current;
+
+        if (fabs(error) <= tolerance)
+            break;
+
+        int power = static_cast<int>(error * kP);
+
+        // Normal speed.
+        power = std::clamp(power, -110, 110);
+
+        // Soft landing near either endpoint.
+        if (fabs(error) < 60)
+            power = std::clamp(power, -35, 35);
+
+        if (fabs(error) < 25)
+            power = std::clamp(power, -20, 20);
+
+        // Minimum power only when sufficiently far away.
+        if (fabs(error) > 25) {
+            if (power > 0 && power < 25)
+                power = 25;
+            else if (power < 0 && power > -25)
+                power = -25;
+        }
+
+        claw_arm.move(-power);
+
+        pros::delay(10);
+    }
+
+    claw_arm.brake();
+}
+/*
 
 namespace {
 
@@ -80,12 +119,6 @@ const char* axis_name(Axis axis) {
     return axis == Axis::LATERAL ? "LAT" : "ANG";
 }
 
-float read_axis(Axis axis) {
-    if (axis == Axis::LATERAL) {
-        return vertical_wheel.getDistanceTraveled();
-    }
-    return static_cast<float>(imu.get_rotation());
-}
 
 void command_axis(Axis axis, float power) {
     const int p = static_cast<int>(std::clamp(power, -127.0f, 127.0f));
@@ -358,16 +391,33 @@ void pid_autotune_auton() {
         angular.p, angular.d
     );
 }
+*/
 
 // Kept only so the existing header/main still links if this symbol is declared.
 // The old separate manual sign-test autonomous is no longer part of tuning.
 void test_shi() {
-    moveLift(lift_position::stage_1_deg);
-    pros::delay(500);
-    moveLift(lift_position::stage_0_deg);
+    gps_reset::capture_start_as(0,0,180);
+    pros::delay(1000);
+    gps_reset::reset();
+    chassis.moveToPoint(
+        0, 24,
+        3000,
+        {.maxSpeed = 80},
+        false
+    );  
+    gps_reset::reset();
     pros::delay(500);
 
-
+    // Back straight to start without turning around
+    
+    chassis.moveToPoint(
+        0, 0,
+        3000,
+        {.forwards = false, .maxSpeed = 80},
+        false
+    );
+    gps_reset::reset();
+    pros::delay(500);
 }
 void motion_test_auton() {
     chassis.setPose(0, 0, 0);
@@ -451,74 +501,79 @@ constexpr double CLAW_AFTER_GOAL = -500.0;
 
 void one_pin_auton() {
     chassis.setPose(0, 0, 180);
-
+    moveLift((lift_position::matchload - 120));
+    pros::delay(150);
     // Toggle: physical rear moves into field, then physical front returns.
     chassis.moveToPoint(0, 6, 700,
                         {.forwards = false},
                         false);
-    clamp_piston.set_value(false);
+    clamp_piston.set_value(true);
+    
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
     // REAR goes into blue Goal.
-    chassis.moveToPoint(0, 16, 1100,
+    chassis.moveToPoint(0, 14.6, 1100,
                         {.forwards = false},
                         false);
     chassis.turnToHeading(90,500);
-    chassis.moveToPoint(-9, 16, 1100,
-                        {.forwards = false},
-                        false);
-    //go back a bit cuz arm.
-    chassis.moveToPoint(-3.5, 16, 1100,
+    chassis.moveToPoint(-9, 14.6, 1100,
                         {.forwards = true},
                         false);
-    claw_arm.move_absolute(2250, -120);
-    pros::delay(1200);
     claw_piston.set_value(false);
     pros::delay(100);
     
     // Pull straight out only enough to clear the Goal.
-    chassis.moveToPoint(9, 16.11, 650,
+    
+    chassis.moveToPoint(0, 14.6, 650,
                         {.forwards = true},
                         false);
-    //turn to face CUP
-    chassis.turnToHeading(90,500);
-    claw_arm.move_absolute(3000, -120);
-    pros::delay(500);
-    // CENTER PIN: same REAR/camera side approaches and touches the Pin.
-    chassis.moveToPoint(7, 30.7, 1200,
-                        {.forwards = false, .maxSpeed = 90},
+    moveLift((lift_position::stage_0_deg));
+    pros::delay(150);
+    //turn to face CUP ANOTHA BIG ISSUE:
+    chassis.turnToPoint(-14, -2, 700,
+                        {.forwards = false},
+                        false);
+    
+    chassis.moveToPoint(-6, 5, 650,{.forwards = false},
+                        false);
+
+    chassis.moveToPoint(-15, -2, 1200,
+                        {.forwards = false, .maxSpeed=95},
                         false);
 
     // Add Pin pickup action here.
     claw_piston.set_value(true);
-    chassis.moveToPoint(8, 16, 650,
+    moveLift(lift_position::stage_1_deg);
+    pros::delay(500);
+    chassis.moveToPoint(5, 15, 650,
                         {.forwards = true},
                         false);
-    // Turn the SAME rear side toward the BLACK Goal and score.
-    chassis.turnToPoint(30.45, 17.11, 700,
+    chassis.turnToPoint(-14, 15, 700,
                         {.forwards = false},
                         false);
-    moveLift(lift_position::stage_2_deg);
-    pros::delay(600);
-
-    chassis.moveToPoint(24.08, 17.11, 1100,
+    
+    chassis.moveToPoint(-13, 15, 700,
                         {.forwards = false},
                         false);
     claw_piston.set_value(false);
+    
+
+
 }
 
 
 void three_pin_auton() {
     chassis.setPose(0, 0, 180);
+    gps_reset::capture_start_as(0,0,0);
     // First motion test: use LemLib's normal output while PID and odometry are
     // being validated.
-    chassis.moveToPoint(0, 6, 500,
+    moveLift((lift_position::matchload - 120));
+    chassis.moveToPoint(0, 8, 500,
                         {.forwards = false},
                         false);
-    clamp_piston.set_value(false);
+    clamp_piston.set_value(true);
     pros::delay(10);
-
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
@@ -526,48 +581,44 @@ void three_pin_auton() {
     // PRELOAD -> BLUE Goal. REAR/camera is the scoring side.
     
 
-    chassis.moveToPoint(0, 16.5, 700,
+    chassis.moveToPoint(0, 15, 700,
                         {.forwards = false},
                         false);
     chassis.turnToHeading(-90,500);
-    chassis.moveToPoint(11, 16.5, 700,
-                        {.forwards = false, .maxSpeed = 85},
+    chassis.moveToPoint(13, 15, 700,
+                        {.forwards = false, .maxSpeed = 95},
                         false);
-    chassis.moveToPoint(5, 16.5, 700,
-                        {.forwards = false},
-                        false);
-    claw_arm.move_absolute(2250, -120);
-    pros::delay(1000);
     claw_piston.set_value(false);
-    pros::delay(100);
+    pros::delay(10);
     // Pull straight out only enough to clear the Goal.
-    chassis.moveToPoint(-9, 17, 650,
+    chassis.moveToPoint(0, 15, 650,
                         {.forwards = true},
                         false);
     
     // PIN #2 BIG ISSUE HERE: rear/camera side faces and enters the Pin.
-    chassis.turnToPoint(15.2, 32.5, 700,
+    chassis.turnToPoint(13,33,650,
                         {.forwards = false},
                         false);
-    claw_arm.move_absolute(3050, -120);
-    pros::delay(200);
-    chassis.moveToPoint(15.2 , 32.5, 1200,
-                        {.forwards = false, .maxSpeed = 90},
+    moveLift(lift_position::stage_0_deg);
+    chassis.moveToPoint(11 , 30.5 , 1200,
+                        {.forwards = false},
                         false);
     
     //PICKUP
     claw_piston.set_value(true);
     
-    chassis.moveToPoint(24, 37.41, 1200,
+    chassis.moveToPoint(20, 36, 1200,
                         {.forwards = false},
                         false);
     // Same side turns back toward Goal.
-    chassis.turnToPoint(24, 14.11, 700,
+    chassis.turnToPoint(20, 14.11, 700,
                         {.forwards = false},
                         false);
     moveLift(lift_position::stage_1_deg);
-    pros::delay(500);
-    chassis.moveToPoint(24, 17.11, 1050,
+    //pros::delay(100);
+
+    
+    chassis.moveToPoint(20, 17, 1050,
                         {.forwards = false},
                         false);
     
@@ -576,28 +627,28 @@ void three_pin_auton() {
     pros::delay(20);
     
     //backup
-    chassis.moveToPoint(24, 37.41, 1200,
+    chassis.moveToPoint(17, 30, 1200,
                         {.forwards = true},
                         false);
     moveLift(lift_position::stage_0_deg);
-    pros::delay(300);
+    pros::delay(200);
+    
     // PIN #3: direct after clearing Goal; REAR/camera side picks it up.
-    chassis.turnToPoint(40.20, 14.5, 700,
+    chassis.turnToPoint(36.20, 14.5, 700,
                         {.forwards = false},
                         false);
-    chassis.moveToPoint(40.20, 18.40, 1200,
+    chassis.moveToPoint(36.20, 18.40, 1200,
                         {.forwards = false},
                         false);
 
     // Add Pin #3 pickup action here.
     claw_piston.set_value(true);
-    pros::delay(50);
+    pros::delay(10);
     moveLift(lift_position::stage_2_deg);
-    pros::delay(700);
     chassis.moveToPoint(43.20, 16, 1200,
                         {.forwards = true},
                         false);
-    chassis.turnToPoint(7, 16, 700,
+    chassis.turnToPoint(7, 15, 700,
                         {.forwards = false},
                         false);
     
