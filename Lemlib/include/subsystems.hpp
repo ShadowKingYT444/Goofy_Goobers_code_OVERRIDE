@@ -5,7 +5,8 @@
 namespace lift_position {
 inline constexpr float stage_0_deg = 0.0f;
 inline constexpr float matchload = -250.0f;
-inline constexpr float stage_1_deg = -600.7f;
+inline constexpr float normal_shi = -100.0f;
+inline constexpr float stage_1_deg = -660.7f;
 inline constexpr float stage_2_deg = -1000.0f;
 inline constexpr float max_height_deg = -1670.0f;
 inline constexpr float target_tolerance_ratio = 0.01f;

@@ -7,3 +7,5 @@ void test_shi();
 void motion_test_auton();
 void moveLift(double targetDeg);
 void moveArm(double targetDeg, volatile bool* cancel = nullptr);
+void one_pin_close();
+void skills();

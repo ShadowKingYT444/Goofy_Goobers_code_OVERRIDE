@@ -85,7 +85,7 @@ void disabled() {}
 void competition_initialize() {}
 
 void autonomous() {
-    three_pin_auton();
+    one_pin_auton();
 }
 
 void opcontrol() {
