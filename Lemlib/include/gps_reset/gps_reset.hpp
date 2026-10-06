@@ -24,7 +24,8 @@ namespace gpsreset {
 //   3b. OR start-relative frame (keeps setPose(0,0,180)-style autons working):
 //        call ONCE with the robot stationary at its start pose, before auton:
 //        gpsreset::capture_start_as(0, 0, 180);
-//        then reset()/test() apply drift-free GPS corrections in that frame.
+//        then reset()/test() attempt bounded position corrections in that
+//        frame while retaining LemLib's heading.
 //      or non-blocking test tick in opcontrol():
 //        gpsreset::test();   // shows last reset pose at the bottom of the brain screen
 //        ("GPSR" prefix = relative mode, "GPS" = absolute.)
@@ -45,19 +46,21 @@ inline void init(lemlib::Chassis& chassis, std::uint8_t gps_port,
 // the robot stationary at its start pose, before autonomous() runs.
 // (x_in, y_in, theta_deg) declares what that physical spot means in your
 // auton coordinates, e.g. (0, 0, 180) to match setPose(0,0,180) autons.
-// Afterwards reset()/test() apply P_rel = P_abs - P0 + D, so start-relative
-// paths get drift-free GPS corrections. Returns false if no confident GPS
-// reading appears within ~2 s (mode left unchanged).
+// Afterwards reset()/test() apply readings in the declared start-relative
+// frame, so routes can receive start-relative GPS position corrections.
+// Returns false if a stable reading is not available within a bounded 250 ms
+// window; failure invalidates the
+// current run's anchor so relative reset() calls fail closed.
 inline bool capture_start_as(double x_in, double y_in, double theta_deg);
 
-// Blocking reset for auton: polls the GPS (up to ~1 s) and hard-resets the
-// LemLib pose the moment confidence is high. Returns true only if a reset
-// was actually applied. Safe to call from initialize() or autonomous().
+// Bounded reset for auton: requires a stable GPS sample, a valid anchor in
+// relative mode, stable odometry, a stopped chassis, and a plausible correction.
+// It updates X/Y while preserving LemLib heading. Returns true only if applied.
 inline bool reset();
 
-// Non-blocking opcontrol tick: call it every loop. Whenever the GPS is
-// confident it snaps the LemLib pose to the GPS reading and prints the pose
-// it reset to at the bottom of the brain screen, so you can see it working live.
+// Non-blocking opcontrol tick: call it every loop. When the GPS is confident,
+// the chassis is stopped, and the correction is plausible, it updates X/Y
+// while preserving heading and prints the resulting pose.
 inline void test();
 
 }  // namespace gpsreset

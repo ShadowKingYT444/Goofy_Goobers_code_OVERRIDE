@@ -8,37 +8,131 @@
 #include <cstdio>
 #include <limits>
 
-void moveLift(double targetDeg) {
-    const double kP = 0.35;
-    const double tolerance = 8.0;
+bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
+    // Starting candidates: validate on the robot with and without a cup.
+    constexpr double kP = 0.35;
+    constexpr double kD = 0.05;
+    constexpr double kPositionToleranceDeg = 8.0;
+    constexpr double kSettleVelocityDegPerSec = 15.0;
+    constexpr std::uint32_t kSettleTimeMs = 120;
+    constexpr double kFinalApproachDeg = 80.0;
+    constexpr double kFarMinimumPower = 18.0;
+    constexpr double kNearMinimumPower = 8.0;
+    constexpr double kStallCommand = 40.0;
+    constexpr double kStallProgressDeg = 1.0;
+    constexpr std::uint32_t kStallWindowMs = 600;
+    constexpr std::uint32_t kLoopDelayMs = 10;
+    constexpr std::uint32_t kMaxTimeoutMs = 5000;
+    constexpr double kPositionSafetyMarginDeg = 100.0;
 
-    while (true) {
-        double current = lift_sensor.get_position() / 100.0;
-        double error = targetDeg - current;
+    auto stop = [](bool success) {
+        slider_left.brake();
+        slider_right.brake();
+        return success;
+    };
 
-        if (fabs(error) <= tolerance) break;
+    if (!std::isfinite(targetDeg) || timeoutMs == 0 ||
+        timeoutMs > kMaxTimeoutMs ||
+        targetDeg < lift_position::max_height_deg ||
+        targetDeg > lift_position::stage_0_deg)
+        return stop(false);
 
-        int power = std::clamp(
-            static_cast<int>(error * kP),
-            -127,
-            127
+    const std::uint32_t startedAt = pros::millis();
+    std::uint32_t settledAt = 0;
+    bool settling = false;
+    std::uint32_t progressWindowAt = startedAt;
+    double progressWindowPosition = 0.0;
+    bool haveProgressPosition = false;
+
+    while (pros::millis() - startedAt < timeoutMs) {
+        const std::int32_t positionRaw = lift_sensor.get_position();
+        const std::int32_t velocityRaw = lift_sensor.get_velocity();
+        if (positionRaw == PROS_ERR || velocityRaw == PROS_ERR)
+            return stop(false);
+
+        const double currentDeg = positionRaw / 100.0;
+        const double velocityDegPerSec = velocityRaw / 100.0;
+        if (!std::isfinite(currentDeg) || !std::isfinite(velocityDegPerSec))
+            return stop(false);
+        if (currentDeg <
+                lift_position::max_height_deg - kPositionSafetyMarginDeg ||
+            currentDeg >
+                lift_position::stage_0_deg + kPositionSafetyMarginDeg)
+            return stop(false);
+
+        const double errorDeg = targetDeg - currentDeg;
+        const std::uint32_t now = pros::millis();
+        if (std::abs(errorDeg) <= kPositionToleranceDeg &&
+            std::abs(velocityDegPerSec) <= kSettleVelocityDegPerSec) {
+            if (!settling) {
+                settling = true;
+                settledAt = now;
+            } else if (now - settledAt >= kSettleTimeMs) {
+                return stop(true);
+            }
+        } else {
+            settling = false;
+        }
+
+        // The derivative term opposes measured motion, reducing speed near
+        // the target instead of applying the old large command floors there.
+        double command = std::clamp(
+            kP * errorDeg - kD * velocityDegPerSec,
+            -127.0,
+            127.0
         );
-
-        // Lift needs minimum force, especially when moving DOWN.
-        if (error > 0 && power < 90)
-            power = 90;
-        else if (error < 0 && power > -60)
-            power = -60;
-
+        const double minimumPower =
+            std::abs(errorDeg) > kFinalApproachDeg
+                ? kFarMinimumPower
+                : kNearMinimumPower;
+        if (std::abs(errorDeg) > kPositionToleranceDeg &&
+            command * errorDeg > 0.0 &&
+            std::abs(command) < minimumPower) {
+            command = std::copysign(minimumPower, errorDeg);
+        }
+        const int power = static_cast<int>(std::lround(command));
         slider_left.move(power);
         slider_right.move(power);
 
-        pros::delay(10);
+        if (!haveProgressPosition) {
+            progressWindowPosition = currentDeg;
+            progressWindowAt = now;
+            haveProgressPosition = true;
+        } else if (std::abs(command) >= kStallCommand &&
+                   std::abs(errorDeg) > kPositionToleranceDeg &&
+                   now - progressWindowAt >= kStallWindowMs) {
+            if (std::abs(currentDeg - progressWindowPosition) <
+                kStallProgressDeg)
+                return stop(false);
+            progressWindowPosition = currentDeg;
+            progressWindowAt = now;
+        } else if (now - progressWindowAt >= kStallWindowMs) {
+            progressWindowPosition = currentDeg;
+            progressWindowAt = now;
+        }
+
+        pros::delay(kLoopDelayMs);
     }
 
-    slider_left.brake();
-    slider_right.brake();
+    return stop(false);
 }
+
+namespace {
+// Scheduling guards only; validate the minimum reliable pneumatic time and
+// mechanism clearance on the assembled robot before shortening either one.
+constexpr std::uint32_t kPneumaticSettleMs = 75;
+constexpr float kGoalClearanceIn = 6.0f;
+constexpr float kPinClearanceIn = 3.0f;
+
+bool liftOrStop(double targetDeg) {
+    if (moveLift(targetDeg)) return true;
+    chassis.cancelAllMotions();
+    left_motors.move(0);
+    right_motors.move(0);
+    return false;
+}
+}  // namespace
+
 void moveArm(double targetDeg, volatile bool* cancel) {
     const double kP = 0.55;
     const double tolerance = 3.0;
@@ -502,13 +596,14 @@ constexpr double CLAW_AFTER_GOAL = -500.0;
 
 void one_pin_auton() {
     chassis.setPose(0, 0, 180);
-    moveLift((lift_position::stage_2_deg));
+    const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
+    if (!liftOrStop(lift_position::stage_2_deg)) return;
     // Toggle: physical rear moves into field, then physical front returns.
     chassis.moveToPoint(0, 6, 700,
                         {.forwards = false},
                         false);
     clamp_piston.set_value(true);
-    pros::delay(50);
+    pros::delay(kPneumaticSettleMs);
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
@@ -520,7 +615,8 @@ void one_pin_auton() {
     chassis.moveToPoint(-11, 15, 1100,
                         {.forwards = false},
                         false);
-    moveLift((lift_position::stage_0_deg));
+    if (!liftOrStop(lift_position::stage_0_deg)) return;
+    if (gps_anchor_ok) gpsreset::reset();
     claw_piston.set_value(false);
     pros::delay(100);
     
@@ -539,22 +635,25 @@ void one_pin_auton() {
     chassis.moveToPoint(-15, -2, 1200,
                         {.forwards = false, .maxSpeed=80},
                         false);
-    // Begin the turn toward thew next pin, but leave part of the turn for the
-    // following reverse approach.
-    chassis.swingToPoint(-19.7, -4, lemlib::DriveSide::LEFT, 500,
-                         {.forwards = false, .maxSpeed = 95,
-                          .minSpeed = 60, .earlyExitRange = 15},
-                         false);
+    // Finish alignment before the final reverse approach. Starting this turn
+    // from here leaves enough distance for moveToPoint() to steer normally.
+    chassis.turnToPoint(-19.7, -5, 500,
+                        {.forwards = false, .maxSpeed = 95},
+                        false);
     chassis.moveToPoint(-19.7, -5, 1200,
                         {.forwards = false, .maxSpeed=80},
                         false);
 
     // Add Pin pickup action here.
     claw_piston.set_value(true);
-    moveLift(lift_position::stage_1_deg);
+    pros::delay(kPneumaticSettleMs);
+    // First travel clear of the pickup before raising with the cup held.
     chassis.moveToPoint(5, 14.5, 650,
                         {.forwards = true},
-                        false);
+                        true);
+    chassis.waitUntil(8.0);
+    if (!liftOrStop(lift_position::stage_1_deg)) return;
+    chassis.waitUntilDone();
     chassis.turnToPoint(-14, 14.5, 700,
                         {.forwards = false},
                         false);
@@ -563,21 +662,22 @@ void one_pin_auton() {
                         {.forwards = false},
                         false);
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
     
 
 
 }
 void one_pin_close(){
     chassis.setPose(0, 0, 180);
-    gps_reset::capture_start_as(0,0,180);
+    const bool gps_anchor_ok = gps_reset::capture_start_as(0,0,180);
     // First motion test: use LemLib's normal output while PID and odometry are
     // being validated.
-    moveLift((lift_position::matchload - 125));
+    if (!liftOrStop(lift_position::matchload - 125)) return;
     chassis.moveToPoint(0, 8, 500,
                         {.forwards = false},
                         false);
     clamp_piston.set_value(true);
-    pros::delay(10);
+    pros::delay(kPneumaticSettleMs);
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
@@ -592,7 +692,8 @@ void one_pin_close(){
     chassis.moveToPoint(13, 15, 700,
                         {.forwards = false, .maxSpeed = 95},
                         false);
-    moveLift(lift_position::normal_shi); 
+    if (!liftOrStop(lift_position::normal_shi)) return;
+    if (gps_anchor_ok) gps_reset::reset();
     claw_piston.set_value(false);
     pros::delay(100);
     // Pull straight out only enough to clear the Goal.
@@ -603,13 +704,15 @@ void one_pin_close(){
 
 void three_pin_auton() {
     chassis.setPose(0, 0, 180);
+    const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
     // First motion test: use LemLib's normal output while PID and odometry are
     // being validated.
-    moveLift((lift_position::matchload - 125));
+    if (!liftOrStop(lift_position::matchload - 125)) return;
     chassis.moveToPoint(0, 8, 500,
                         {.forwards = false},
                         false);
     clamp_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
@@ -624,8 +727,10 @@ void three_pin_auton() {
     chassis.moveToPoint(13, 15, 700,
                         {.forwards = false, .maxSpeed = 80},
                         false);
-    moveLift(lift_position::stage_0_deg);                   
+    if (!liftOrStop(lift_position::stage_0_deg)) return;
+    if (gps_anchor_ok) gpsreset::reset();
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
     
     // Pull straight out only enough to clear the Goal.
     chassis.moveToPoint(0, 16.5, 650,
@@ -642,6 +747,7 @@ void three_pin_auton() {
     
     //PICKUP
     claw_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     
     chassis.moveToPoint(20, 36, 1200,
                         {.forwards = false},
@@ -649,8 +755,9 @@ void three_pin_auton() {
     // Same side turns back toward Goal.
     chassis.turnToPoint(20, 14.11, 700,
                         {.forwards = false},
-                        false);
-    moveLift(lift_position::stage_1_deg);
+                        true);
+    if (!liftOrStop(lift_position::stage_1_deg)) return;
+    chassis.waitUntilDone();
 
     
     chassis.moveToPoint(20, 17, 1050,
@@ -659,12 +766,17 @@ void three_pin_auton() {
     
     //SCORE CUP #1
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
     
-    //backup
+    // Back clear before lowering, then overlap the rest of the retreat with
+    // the bounded lift move. The following turn cannot start until both have
+    // completed.
     chassis.moveToPoint(17, 35, 1200,
                         {.forwards = true},
-                        false);
-    moveLift(lift_position::stage_0_deg);
+                        true);
+    chassis.waitUntil(kGoalClearanceIn);
+    if (!liftOrStop(lift_position::stage_0_deg)) return;
+    chassis.waitUntilDone();
     
     chassis.turnToPoint(-12, 35, 700,
                         {.forwards = false},
@@ -673,6 +785,7 @@ void three_pin_auton() {
                         {.forwards = false},
                         false);
     claw_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     chassis.turnToHeading(180, 700);
     chassis.moveToPoint(0.5, 40, 1200,
                         {.forwards = false},
@@ -688,7 +801,7 @@ void three_pin_auton() {
 
     // Add Pin #3 pickup action here.
     claw_piston.set_value(true);
-    moveLift(lift_position::stage_2_deg);
+    if (!liftOrStop(lift_position::stage_2_deg)) return;
     chassis.moveToPoint(43.20, 16, 1200,
                         {.forwards = true},
                         false);
@@ -714,13 +827,15 @@ void three_pin_auton() {
 
 void skills() {
     chassis.setPose(0, 0, 180);
+    const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
     // First motion test: use LemLib's normal output while PID and odometry are
     // being validated.
-    moveLift((lift_position::matchload - 125));
+    if (!liftOrStop(lift_position::matchload - 125)) return;
     chassis.moveToPoint(0, 8, 500,
                         {.forwards = false},
                         false);
     clamp_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
@@ -735,8 +850,10 @@ void skills() {
     chassis.moveToPoint(13, 15, 700,
                         {.forwards = false, .maxSpeed = 80},
                         false);
-    moveLift(lift_position::stage_0_deg);                   
+    if (!liftOrStop(lift_position::stage_0_deg)) return;
+    if (gps_anchor_ok) gpsreset::reset();
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
     
     // Pull straight out only enough to clear the Goal.
     chassis.moveToPoint(0, 16.5, 650,
@@ -753,6 +870,7 @@ void skills() {
     
     //PICKUP
     claw_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     
     chassis.moveToPoint(20, 36, 1200,
                         {.forwards = false},
@@ -760,8 +878,9 @@ void skills() {
     // Same side turns back toward Goal.
     chassis.turnToPoint(20, 14.11, 700,
                         {.forwards = false},
-                        false);
-    moveLift(lift_position::stage_1_deg);
+                        true);
+    if (!liftOrStop(lift_position::stage_1_deg)) return;
+    chassis.waitUntilDone();
 
     
     chassis.moveToPoint(20, 17, 1050,
@@ -770,12 +889,15 @@ void skills() {
     
     //SCORE CUP #1
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
     
-    //backup
+    // Clear the Goal before lowering, while overlapping the remaining drive.
     chassis.moveToPoint(17, 35, 1200,
                         {.forwards = true},
-                        false);
-    moveLift(lift_position::stage_0_deg);
+                        true);
+    chassis.waitUntil(kGoalClearanceIn);
+    if (!liftOrStop(lift_position::stage_0_deg)) return;
+    chassis.waitUntilDone();
     /*
     chassis.turnToPoint(-12, 35, 700,
                         {.forwards = false},
@@ -799,10 +921,15 @@ void skills() {
 
     // Add Pin #3 pickup action here.
     claw_piston.set_value(true);
-    moveLift(lift_position::stage_2_deg);
+    pros::delay(kPneumaticSettleMs);
+    // Move clear with the cup low, then raise during the remainder of the
+    // retreat. waitUntilDone() preserves the next turn's endpoint ordering.
     chassis.moveToPoint(43.20, 16, 1200,
                         {.forwards = true},
-                        false);
+                        true);
+    chassis.waitUntil(kPinClearanceIn);
+    if (!liftOrStop(lift_position::stage_2_deg)) return;
+    chassis.waitUntilDone();
     chassis.turnToPoint(7, 15, 700,
                         {.forwards = false},
                         false);
@@ -811,6 +938,7 @@ void skills() {
                         {.forwards = false},
                         false);
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
     chassis.moveToPoint(43, 16, 1050,
                         {.forwards = true},
                         false);

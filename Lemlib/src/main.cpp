@@ -2,6 +2,8 @@
 #include "autons.hpp"
 #include "titanselect/titanselect.hpp"
 #include "gps_reset/gps_reset.hpp"
+#include <cstdint>
+#include <cstdio>
 ts::auton one_pin("1 Pin", one_pin_auton);
 ts::auton three_pin("3 Pin", three_pin_auton);
 // Drive wiring and direction match the old Goofy Goobers project.
@@ -9,20 +11,37 @@ pros::MotorGroup left_motors({-17, -18}, pros::MotorGears::blue);
 pros::MotorGroup right_motors({11, 13}, pros::MotorGears::blue);
 pros::Imu imu(14);
 // Reversed because the raw sensors decreased for front/right motion.
-//pros::Rotation vertical_odom(-15);
-//pros::Rotation horizontal_odom(-1);
+pros::Rotation vertical_odom(-15);
+pros::Rotation horizontal_odom(-1);
 pros::Motor side_toggle(4);
 pros::adi::DigitalOut claw_piston('B');
 lemlib::Drivetrain drivetrain(&left_motors, &right_motors,
                               12, lemlib::Omniwheel::NEW_275, 450, 2);
-// 
-//lemlib::TrackingWheel vertical_wheel(&vertical_odom, lemlib::Omniwheel::NEW_2, -0.6
- //   , 1.0);
-//lemlib::TrackingWheel horizontal_wheel(&horizontal_odom, lemlib::Omniwheel::NEW_2, -7.96, 1.0);
-lemlib::OdomSensors sensors(nullptr, nullptr, nullptr, nullptr, &imu);
 
-// Keep slew disabled while the independent autotuner identifies P and D.
-lemlib::ControllerSettings lateral_controller(6.0, 0, 3, 0, 1, 100, 3, 500, 0);
+// Temporary diagnostic geometry. The offsets are measured from the LemLib
+// tracking center: vertical is 0.5 in left, horizontal is 5.1 in forward.
+lemlib::TrackingWheel vertical_wheel(
+    &vertical_odom,
+    lemlib::Omniwheel::NEW_2,
+    -0.5,
+    1.0
+);
+lemlib::TrackingWheel horizontal_wheel(
+    &horizontal_odom,
+    lemlib::Omniwheel::NEW_2,
+    5.1,
+    1.0
+);
+lemlib::OdomSensors sensors(
+    &vertical_wheel,
+    nullptr,
+    &horizontal_wheel,
+    nullptr,
+    &imu
+);
+
+// First lateral P speed experiment; verify endpoint accuracy and slip physically.
+lemlib::ControllerSettings lateral_controller(7.0, 0, 3, 0, 1, 100, 3, 500, 0);
 lemlib::ControllerSettings angular_controller(2, 0, 10, 3, 1, 100, 3, 500, 0);
 lemlib::ExpoDriveCurve throttle_curve(5, 0, 1.0);
 lemlib::ExpoDriveCurve steer_curve(5, 0, 1.0);
@@ -46,6 +65,10 @@ void initialize() {
     claw_arm.tare_position();
     claw_sensor.reset_position();
     lift_sensor.reset_position();
+    // HOLD is used by moveLift() after it reaches a target; check motor heat
+    // and paired-motor behavior with the loaded mechanism during validation.
+    slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+    slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
     pros::lcd::initialize();
     chassis.calibrate();
     claw_piston.set_value(true);
@@ -56,9 +79,29 @@ void initialize() {
     //ts::selector::get()->display();
 
     pros::Task screen_task([]() {
+        // Rebooting the Brain starts a fresh baseline. The delta values below
+        // are therefore the signed sensor changes since initialization.
+        bool have_baseline = false;
+        double baseline_vertical = 0.0;
+        double baseline_horizontal = 0.0;
+        double baseline_rotation = 0.0;
+
         while (true) {
             const double lift_deg = lift_sensor.get_position()/100.0;
             const double claw_deg = claw_sensor.get_position()/100.0;
+            const double vertical_distance =
+                vertical_wheel.getDistanceTraveled();
+            const double horizontal_distance =
+                horizontal_wheel.getDistanceTraveled();
+            const double imu_rotation = imu.get_rotation();
+
+            if (!have_baseline) {
+                baseline_vertical = vertical_distance;
+                baseline_horizontal = horizontal_distance;
+                baseline_rotation = imu_rotation;
+                have_baseline = true;
+            }
+
             auto pose = chassis.getPose();
 
             pros::lcd::print(0, "X %.2f Y %.2f", pose.x, pose.y);
@@ -66,13 +109,27 @@ void initialize() {
 
             pros::lcd::print(
                 2, "IMU %.2f",
-                imu.get_rotation()
+                imu_rotation
             );
             pros::lcd::print(
                 3, "Lift %.2f deg", lift_deg
             );
             pros::lcd::print(
                 4, "Claw %.2f deg", claw_deg
+            );
+            pros::lcd::print(
+                5, "V %.2f H %.2f",
+                vertical_distance,
+                horizontal_distance
+            );
+            pros::lcd::print(
+                6, "dV %.2f dH %.2f",
+                vertical_distance - baseline_vertical,
+                horizontal_distance - baseline_horizontal
+            );
+            pros::lcd::print(
+                7, "dT %.2f",
+                imu_rotation - baseline_rotation
             );
 
             pros::delay(100);
@@ -85,7 +142,23 @@ void disabled() {}
 void competition_initialize() {}
 
 void autonomous() {
-    one_pin_auton();
+    const std::uint32_t startedAt = pros::millis();
+    three_pin_auton();
+    const std::uint32_t elapsedMs = pros::millis() - startedAt;
+    const lemlib::Pose pose = chassis.getPose();
+    const std::int32_t liftPosition = lift_sensor.get_position();
+    const std::int32_t liftVelocity = lift_sensor.get_velocity();
+    // CSV-style record for repeated field trials. Pose is odometry output;
+    // compare endpoint error against an independent field measurement.
+    std::printf(
+        "AUTON_RESULT,three_pin,%lu,%.2f,%.2f,%.1f,%d,%d\n",
+        static_cast<unsigned long>(elapsedMs),
+        static_cast<double>(pose.x),
+        static_cast<double>(pose.y),
+        static_cast<double>(pose.theta),
+        static_cast<int>(liftPosition),
+        static_cast<int>(liftVelocity)
+    );
 }
 
 void opcontrol() {
