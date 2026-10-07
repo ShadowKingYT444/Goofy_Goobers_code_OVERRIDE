@@ -9,18 +9,8 @@
 #include <limits>
 
 bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
-    // Starting candidates: validate on the robot with and without a cup.
     constexpr double kP = 0.35;
-    constexpr double kD = 0.05;
     constexpr double kPositionToleranceDeg = 8.0;
-    constexpr double kSettleVelocityDegPerSec = 15.0;
-    constexpr std::uint32_t kSettleTimeMs = 120;
-    constexpr double kFinalApproachDeg = 80.0;
-    constexpr double kFarMinimumPower = 18.0;
-    constexpr double kNearMinimumPower = 8.0;
-    constexpr double kStallCommand = 40.0;
-    constexpr double kStallProgressDeg = 1.0;
-    constexpr std::uint32_t kStallWindowMs = 600;
     constexpr std::uint32_t kLoopDelayMs = 10;
     constexpr std::uint32_t kMaxTimeoutMs = 8000;
     constexpr double kPositionSafetyMarginDeg = 100.0;
@@ -42,11 +32,6 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
     }
 
     const std::uint32_t startedAt = pros::millis();
-    std::uint32_t settledAt = 0;
-    bool settling = false;
-    std::uint32_t progressWindowAt = startedAt;
-    double progressWindowPosition = 0.0;
-    bool haveProgressPosition = false;
     double lastCurrentDeg = std::numeric_limits<double>::quiet_NaN();
     double lastVelocityDegPerSec = std::numeric_limits<double>::quiet_NaN();
     auto fail = [&](const char* reason, double currentDeg,
@@ -79,58 +64,22 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
 
         const double errorDeg = targetDeg - currentDeg;
         const std::uint32_t now = pros::millis();
-        if (std::abs(errorDeg) <= kPositionToleranceDeg &&
-            std::abs(velocityDegPerSec) <= kSettleVelocityDegPerSec) {
-            if (!settling) {
-                settling = true;
-                settledAt = now;
-            } else if (now - settledAt >= kSettleTimeMs) {
-                std::printf("LIFT_OK,target=%.1f,current=%.1f,velocity=%.1f,elapsed_ms=%lu\n",
-                            targetDeg, currentDeg, velocityDegPerSec,
-                            static_cast<unsigned long>(now - startedAt));
-                return stop(true);
-            }
-        } else {
-            settling = false;
+        if (std::abs(errorDeg) <= kPositionToleranceDeg) {
+            std::printf("LIFT_OK,target=%.1f,current=%.1f,velocity=%.1f,elapsed_ms=%lu\n",
+                        targetDeg, currentDeg, velocityDegPerSec,
+                        static_cast<unsigned long>(now - startedAt));
+            return stop(true);
         }
 
-        // The derivative term opposes measured motion, reducing speed near
-        // the target instead of applying the old large command floors there.
-        double command = std::clamp(
-            kP * errorDeg - kD * velocityDegPerSec,
-            -127.0,
-            127.0
-        );
-        const double minimumPower =
-            std::abs(errorDeg) > kFinalApproachDeg
-                ? kFarMinimumPower
-                : kNearMinimumPower;
-        if (std::abs(errorDeg) > kPositionToleranceDeg &&
-            command * errorDeg > 0.0 &&
-            std::abs(command) < minimumPower) {
-            command = std::copysign(minimumPower, errorDeg);
-        }
-        const int power = static_cast<int>(std::lround(command));
+        // Restore the previous proportional response and motor power floors.
+        int power = std::clamp(static_cast<int>(errorDeg * kP), -127, 127);
+        if (errorDeg > 0 && power < 90)
+            power = 90;
+        else if (errorDeg < 0 && power > -60)
+            power = -60;
+
         slider_left.move(power);
         slider_right.move(power);
-
-        if (!haveProgressPosition) {
-            progressWindowPosition = currentDeg;
-            progressWindowAt = now;
-            haveProgressPosition = true;
-        } else if (std::abs(command) >= kStallCommand &&
-                   std::abs(errorDeg) > kPositionToleranceDeg &&
-                   now - progressWindowAt >= kStallWindowMs) {
-            if (std::abs(currentDeg - progressWindowPosition) <
-                kStallProgressDeg)
-                return fail("stall", currentDeg, velocityDegPerSec);
-            progressWindowPosition = currentDeg;
-            progressWindowAt = now;
-        } else if (now - progressWindowAt >= kStallWindowMs) {
-            progressWindowPosition = currentDeg;
-            progressWindowAt = now;
-        }
-
         pros::delay(kLoopDelayMs);
     }
 
@@ -724,7 +673,6 @@ void one_pin_close(){
 
 void three_pin_auton() {
     chassis.setPose(0, 0, 180);
-    const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
     // First motion test: use LemLib's normal output while PID and odometry are
     // being validated.
     if (!liftOrStop(lift_position::matchload - 125)) return;
@@ -732,7 +680,6 @@ void three_pin_auton() {
                         {.forwards = false},
                         false);
     clamp_piston.set_value(true);
-    pros::delay(kPneumaticSettleMs);
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
@@ -748,9 +695,7 @@ void three_pin_auton() {
                         {.forwards = false, .maxSpeed = 80},
                         false);
     if (!liftOrStop(lift_position::stage_0_deg)) return;
-    if (gps_anchor_ok) gpsreset::reset();
     claw_piston.set_value(false);
-    pros::delay(kPneumaticSettleMs);
     
     // Pull straight out only enough to clear the Goal.
     chassis.moveToPoint(0, 16.5, 650,
@@ -767,7 +712,6 @@ void three_pin_auton() {
     
     //PICKUP
     claw_piston.set_value(true);
-    pros::delay(kPneumaticSettleMs);
     
     chassis.moveToPoint(20, 36, 1200,
                         {.forwards = false},
@@ -775,9 +719,8 @@ void three_pin_auton() {
     // Same side turns back toward Goal.
     chassis.turnToPoint(20, 14.11, 700,
                         {.forwards = false},
-                        true);
+                        false);
     if (!liftOrStop(lift_position::stage_1_deg)) return;
-    chassis.waitUntilDone();
 
     
     chassis.moveToPoint(20, 17, 1050,
@@ -786,17 +729,12 @@ void three_pin_auton() {
     
     //SCORE CUP #1
     claw_piston.set_value(false);
-    pros::delay(kPneumaticSettleMs);
-    
-    // Back clear before lowering, then overlap the rest of the retreat with
-    // the bounded lift move. The following turn cannot start until both have
-    // completed.
+
+    // Back clear, then lower before starting the next turn.
     chassis.moveToPoint(17, 35, 1200,
                         {.forwards = true},
-                        true);
-    chassis.waitUntil(kGoalClearanceIn);
+                        false);
     if (!liftOrStop(lift_position::stage_0_deg)) return;
-    chassis.waitUntilDone();
     
     chassis.turnToPoint(-12, 35, 700,
                         {.forwards = false},
@@ -805,7 +743,6 @@ void three_pin_auton() {
                         {.forwards = false},
                         false);
     claw_piston.set_value(true);
-    pros::delay(kPneumaticSettleMs);
     chassis.turnToHeading(180, 700);
     chassis.moveToPoint(0.5, 40, 1200,
                         {.forwards = false},
