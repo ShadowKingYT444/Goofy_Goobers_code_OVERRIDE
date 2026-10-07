@@ -22,7 +22,7 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
     constexpr double kStallProgressDeg = 1.0;
     constexpr std::uint32_t kStallWindowMs = 600;
     constexpr std::uint32_t kLoopDelayMs = 10;
-    constexpr std::uint32_t kMaxTimeoutMs = 5000;
+    constexpr std::uint32_t kMaxTimeoutMs = 8000;
     constexpr double kPositionSafetyMarginDeg = 100.0;
 
     auto stop = [](bool success) {
@@ -34,8 +34,12 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
     if (!std::isfinite(targetDeg) || timeoutMs == 0 ||
         timeoutMs > kMaxTimeoutMs ||
         targetDeg < lift_position::max_height_deg ||
-        targetDeg > lift_position::stage_0_deg)
+        targetDeg > lift_position::stage_0_deg) {
+        std::printf("LIFT_FAIL,invalid_target_or_timeout,%.1f,%lu\n",
+                    targetDeg,
+                    static_cast<unsigned long>(timeoutMs));
         return stop(false);
+    }
 
     const std::uint32_t startedAt = pros::millis();
     std::uint32_t settledAt = 0;
@@ -43,22 +47,35 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
     std::uint32_t progressWindowAt = startedAt;
     double progressWindowPosition = 0.0;
     bool haveProgressPosition = false;
+    double lastCurrentDeg = std::numeric_limits<double>::quiet_NaN();
+    double lastVelocityDegPerSec = std::numeric_limits<double>::quiet_NaN();
+    auto fail = [&](const char* reason, double currentDeg,
+                    double velocityDegPerSec) {
+        const std::uint32_t elapsedMs = pros::millis() - startedAt;
+        std::printf("LIFT_FAIL,%s,target=%.1f,current=%.1f,velocity=%.1f,elapsed_ms=%lu\n",
+                    reason, targetDeg, currentDeg, velocityDegPerSec,
+                    static_cast<unsigned long>(elapsedMs));
+        return stop(false);
+    };
 
     while (pros::millis() - startedAt < timeoutMs) {
         const std::int32_t positionRaw = lift_sensor.get_position();
         const std::int32_t velocityRaw = lift_sensor.get_velocity();
         if (positionRaw == PROS_ERR || velocityRaw == PROS_ERR)
-            return stop(false);
+            return fail("sensor", lastCurrentDeg, lastVelocityDegPerSec);
 
         const double currentDeg = positionRaw / 100.0;
         const double velocityDegPerSec = velocityRaw / 100.0;
         if (!std::isfinite(currentDeg) || !std::isfinite(velocityDegPerSec))
-            return stop(false);
+            return fail("non_finite_sensor", currentDeg, velocityDegPerSec);
         if (currentDeg <
                 lift_position::max_height_deg - kPositionSafetyMarginDeg ||
             currentDeg >
                 lift_position::stage_0_deg + kPositionSafetyMarginDeg)
-            return stop(false);
+            return fail("position_bound", currentDeg, velocityDegPerSec);
+
+        lastCurrentDeg = currentDeg;
+        lastVelocityDegPerSec = velocityDegPerSec;
 
         const double errorDeg = targetDeg - currentDeg;
         const std::uint32_t now = pros::millis();
@@ -68,6 +85,9 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
                 settling = true;
                 settledAt = now;
             } else if (now - settledAt >= kSettleTimeMs) {
+                std::printf("LIFT_OK,target=%.1f,current=%.1f,velocity=%.1f,elapsed_ms=%lu\n",
+                            targetDeg, currentDeg, velocityDegPerSec,
+                            static_cast<unsigned long>(now - startedAt));
                 return stop(true);
             }
         } else {
@@ -103,7 +123,7 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
                    now - progressWindowAt >= kStallWindowMs) {
             if (std::abs(currentDeg - progressWindowPosition) <
                 kStallProgressDeg)
-                return stop(false);
+                return fail("stall", currentDeg, velocityDegPerSec);
             progressWindowPosition = currentDeg;
             progressWindowAt = now;
         } else if (now - progressWindowAt >= kStallWindowMs) {
@@ -114,7 +134,7 @@ bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
         pros::delay(kLoopDelayMs);
     }
 
-    return stop(false);
+    return fail("timeout", lastCurrentDeg, lastVelocityDegPerSec);
 }
 
 namespace {

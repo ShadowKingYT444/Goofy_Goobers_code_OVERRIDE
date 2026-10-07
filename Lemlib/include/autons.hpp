@@ -9,7 +9,7 @@ void test_shi();
 void motion_test_auton();
 // Default timeout is an initial safety deadline; validate it at the largest
 // lift target under the heaviest expected load.
-bool moveLift(double targetDeg, std::uint32_t timeoutMs = 3500);
+bool moveLift(double targetDeg, std::uint32_t timeoutMs = 6000);
 void moveArm(double targetDeg, volatile bool* cancel = nullptr);
 void one_pin_close();
 void skills();
