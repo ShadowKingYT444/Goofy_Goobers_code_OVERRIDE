@@ -41,7 +41,7 @@ lemlib::OdomSensors sensors(
 );
 
 // First lateral P speed experiment; verify endpoint accuracy and slip physically.
-lemlib::ControllerSettings lateral_controller(7.0, 0, 3, 0, 1, 100, 3, 500, 0);
+lemlib::ControllerSettings lateral_controller(6.0, 0, 3, 0, 1, 100, 3, 500, 0);
 lemlib::ControllerSettings angular_controller(2, 0, 10, 3, 1, 100, 3, 500, 0);
 lemlib::ExpoDriveCurve throttle_curve(5, 0, 1.0);
 lemlib::ExpoDriveCurve steer_curve(5, 0, 1.0);

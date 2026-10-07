@@ -673,13 +673,17 @@ void one_pin_close(){
 
 void three_pin_auton() {
     chassis.setPose(0, 0, 180);
+    const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
     // First motion test: use LemLib's normal output while PID and odometry are
     // being validated.
-    if (!liftOrStop(lift_position::matchload - 125)) return;
+    // Start the approach first so the lift can rise while the chassis drives.
     chassis.moveToPoint(0, 8, 500,
                         {.forwards = false},
-                        false);
+                        true);
+    if (!liftOrStop(lift_position::matchload - 125)) return;
+    chassis.waitUntilDone();
     clamp_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     chassis.moveToPoint(0, -2, 700,
                         {.forwards = true},
                         false);
@@ -690,12 +694,15 @@ void three_pin_auton() {
     chassis.moveToPoint(0, 15, 700,
                         {.forwards = false},
                         false);
-    chassis.turnToHeading(-90,500);
+    chassis.turnToHeading(-90, 500);
     chassis.moveToPoint(13, 15, 700,
                         {.forwards = false, .maxSpeed = 80},
-                        false);
+                        true);
     if (!liftOrStop(lift_position::stage_0_deg)) return;
+    chassis.waitUntilDone();
+    if (gps_anchor_ok) gpsreset::reset();
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
     
     // Pull straight out only enough to clear the Goal.
     chassis.moveToPoint(0, 16.5, 650,
@@ -712,6 +719,7 @@ void three_pin_auton() {
     
     //PICKUP
     claw_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     
     chassis.moveToPoint(20, 36, 1200,
                         {.forwards = false},
@@ -719,8 +727,9 @@ void three_pin_auton() {
     // Same side turns back toward Goal.
     chassis.turnToPoint(20, 14.11, 700,
                         {.forwards = false},
-                        false);
+                        true);
     if (!liftOrStop(lift_position::stage_1_deg)) return;
+    chassis.waitUntilDone();
 
     
     chassis.moveToPoint(20, 17, 1050,
@@ -729,12 +738,15 @@ void three_pin_auton() {
     
     //SCORE CUP #1
     claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
 
-    // Back clear, then lower before starting the next turn.
+    // Begin backing out, clear the Goal, then lower while the retreat finishes.
     chassis.moveToPoint(17, 35, 1200,
                         {.forwards = true},
-                        false);
+                        true);
+    chassis.waitUntil(kGoalClearanceIn);
     if (!liftOrStop(lift_position::stage_0_deg)) return;
+    chassis.waitUntilDone();
     
     chassis.turnToPoint(-12, 35, 700,
                         {.forwards = false},
@@ -743,6 +755,7 @@ void three_pin_auton() {
                         {.forwards = false},
                         false);
     claw_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
     chassis.turnToHeading(180, 700);
     chassis.moveToPoint(0.5, 40, 1200,
                         {.forwards = false},
