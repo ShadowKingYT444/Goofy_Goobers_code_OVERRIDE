@@ -143,7 +143,7 @@ void competition_initialize() {}
 
 void autonomous() {
     const std::uint32_t startedAt = pros::millis();
-    three_pin_auton();
+    gps_reset_test_auton();
     const std::uint32_t elapsedMs = pros::millis() - startedAt;
     const lemlib::Pose pose = chassis.getPose();
     const std::int32_t liftPosition = lift_sensor.get_position();
@@ -151,7 +151,7 @@ void autonomous() {
     // CSV-style record for repeated field trials. Pose is odometry output;
     // compare endpoint error against an independent field measurement.
     std::printf(
-        "AUTON_RESULT,three_pin,%lu,%.2f,%.2f,%.1f,%d,%d\n",
+        "AUTON_RESULT,gps_reset_test,%lu,%.2f,%.2f,%.1f,%d,%d\n",
         static_cast<unsigned long>(elapsedMs),
         static_cast<double>(pose.x),
         static_cast<double>(pose.y),

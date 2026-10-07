@@ -671,6 +671,62 @@ void one_pin_close(){
                         false);
 }
 
+void gps_reset_test_auton() {
+    constexpr double kTripDistanceIn = 24.0;
+    constexpr int kDriveTimeoutMs = 3000;
+    constexpr int kMaxSpeed = 50;
+
+    chassis.cancelAllMotions();
+    left_motors.move(0);
+    right_motors.move(0);
+    chassis.setPose(0, 0, 180);
+
+    if (!gpsreset::capture_start_as(0, 0, 180)) {
+        std::printf("GPS_TEST,ANCHOR_FAIL\n");
+        return;
+    }
+
+    const lemlib::Pose beforeStartReset = chassis.getPose();
+    const bool startResetOk = gpsreset::reset();
+    const lemlib::Pose afterStartReset = chassis.getPose();
+    std::printf("GPS_TEST,START_RESET,%d,%.2f,%.2f,%.2f,%.2f\n",
+                startResetOk,
+                static_cast<double>(beforeStartReset.x),
+                static_cast<double>(beforeStartReset.y),
+                static_cast<double>(afterStartReset.x),
+                static_cast<double>(afterStartReset.y));
+    if (!startResetOk) return;
+
+    // Move 24 inches into the field with the rear of the robot, then let GPS
+    // correct the stopped pose before driving the same path back to the origin.
+    chassis.moveToPoint(0, kTripDistanceIn, kDriveTimeoutMs,
+                        {.forwards = false, .maxSpeed = kMaxSpeed}, false);
+    const lemlib::Pose beforeForwardReset = chassis.getPose();
+    const bool forwardResetOk = gpsreset::reset();
+    const lemlib::Pose afterForwardReset = chassis.getPose();
+    std::printf("GPS_TEST,FORWARD_RESET,%d,%.2f,%.2f,%.2f,%.2f\n",
+                forwardResetOk,
+                static_cast<double>(beforeForwardReset.x),
+                static_cast<double>(beforeForwardReset.y),
+                static_cast<double>(afterForwardReset.x),
+                static_cast<double>(afterForwardReset.y));
+
+    chassis.moveToPoint(0, 0, kDriveTimeoutMs,
+                        {.forwards = true, .maxSpeed = kMaxSpeed}, false);
+    const lemlib::Pose beforeReturnReset = chassis.getPose();
+    const bool returnResetOk = gpsreset::reset();
+    const lemlib::Pose afterReturnReset = chassis.getPose();
+    const double finalErrorIn = std::hypot(afterReturnReset.x,
+                                           afterReturnReset.y);
+    std::printf("GPS_TEST,RETURN_RESET,%d,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                returnResetOk,
+                static_cast<double>(beforeReturnReset.x),
+                static_cast<double>(beforeReturnReset.y),
+                static_cast<double>(afterReturnReset.x),
+                static_cast<double>(afterReturnReset.y),
+                finalErrorIn);
+}
+
 void three_pin_auton() {
     chassis.setPose(0, 0, 180);
     const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
