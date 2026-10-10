@@ -20,15 +20,15 @@ namespace gpsreset {
 //        gpsreset::init(chassis, /*port=*/7);
 //   3a. absolute field frame (origin = field center):
 //        if (gpsreset::reset())
-//            pros::screen::print(pros::E_TEXT_SMALL, 8, 208, "GPS RESET OK");
+//            pros::lcd::print(7, "GPS RESET OK");
 //   3b. OR start-relative frame (keeps setPose(0,0,180)-style autons working):
 //        call ONCE with the robot stationary at its start pose, before auton:
 //        gpsreset::capture_start_as(0, 0, 180);
 //        then reset()/test() attempt bounded position corrections in that
 //        frame while retaining LemLib's heading.
-//      or non-blocking test tick in opcontrol():
-//        gpsreset::test();   // shows last reset pose at the bottom of the brain screen
-//        ("GPSR" prefix = relative mode, "GPS" = absolute.)
+//   4. Read-only GPS coordinates in opcontrol(), with the known field start:
+//        gpsreset::print_position_from_start(64, 6);
+//      test() is separate: it can apply corrections to LemLib pose.
 
 // Call once in initialize(), after chassis.calibrate().
 //   port        = smart port the GPS sensor is plugged into
@@ -57,6 +57,23 @@ inline bool capture_start_as(double x_in, double y_in, double theta_deg);
 // relative mode, stable odometry, a stopped chassis, and a plausible correction.
 // It updates X/Y while preserving LemLib heading. Returns true only if applied.
 inline bool reset();
+
+struct PositionEstimate {
+    bool anchor_ok = false;
+    bool ok = false;
+    double x_in = 0.0;
+    double y_in = 0.0;
+    double theta_deg = 0.0;
+};
+
+// Read-only live GPS estimate. The known robot-center location in the field
+// becomes (0,0); the captured GPS heading aligns it with the declared start
+// heading. This does not change LemLib pose or apply a GPS reset.
+inline PositionEstimate position_from_start(double field_start_x_in,
+                                            double field_start_y_in);
+// Print that estimate on LCD line 7; call at 100 ms intervals in opcontrol.
+inline void print_position_from_start(double field_start_x_in,
+                                      double field_start_y_in);
 
 // Non-blocking opcontrol tick: call it every loop. When the GPS is confident,
 // the chassis is stopped, and the correction is plausible, it updates X/Y

@@ -9,6 +9,11 @@ namespace {
 std::atomic_bool arm_auto_moving{false};
 std::atomic_bool arm_auto_cancelled{false};
 
+// Image: footprint spans 16 in inward from the right wall and 12 in above
+// the centerline. Its center is (+72 - 16/2, +12/2) in field coordinates.
+constexpr double kGpsDisplayStartXIn = 64.0;
+constexpr double kGpsDisplayStartYIn = 6.0;
+
 void boot_stage(const char* stage) {
     std::printf("BOOT_STAGE,%s\n", stage);
     std::fflush(stdout);
@@ -93,6 +98,9 @@ void initialize() {
     boot_stage("gps_init_done");
 
     chassis.setPose(0, 0, 180);  // Same starting pose as the 3-pin auton.
+    boot_stage("gps_anchor_begin");
+    const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
+    boot_stage(gps_anchor_ok ? "gps_anchor_ok" : "gps_anchor_no_fix");
 
     boot_stage("screen_task_begin");
     static pros::Task screen_task([]() {
@@ -125,8 +133,9 @@ void initialize() {
             pros::lcd::print(1, "T %.2f", pose.theta);
 
             pros::lcd::print(
-                2, "IMU %.2f",
-                imu_rotation
+                2, "IMU %.2f dT %.1f",
+                imu_rotation,
+                imu_rotation - baseline_rotation
             );
             pros::lcd::print(
                 3, "Lift %.2f deg", lift_deg
@@ -144,11 +153,6 @@ void initialize() {
                 vertical_distance - baseline_vertical,
                 horizontal_distance - baseline_horizontal
             );
-            pros::lcd::print(
-                7, "dT %.2f",
-                imu_rotation - baseline_rotation
-            );
-
             pros::delay(100);
         }
     });
@@ -184,6 +188,7 @@ void opcontrol() {
     bool clamp_pressed = false;
     bool claw_pressed = false;
     uint32_t next_lift_report = 0;
+    std::uint32_t last_gps_display_ms = pros::millis() - 100;
     arm_auto_cancelled.store(true);
 
     while (true) {
@@ -259,7 +264,12 @@ void opcontrol() {
 
                 claw_arm.move(arm);
             }
-        //gps_reset::test();
+        const std::uint32_t now = pros::millis();
+        if (now - last_gps_display_ms >= 100) {
+            last_gps_display_ms = now;
+            gpsreset::print_position_from_start(kGpsDisplayStartXIn,
+                                                kGpsDisplayStartYIn);
+        }
         pros::delay(20);
     }
 }

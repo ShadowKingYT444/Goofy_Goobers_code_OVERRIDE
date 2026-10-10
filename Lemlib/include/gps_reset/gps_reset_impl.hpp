@@ -1,13 +1,14 @@
 #pragma once
 
 #include "gps_reset.hpp"
+#include "pose_transform.hpp"
 
 #include <cmath>
 #include <memory>
 
 #include "api.h"
 #include "pros/gps.hpp"
-#include "pros/screen.hpp"
+#include "pros/llemu.hpp"
 
 namespace gpsreset {
 
@@ -40,12 +41,8 @@ constexpr double kStableOdomHeadingDeltaDeg = 1.5;
 constexpr double kMaxPositionCorrectionIn = 8.0;
 constexpr std::uint32_t kTestPollMs = 100;      // test() sensor poll rate
 constexpr std::uint32_t kTestResetPeriodMs = 500;  // min gap between test resets
-// PROS 4 removed pros::lcd; the brain text API is now pros::screen. We print
-// with explicit pixel coordinates (x=8, y=208, near the bottom of the 480x240
-// screen) instead of a line number, so this doesn't depend on how many text
-// lines a given font size provides.
-constexpr std::int16_t kLcdX = 8;
-constexpr std::int16_t kLcdY = 208;
+// The telemetry task owns lines 0-6; all GPS status uses the same LCD API.
+constexpr int kGpsLcdLine = 7;
 
 struct SharedState {
     lemlib::Chassis* chassis = nullptr;
@@ -126,19 +123,51 @@ inline GpsPose to_auton_frame(const GpsPose& p) {
     auto& st = shared_state();
     if (!st.relative) return p;
     GpsPose r = p;
-    const double angle =
-        (st.decl_theta_deg - st.anchor_theta_deg) * kPi / 180.0;
-    const double dx = p.x_in - st.anchor_x_in;
-    const double dy = p.y_in - st.anchor_y_in;
-    // Headings increase clockwise from +Y, so this is the equivalent of a
-    // Cartesian rotation by anchor_heading - declared_heading. Keeping this
-    // mapping paired with the heading delta below is what makes a route's
-    // declared start pose the origin of its own coordinate frame.
-    r.x_in = st.decl_x_in + dx * std::cos(angle) + dy * std::sin(angle);
-    r.y_in = st.decl_y_in - dx * std::sin(angle) + dy * std::cos(angle);
-    r.theta_deg =
-        normalize_deg(p.theta_deg - st.anchor_theta_deg + st.decl_theta_deg);
+    const FramePose transformed = transform_pose(
+        {p.x_in, p.y_in, p.theta_deg},
+        {st.anchor_x_in, st.anchor_y_in, st.anchor_theta_deg},
+        {st.decl_x_in, st.decl_y_in, st.decl_theta_deg});
+    r.x_in = transformed.x_in;
+    r.y_in = transformed.y_in;
+    r.theta_deg = transformed.theta_deg;
     return r;
+}
+
+inline PositionEstimate position_from_start(double field_start_x_in,
+                                            double field_start_y_in) {
+    const auto& st = shared_state();
+    PositionEstimate estimate{};
+    if (!st.initialized || st.gps == nullptr || !st.relative ||
+        !st.anchor_valid)
+        return estimate;
+    estimate.anchor_ok = true;
+    const GpsPose sample = read_pose(*st.gps);
+    if (!sample.ok || !std::isfinite(field_start_x_in) ||
+        !std::isfinite(field_start_y_in))
+        return estimate;
+    const FramePose transformed = transform_pose(
+        {sample.x_in, sample.y_in, sample.theta_deg},
+        {field_start_x_in, field_start_y_in, st.anchor_theta_deg},
+        {0.0, 0.0, st.decl_theta_deg});
+    estimate.ok = true;
+    estimate.x_in = transformed.x_in;
+    estimate.y_in = transformed.y_in;
+    estimate.theta_deg = transformed.theta_deg;
+    return estimate;
+}
+
+inline void print_position_from_start(double field_start_x_in,
+                                      double field_start_y_in) {
+    const PositionEstimate estimate =
+        position_from_start(field_start_x_in, field_start_y_in);
+    if (!estimate.anchor_ok) {
+        pros::lcd::print(kGpsLcdLine, "GPS no anchor");
+    } else if (!estimate.ok) {
+        pros::lcd::print(kGpsLcdLine, "GPS no fix");
+    } else {
+        pros::lcd::print(kGpsLcdLine, "GPS X%.1f Y%.1f T%.0f",
+                         estimate.x_in, estimate.y_in, estimate.theta_deg);
+    }
 }
 
 inline bool read_stable_pose(const pros::Gps& gps,
@@ -250,7 +279,7 @@ inline bool apply_reset(const GpsPose& p) {
     st.last_theta_deg = current.theta;
     // Brain screen: the pose the GPS just reset the robot to.
     // "GPSR" = relative (auton-frame) mode, "GPS" = absolute field frame.
-    pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY, st.relative ? "GPSR (%.1f, %.1f, %.0f)"
+    pros::lcd::print(kGpsLcdLine, st.relative ? "GPSR (%.1f, %.1f, %.0f)"
                                            : "GPS (%.1f, %.1f, %.0f)",
                      f.x_in, f.y_in, current.theta);
     return true;
@@ -304,7 +333,7 @@ inline bool capture_start_as(double x_in, double y_in, double theta_deg) {
     if (!std::isfinite(x_in) || !std::isfinite(y_in) ||
         !std::isfinite(theta_deg) || st.chassis == nullptr ||
         st.chassis->isInMotion()) {
-        pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY,
+        pros::lcd::print(kGpsLcdLine,
                             "GPS no anchor");
         return false;
     }
@@ -318,10 +347,10 @@ inline bool capture_start_as(double x_in, double y_in, double theta_deg) {
         st.decl_y_in = y_in;
         st.decl_theta_deg = normalize_deg(theta_deg);
         st.anchor_valid = true;
-        pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY, "GPS anchor ok");
+        pros::lcd::print(kGpsLcdLine, "GPS anchor ok");
         return true;
     }
-    pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY, "GPS no fix");
+    pros::lcd::print(kGpsLcdLine, "GPS no fix");
     return false;
 }
 
@@ -330,7 +359,7 @@ inline bool reset() {
     if (!st.initialized || st.chassis == nullptr || st.gps == nullptr)
         return false;
     if (st.relative && !st.anchor_valid) {
-        pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY,
+        pros::lcd::print(kGpsLcdLine,
                             "GPS no anchor");
         return false;
     }
@@ -339,7 +368,7 @@ inline bool reset() {
     GpsPose p{};
     if (read_stable_pose(*st.gps, *st.chassis, p) && apply_reset(p)) return true;
     // No stable, plausible, stationary fix within 250 ms: skip this correction.
-    pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY, "GPS no fix");
+    pros::lcd::print(kGpsLcdLine, "GPS no fix");
     return false;
 }
 
@@ -347,7 +376,7 @@ inline void test() {
     auto& st = shared_state();
     if (!st.initialized || st.chassis == nullptr || st.gps == nullptr) return;
     if (st.relative && !st.anchor_valid) {
-        pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY,
+        pros::lcd::print(kGpsLcdLine,
                             "GPS no anchor");
         return;
     }
@@ -392,14 +421,14 @@ inline void test() {
         if (apply_reset(p)) st.last_test_reset_ms = now;
     } else if (st.have_reset) {
         // Keep the last applied pose on screen between resets.
-        pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY, st.relative ? "GPSR (%.1f, %.1f, %.0f)"
+        pros::lcd::print(kGpsLcdLine, st.relative ? "GPSR (%.1f, %.1f, %.0f)"
                                                : "GPS (%.1f, %.1f, %.0f)",
                          st.last_x_in, st.last_y_in, st.last_theta_deg);
     } else {
         // No reset yet: show live error so you can see the sensor is alive
         // and how far it is from the confidence gate.
         const double err = st.gps->get_error();
-        pros::screen::print(pros::E_TEXT_SMALL, kLcdX, kLcdY, "GPS no fix err=%.3fm", err);
+        pros::lcd::print(kGpsLcdLine, "GPS no fix err=%.3fm", err);
     }
 }
 
