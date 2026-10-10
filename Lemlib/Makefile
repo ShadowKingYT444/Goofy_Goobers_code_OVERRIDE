@@ -21,13 +21,17 @@ WARNFLAGS+=
 EXTRA_CFLAGS=
 EXTRA_CXXFLAGS=
 
-# Upload one complete image so runtime callbacks cannot depend on a cached
-# cold package. Re-enable split linking only after startup is verified.
-USE_PACKAGE:=0
+# Hot/cold linking is the configuration PROS 4 boots reliably: the cold
+# package whole-archives the kernel, LVGL and LemLib, so the real display
+# backend replaces the kernel's weak stubs without extra linker flags. The
+# single-image (USE_PACKAGE:=0) build of this project did not start on the
+# Brain.
+USE_PACKAGE:=1
 
 # Add libraries you do not wish to include in the cold image here
 # EXCLUDE_COLD_LIBRARIES:= $(FWDIR)/your_library.a
-EXCLUDE_COLD_LIBRARIES:= 
+# titanselect is unused; keep its selector constructors out of the boot path.
+EXCLUDE_COLD_LIBRARIES:= $(FWDIR)/titanselect.a
 
 # Set this to 1 to add additional rules to compile your project as a PROS library template
 IS_LIBRARY:=0
@@ -51,10 +55,3 @@ TEMPLATE_FILES=$(INCDIR)/$(LIBNAME)/*.h $(INCDIR)/$(LIBNAME)/*.hpp
 ################################################################################
 ########## Nothing below this line should be edited by typical users ###########
 -include ./common.mk
-
-# The kernel exposes LCD calls and display_initialize as weak stubs. A
-# monolithic link will not extract liblvgl for those references, leaving a
-# blank screen or an unresolved initialize() call. Load its objects before
-# the ordinary library group so the real implementations replace the stubs;
-# --gc-sections still removes unused code.
-LNK_FLAGS := --whole-archive $(FWDIR)/liblvgl.a --no-whole-archive $(LNK_FLAGS)

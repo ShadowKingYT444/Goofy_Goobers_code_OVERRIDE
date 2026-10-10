@@ -1,37 +1,50 @@
 # LemLib odometry / PID autotune handoff for Astra
 
-## Current status — 2026-10-09
+## Current status — 2026-10-10
 
-The sections below describe an older tracking-wheel investigation. Current
-hardware configuration in `src/main.cpp` has no external odometry Rotation
-Sensors or TrackingWheel objects: LemLib uses drive motor encoders and IMU
-port 14. Lift Rotation Sensor 16 and claw Rotation Sensor 12 remain installed.
-The selected autonomous entry point is `three_pin_auton()`.
+The sections below the divider describe an older tracking-wheel
+investigation and are kept only for history.
 
-The Brain display uses LLEMU exclusively. The monolithic link previously
-retained weak kernel graphics stubs and omitted the real LVGL/LCD backend;
-`Makefile` now explicitly loads `liblvgl.a` before the ordinary library group.
-The firmware regression verifies real executable LCD initialization, printing,
-LVGL label rendering, display initialization and timer implementations.
+Hardware: LemLib 0.5.6 on PROS 4.2.2, drive motor encoders plus IMU port 14,
+no tracking wheels. GPS on port 10, camera facing the robot's right
+(`facing_deg = 90`), lens 3.0 in forward and 3.7 in right of the rotation
+center (from the mount test; its six stops disagreed by about 3.3 in).
 
-The screen labels motor/IMU X/Y in inches and heading in degrees. During
-opcontrol, GPS coordinates refresh every 100 ms when the startup anchor and
-GPS confidence are valid. GPS uses assumed physical start center `(64, 6)`
-field inches (16-by-12 footprint against the right wall, above the centerline),
-rotated into declared local start `(0, 0, 180 degrees)` using captured GPS
-heading. Lost fixes and missing anchors display explicit status. Reading this
-display does not apply GPS corrections to the motor/IMU pose.
+Build: hot/cold (`USE_PACKAGE:=1`). A single-image build did not start on the
+Brain. `titanselect.a` is unused and excluded from the cold package. The
+autonomous routine is chosen at build time:
+`pros make EXTRA_CXXFLAGS=-DAUTON_ROUTINE=gps_reset_test_auton` (default
+`three_pin_auton`). LEFT on the controller runs it from driver control.
+Uploads go over the controller radio; the first upload of a new cold package
+ends with a finalization NACK even though it lands, so run the upload again.
 
-Validation: clean `pros make -- -j2` succeeded; all seven firmware/GPS tests
-passed. The new LCD regression fails against the preceding firmware image.
-Wireless slot-1 upload reached 100%, then CLI 3.5.6 reported a finalization
-NACK (`Attempted to download/upload uninitialized`). Reading Brain metadata
-afterward confirms `slot_1.bin` matches this build: compressed size 508958
-bytes, VEX CRC 2853918422; `slot_1.ini` is also present. The program was uploaded
-with `--after screen`; the corrected program's running display still needs
-physical verification after starting slot 1.
-Implementation ran directly in Codex because Bello is unavailable locally;
-there is no Bello run directory or report for this change.
+PID: hand-set lateral 6/0/3, angular 2/0/10. `src/pid_autotune.cpp` is
+disabled (`#if 0`); its first design produced violently stiff gains and its
+second was never completed on the robot.
+
+Brain screen (`src/field_map.cpp`): field map with the motor/IMU pose (cyan)
+and the GPS estimate (yellow), drawn from an LVGL timer on the display
+daemon. Local `(0, 0, 180)` is the GPS pose captured at the start.
+
+GPS (`include/gps_reset/`): pipeline is documented at the top of
+`gps_reset.hpp`. `live_pose()` blends GPS with odometry (Estimator) and is
+what the map shows. Route corrections exist (`checkpoint`, `set_auto_reset`,
+`reset`) but in back-to-back runs the three-pin was more accurate without
+them, so the route uses a single checkpoint after scoring stack 1 and nothing
+else unless built with `-DTHREE_PIN_GPS_RESETS=1`.
+
+Three-pin (`src/autons.cpp`, namespace `three_pin`): toggle, preload, two
+stacks. Element positions are field-tuned estimates at the top of the
+namespace. Pickups run their last 10 in on a gentler lateral kP with a power
+floor and brake on arrival; after clamping, the lift starts, the robot waits
+for the stack to clear the tiles, drives 5 in farther along the same line,
+then turns and scores. The user reports the run fits in 15 s; stack 1 scoring
+and all of stack 2 were still being tuned when this was written, and the
+latest change (5 in post-clamp drive) has not been run.
+
+Validation: `pros make` and `python3 -m unittest discover -s tests` (9 tests)
+pass. Host tests cover map math, GPS estimator/corrections and the autotuner
+model; none of them exercise the route.
 
 ---
 

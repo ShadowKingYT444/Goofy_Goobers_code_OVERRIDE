@@ -2,11 +2,13 @@
 #include "main.h"
 #include "lemlib/pid.hpp"
 #include "gps_reset/gps_reset.hpp"
+#include "field_display_status.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <new>
 
 bool moveLift(double targetDeg, std::uint32_t timeoutMs) {
     constexpr double kP = 0.35;
@@ -143,321 +145,7 @@ void moveArm(double targetDeg, std::atomic_bool* cancel) {
     }
     claw_arm.brake();
 }
-/*
-
-namespace {
-
-constexpr std::uint32_t LOOP_MS = 10;
-constexpr std::uint32_t TRIAL_TIMEOUT_MS = 1800;
-constexpr std::uint32_t SETTLE_MS = 180;
-
-constexpr float DRIVE_TARGET_IN = 18.0f;
-constexpr float TURN_TARGET_DEG = 60.0f;
-
-constexpr float DRIVE_MAX_POWER = 65.0f;
-constexpr float TURN_MAX_POWER = 65.0f;
-
-constexpr float BAD_SCORE = 1.0e8f;
-
-enum class Axis {
-    LATERAL,
-    ANGULAR
-};
-
-struct TrialResult {
-    float score;
-    bool fatal;
-};
-
-struct Gains {
-    float p;
-    float d;
-    float score;
-    bool valid;
-};
-
-void stop_drive() {
-    left_motors.move(0);
-    right_motors.move(0);
-}
-
-const char* axis_name(Axis axis) {
-    return axis == Axis::LATERAL ? "LAT" : "ANG";
-}
-
-
-void command_axis(Axis axis, float power) {
-    const int p = static_cast<int>(std::clamp(power, -127.0f, 127.0f));
-
-    if (axis == Axis::LATERAL) {
-        left_motors.move(p);
-        right_motors.move(p);
-    } else {
-        // Positive power should produce positive IMU rotation on this drivetrain.
-        left_motors.move(p);
-        right_motors.move(-p);
-    }
-}
-
-TrialResult run_trial(Axis axis, float kP, float kD, float target) {
-    stop_drive();
-    pros::delay(250);
-
-    const float start = read_axis(axis);
-    if (!std::isfinite(start)) {
-        pros::lcd::print(7, "%s SENSOR ERROR", axis_name(axis));
-        std::printf("AUTOTUNE FATAL: %s sensor is invalid\n", axis_name(axis));
-        return {BAD_SCORE, true};
-    }
-
-    // Use LemLib's own PID class so the candidate gains are evaluated with
-    // the same P/D implementation as LemLib 0.5.6.
-    lemlib::PID pid(kP, 0.0f, kD, 0.0f, true);
-
-    const float settle_error = axis == Axis::LATERAL ? 0.50f : 1.50f;
-    const float sign_check_distance = axis == Axis::LATERAL ? 1.0f : 5.0f;
-    const float unsafe_extra = axis == Axis::LATERAL ? 10.0f : 40.0f;
-    const float max_power = axis == Axis::LATERAL ? DRIVE_MAX_POWER : TURN_MAX_POWER;
-
-    float previous_error = target;
-    float iae = 0.0f;
-    float overshoot = 0.0f;
-    int crossings = 0;
-    std::uint32_t settled_for = 0;
-    bool settled = false;
-
-    const std::uint32_t began = pros::millis();
-
-    while (pros::millis() - began < TRIAL_TIMEOUT_MS) {
-        const float position = read_axis(axis) - start;
-        const float error = target - position;
-
-        if (!std::isfinite(position) || !std::isfinite(error)) {
-            stop_drive();
-            pros::lcd::print(7, "%s SENSOR ERROR", axis_name(axis));
-            return {BAD_SCORE, true};
-        }
-
-        // If motion is clearly going opposite the sensor target, this is not
-        // a tuning problem. Stop before a bad sensor sign launches the robot.
-        const std::uint32_t elapsed = pros::millis() - began;
-        if (elapsed > 250 &&
-            std::fabs(position) > sign_check_distance &&
-            position * target < 0.0f) {
-            stop_drive();
-            pros::lcd::print(7, "%s SIGN WRONG", axis_name(axis));
-            std::printf(
-                "AUTOTUNE FATAL: %s sign wrong. target=%.2f measured=%.2f\n",
-                axis_name(axis), target, position);
-            return {BAD_SCORE, true};
-        }
-
-        // Bad candidate, but not a hardware/configuration failure.
-        if (std::fabs(position) > std::fabs(target) + unsafe_extra) {
-            stop_drive();
-            return {BAD_SCORE, false};
-        }
-
-        float output = pid.update(error);
-        output = std::clamp(output, -max_power, max_power);
-        command_axis(axis, output);
-
-        if ((error > 0.0f) != (previous_error > 0.0f) &&
-            std::fabs(previous_error) > settle_error) {
-            ++crossings;
-        }
-
-        const float this_overshoot =
-            target > 0.0f
-                ? std::max(0.0f, position - target)
-                : std::max(0.0f, target - position);
-        overshoot = std::max(overshoot, this_overshoot);
-
-        iae += std::fabs(error) * (LOOP_MS / 1000.0f);
-
-        if (std::fabs(error) <= settle_error) {
-            settled_for += LOOP_MS;
-        } else {
-            settled_for = 0;
-        }
-
-        previous_error = error;
-
-        if (settled_for >= SETTLE_MS) {
-            settled = true;
-            break;
-        }
-
-        pros::delay(LOOP_MS);
-    }
-
-    stop_drive();
-
-    // Include coast / mechanical settling in the score.
-    pros::delay(120);
-
-    const float final_position = read_axis(axis) - start;
-    const float final_error = std::fabs(target - final_position);
-    const float seconds =
-        static_cast<float>(pros::millis() - began) / 1000.0f;
-
-    // Lower is better. This strongly penalizes final error and overshoot,
-    // while still rewarding fast settling with little oscillation.
-    float score =
-        20.0f * final_error +
-        12.0f * overshoot +
-        5.0f * static_cast<float>(crossings) +
-        0.5f * iae +
-        2.0f * seconds;
-
-    if (!settled) score += 80.0f;
-
-    return {score, false};
-}
-
-Gains evaluate(Axis axis, float kP, float kD, float target) {
-    pros::lcd::print(7, "%s P%.2f D%.2f", axis_name(axis), kP, kD);
-    std::printf("AUTOTUNE %s testing P=%.3f D=%.3f\n",
-                axis_name(axis), kP, kD);
-
-    const TrialResult positive = run_trial(axis, kP, kD, target);
-    if (positive.fatal) return {kP, kD, BAD_SCORE, false};
-
-    pros::delay(250);
-
-    const TrialResult negative = run_trial(axis, kP, kD, -target);
-    if (negative.fatal) return {kP, kD, BAD_SCORE, false};
-
-    const float score = 0.5f * (positive.score + negative.score);
-
-    std::printf("AUTOTUNE %s P=%.3f D=%.3f score=%.2f\n",
-                axis_name(axis), kP, kD, score);
-
-    return {kP, kD, score, true};
-}
-
-// Small bounded coordinate search ("twiddle-lite").
-// We start at LemLib's normal baseline and repeatedly test +/-P and +/-D.
-// Two refinement rounds keeps the whole tuner short enough to run on-field.
-Gains tune_axis(Axis axis,
-                float start_p,
-                float start_d,
-                float p_step,
-                float d_step,
-                float target) {
-    Gains best = evaluate(axis, start_p, start_d, target);
-    if (!best.valid) return best;
-
-    for (int round = 0; round < 2; ++round) {
-        const float base_p = best.p;
-        const float base_d = best.d;
-
-        const float candidates[4][2] = {
-            {base_p + p_step, base_d},
-            {std::max(0.05f, base_p - p_step), base_d},
-            {base_p, base_d + d_step},
-            {base_p, std::max(0.0f, base_d - d_step)}
-        };
-
-        for (const auto& candidate : candidates) {
-            Gains test = evaluate(
-                axis,
-                candidate[0],
-                candidate[1],
-                target
-            );
-
-            if (!test.valid) return test;
-
-            if (test.score < best.score) {
-                best = test;
-            }
-        }
-
-        p_step *= 0.5f;
-        d_step *= 0.5f;
-    }
-
-    // Re-run the winner once so a lucky/noisy single trial does not win.
-    Gains validation = evaluate(axis, best.p, best.d, target);
-    if (!validation.valid) return validation;
-
-    if (validation.score < BAD_SCORE) {
-        best.score = 0.5f * (best.score + validation.score);
-    }
-
-    return best;
-}
-
-} // namespace
-
-// This is now the only tuning autonomous you need.
-void pid_autotune_auton() {
-    chassis.cancelAllMotions();
-    stop_drive();
-
-    std::printf("\n=== LEMLIB PID AUTOTUNE START ===\n");
-    pros::lcd::print(7, "AUTOTUNE START");
-    pros::delay(500);
-
-    // LemLib's documented baseline is approximately LAT 10/3, ANG 2/10.
-    Gains lateral = tune_axis(
-        Axis::LATERAL,
-        10.0f, 3.0f,
-        4.0f, 3.0f,
-        DRIVE_TARGET_IN
-    );
-
-    if (!lateral.valid) {
-        stop_drive();
-        pros::lcd::print(7, "AUTOTUNE ABORT LAT");
-        return;
-    }
-
-    pros::delay(600);
-
-    Gains angular = tune_axis(
-        Axis::ANGULAR,
-        2.0f, 10.0f,
-        0.8f, 5.0f,
-        TURN_TARGET_DEG
-    );
-
-    stop_drive();
-
-    if (!angular.valid) {
-        pros::lcd::print(7, "AUTOTUNE ABORT ANG");
-        return;
-    }
-
-    std::printf("\n=== LEMLIB PID AUTOTUNE DONE ===\n");
-    std::printf("Lateral: kP=%.3f kI=0 kD=%.3f\n",
-                lateral.p, lateral.d);
-    std::printf("Angular: kP=%.3f kI=0 kD=%.3f\n",
-                angular.p, angular.d);
-
-    std::printf(
-        "lemlib::ControllerSettings lateral_controller("
-        "%.3f, 0, %.3f, 0, 1, 100, 3, 500, 0);\n",
-        lateral.p, lateral.d
-    );
-
-    std::printf(
-        "lemlib::ControllerSettings angular_controller("
-        "%.3f, 0, %.3f, 0, 1, 100, 3, 500, 0);\n",
-        angular.p, angular.d
-    );
-
-    // main.cpp owns LCD lines 0-6, so line 7 is intentionally reserved
-    // for the tuner and will not be overwritten by the pose debug task.
-    pros::lcd::print(
-        7,
-        "LP%.1f D%.1f AP%.1f D%.1f",
-        lateral.p, lateral.d,
-        angular.p, angular.d
-    );
-}
-*/
+// pid_autotune_auton() lives in src/pid_autotune.cpp.
 
 // Kept only so the existing header/main still links if this symbol is declared.
 // The old separate manual sign-test autonomous is no longer part of tuning.
@@ -673,185 +361,401 @@ void one_pin_close(){
                         false);
 }
 
+// GPS mount check. Run it from driver control (LEFT) with room to spin and
+// about 2 ft clear ahead.
+//   1. Stops at six headings around a full turn in place. The rotation center
+//      does not move, so the circle the lens traces gives the lens offsets
+//      (least squares over all six stops) and how well the stops agree.
+//   2. Drives straight forward. The GPS must report travel in the direction
+//      the robot is facing; any difference is error in facing_deg.
+// The panel shows the values now in main.cpp next to the measured ones.
 void gps_reset_test_auton() {
-    constexpr double kTripDistanceIn = 24.0;
-    constexpr int kDriveTimeoutMs = 3000;
-    constexpr int kMaxSpeed = 50;
+    constexpr int kStops = 6;
+    constexpr double kDriveIn = 18.0;
+    constexpr int kTimeoutMs = 2500;
+    constexpr std::uint32_t kSettleMs = 600;
 
-    chassis.cancelAllMotions();
-    left_motors.move(0);
-    right_motors.move(0);
-    chassis.setPose(0, 0, 180);
+    auto halt = [] {
+        chassis.cancelAllMotions();
+        left_motors.move(0);
+        right_motors.move(0);
+    };
+    auto measure = [&](gpsreset::GpsPose& lens, const char* what) {
+        halt();
+        pros::delay(kSettleMs);
+        if (gpsreset::average_lens_pose(lens, 16, 50)) return true;
+        fieldviz::report("GPS MOUNT TEST\n\nFAILED: no GPS fix\n%s.\n"
+                         "Move away from the wall\nthe camera faces.", what);
+        std::printf("GPS_MOUNT,NO_FIX,%s\n", what);
+        return false;
+    };
 
-    if (!gpsreset::capture_start_as(0, 0, 180)) {
-        std::printf("GPS_TEST,ANCHOR_FAIL\n");
-        return;
+    halt();
+    gpsreset::set_auto_reset(false);
+    const auto& mount = gpsreset::shared_state();
+    const double forward = mount.mount_forward_in;
+    const double right = mount.mount_right_in;
+    const double facing = mount.mount_facing_deg;
+    const lemlib::Pose start = chassis.getPose();
+
+    // 1. Six stops around a turn in place.
+    std::vector<gpsreset::GpsPose> stops;
+    for (int i = 0; i < kStops; ++i) {
+        fieldviz::report("GPS MOUNT TEST\n\nStop %d of %d...", i + 1, kStops);
+        if (i > 0)
+            chassis.turnToHeading(start.theta + i * 360.0 / kStops, kTimeoutMs,
+                                  {}, false);
+        gpsreset::GpsPose lens{};
+        char what[24];
+        std::snprintf(what, sizeof(what), "at stop %d", i + 1);
+        if (!measure(lens, what)) return;
+        stops.push_back(lens);
+    }
+    chassis.turnToHeading(start.theta, kTimeoutMs, {}, false);
+
+    // How far the reported center wanders with the offsets in use now.
+    double mean_x = 0.0, mean_y = 0.0, wobble = 0.0;
+    for (const auto& lens : stops) {
+        const auto c = gpsreset::lens_to_center(lens, forward, right);
+        mean_x += c.x_in / kStops;
+        mean_y += c.y_in / kStops;
+    }
+    for (const auto& lens : stops) {
+        const auto c = gpsreset::lens_to_center(lens, forward, right);
+        wobble = std::max(wobble, std::hypot(c.x_in - mean_x, c.y_in - mean_y));
     }
 
-    const lemlib::Pose beforeStartReset = chassis.getPose();
-    const bool startResetOk = gpsreset::reset();
-    const lemlib::Pose afterStartReset = chassis.getPose();
-    std::printf("GPS_TEST,START_RESET,%d,%.2f,%.2f,%.2f,%.2f\n",
-                startResetOk,
-                static_cast<double>(beforeStartReset.x),
-                static_cast<double>(beforeStartReset.y),
-                static_cast<double>(afterStartReset.x),
-                static_cast<double>(afterStartReset.y));
-    if (!startResetOk) return;
+    // 2. Straight drive: direction of travel versus reported heading.
+    fieldviz::report("GPS MOUNT TEST\n\nDriving forward...");
+    gpsreset::GpsPose before{}, after{};
+    if (!measure(before, "before the drive")) return;
+    const double heading = chassis.getPose().theta * M_PI / 180.0;
+    const lemlib::Pose origin = chassis.getPose();
+    chassis.moveToPoint(origin.x + kDriveIn * std::sin(heading),
+                        origin.y + kDriveIn * std::cos(heading), kTimeoutMs,
+                        {.maxSpeed = 70}, false);
+    if (!measure(after, "after the drive")) return;
+    chassis.moveToPoint(origin.x, origin.y, kTimeoutMs,
+                        {.forwards = false, .maxSpeed = 70}, false);
+    halt();
 
-    // Move 24 inches into the field with the rear of the robot, then let GPS
-    // correct the stopped pose before driving the same path back to the origin.
-    chassis.moveToPoint(0, kTripDistanceIn, kDriveTimeoutMs,
-                        {.forwards = false, .maxSpeed = kMaxSpeed}, false);
-    const lemlib::Pose beforeForwardReset = chassis.getPose();
-    const bool forwardResetOk = gpsreset::reset();
-    const lemlib::Pose afterForwardReset = chassis.getPose();
-    std::printf("GPS_TEST,FORWARD_RESET,%d,%.2f,%.2f,%.2f,%.2f\n",
-                forwardResetOk,
-                static_cast<double>(beforeForwardReset.x),
-                static_cast<double>(beforeForwardReset.y),
-                static_cast<double>(afterForwardReset.x),
-                static_cast<double>(afterForwardReset.y));
+    const double dx = after.x_in - before.x_in, dy = after.y_in - before.y_in;
+    const double travelled = std::hypot(dx, dy);
+    const double travel_deg = std::atan2(dx, dy) * 180.0 / M_PI;
+    const bool facing_measured = travelled >= 0.5 * kDriveIn;
+    // Reported heading minus true heading; the same error is in facing_deg.
+    const double facing_error = facing_measured
+        ? gpsreset::wrap_deg(before.theta_deg - travel_deg) : 0.0;
+    const bool facing_ok = std::abs(facing_error) <= 10.0;
+    const double facing_use =
+        facing_ok ? facing : gpsreset::normalize_deg(facing + facing_error);
 
-    chassis.moveToPoint(0, 0, kDriveTimeoutMs,
-                        {.forwards = true, .maxSpeed = kMaxSpeed}, false);
-    const lemlib::Pose beforeReturnReset = chassis.getPose();
-    const bool returnResetOk = gpsreset::reset();
-    const lemlib::Pose afterReturnReset = chassis.getPose();
-    const double finalErrorIn = std::hypot(afterReturnReset.x,
-                                           afterReturnReset.y);
-    std::printf("GPS_TEST,RETURN_RESET,%d,%.2f,%.2f,%.2f,%.2f,%.2f\n",
-                returnResetOk,
-                static_cast<double>(beforeReturnReset.x),
-                static_cast<double>(beforeReturnReset.y),
-                static_cast<double>(afterReturnReset.x),
-                static_cast<double>(afterReturnReset.y),
-                finalErrorIn);
+    // Offsets are only meaningful with the right camera direction, so refit
+    // with corrected headings when the drive showed it was wrong.
+    if (!facing_ok)
+        for (auto& lens : stops)
+            lens.theta_deg = gpsreset::normalize_deg(lens.theta_deg - facing_error);
+    const auto fit = gpsreset::fit_mount(stops);
+    std::printf("GPS_MOUNT,%d,facing=%.1f,facing_error=%.1f,travel=%.1f,"
+                "now=%.2f/%.2f,use=%.2f/%.2f,wobble=%.2f,rms=%.2f\n", fit.ok,
+                facing, facing_error, travelled, forward, right,
+                fit.forward_in, fit.right_in, wobble, fit.rms_in);
+    if (!fit.ok) {
+        fieldviz::report("GPS MOUNT TEST\n\nFAILED: stops did not\nform a turn.");
+        return;
+    }
+    const bool offsets_ok = std::hypot(fit.forward_in - forward,
+                                       fit.right_in - right) <= 1.0;
+    char facing_line[48];
+    if (facing_measured)
+        std::snprintf(facing_line, sizeof(facing_line), "Facing %s: now %.0f use %.0f",
+                      facing_ok ? "OK" : "WRONG", facing, facing_use);
+    else
+        std::snprintf(facing_line, sizeof(facing_line), "Facing: not measured");
+    fieldviz::report(
+        "GPS MOUNT TEST\n"
+        "%s\n"
+        " (drive read %+.0f deg off)\n"
+        "Offsets %s\n"
+        " now fwd %.1f right %.1f\n"
+        " use fwd %.1f right %.1f\n"
+        "Spin wobble now %.1f in\n"
+        "Fit scatter %.1f in",
+        facing_line, facing_error, offsets_ok && facing_ok ? "OK" : "CHANGE",
+        forward, right, fit.forward_in, fit.right_in, wobble, fit.rms_in);
 }
 
+// Three-pin route, start-relative: start is (0, 0) facing 180 (toward the
+// wall with the toggle), +Y runs away from that wall and +X toward the goal.
+// The claw is on the BACK, so every pickup and score is driven in reverse.
+//
+// Element positions below are estimates (one field tile from the goal, per
+// the route sketch in Auto_paths) and are the numbers to adjust on the field.
+// GPS corrections during the route are OFF by default: in back-to-back runs
+// the route was more accurate on encoders + IMU alone. To build the version
+// with them:  pros make EXTRA_CXXFLAGS=-DTHREE_PIN_GPS_RESETS=1
+#ifndef THREE_PIN_GPS_RESETS
+#define THREE_PIN_GPS_RESETS 0
+#endif
+
+namespace three_pin {
+constexpr bool kGpsResets = THREE_PIN_GPS_RESETS;
+struct Point {
+    float x, y;
+};
+constexpr Point kGoal{20.0f, 15.0f};
+constexpr Point kStack1{20.0f, 37.5f};  // about one tile farther from the wall
+constexpr Point kStack2{42.0f, 15.0f};  // about one tile beyond the goal
+// Rotation center to the claw's grip when picking a stack up. The pickup now
+// drives all the way to its stop point instead of stalling an inch short, so
+// this is an inch longer than when it was first found.
+constexpr float kReach = 8.0f;
+// ...and how close the center is sent to the goal's center when scoring a
+// stack. Smaller = deeper into the goal.
+constexpr float kScoreReach = 4.0f;
+// Stack 1 is clamped slightly off-center, so it is scored at a spot a little
+// farther from the wall than the goal's center and driven an inch deeper.
+constexpr Point kGoalForStack1{20.0f, 15.75f};
+constexpr float kScoreReachStack1 = 3.0f;
+constexpr float kGoalSpeed = 80.0f;     // into the goal (LemLib 0-127 scale)
+
+// Slowing down onto a stack. How fast LemLib arrives is set by the lateral
+// kP (its output near a target is kP x distance), not by maxSpeed, so the
+// only way to arrive slower is a gentler kP for the last stretch. LemLib
+// exposes its PIDs for this ("gain scheduling"). The pickup therefore runs
+// the last kGentleZoneIn on kGentleKp, with a power floor so the weaker
+// output still carries the claw all the way onto the stack.
+constexpr float kLateralKp = 6.0f, kLateralKd = 3.0f;  // must match main.cpp
+constexpr float kGentleKp = 3.0f;
+constexpr float kGentleZoneIn = 10.0f;
+constexpr float kGentleEntrySpeed = 45.0f;  // power handed over at the zone
+constexpr float kGentleFloor = 24.0f;       // slowest power while closing in
+// Motions that belong together hand over without settling in between.
+constexpr float kChainSpeed = 40.0f;
+constexpr float kChainExitIn = 2.0f;
+constexpr int kTurnChainSpeed = 20;
+constexpr float kTurnChainExitDeg = 4.0f;   // the leg that follows re-aims
+constexpr float kGoalStandbyIn = 6.0f;      // wait here if the lift is not up
+// After clamping a stack the robot keeps driving claw-first along the same
+// line (lift already rising) before it turns for the goal. Each stack sits
+// on one of the goal's axes (stack 1 shares its X, stack 2 its Y), so
+// carrying on toward where the stack stood brings the robot's center onto
+// that axis and the run into the goal is close to straight instead of a
+// diagonal. kReach would put the center exactly on the axis.
+constexpr float kSeatIn = 5.0f;
+// Lift travel (sensor degrees, up is negative) that counts as "off the tiles".
+constexpr double kLiftClearDeg = 60.0;
+
+// Short or slow legs end still rolling (their power floor carries them to
+// the target); braking stops the robot where it was sent instead of letting
+// it coast on. Coasting is restored for the normal legs.
+void brake_drive() {
+    left_motors.set_brake_mode_all(pros::E_MOTOR_BRAKE_BRAKE);
+    right_motors.set_brake_mode_all(pros::E_MOTOR_BRAKE_BRAKE);
+    left_motors.brake();
+    right_motors.brake();
+}
+void coast_drive() {
+    left_motors.set_brake_mode_all(pros::E_MOTOR_BRAKE_COAST);
+    right_motors.set_brake_mode_all(pros::E_MOTOR_BRAKE_COAST);
+}
+
+void set_lateral_kp(float kP) {
+    lemlib::PID& pid = chassis.lateralPID;
+    pid.~PID();
+    new (&pid) lemlib::PID(kP, 0.0f, kLateralKd, 0.0f, true);
+}
+
+// A lift move running alongside the drive. wait() blocks until it is done
+// and, like liftOrStop(), stops the chassis if the lift failed.
+class LiftJob {
+public:
+    explicit LiftJob(double targetDeg) {
+        state() = 0;
+        pros::Task([targetDeg] { state() = moveLift(targetDeg) ? 1 : -1; });
+    }
+    bool wait() {
+        while (state() == 0) pros::delay(10);
+        if (state() == 1) return true;
+        chassis.cancelAllMotions();
+        left_motors.move(0);
+        right_motors.move(0);
+        return false;
+    }
+
+private:
+    static std::atomic<int>& state() {
+        static std::atomic<int> value{1};
+        return value;
+    }
+};
+
+// GPS checkpoint at a waypoint the robot has just driven to. See
+// gpsreset::checkpoint(): it only corrects when the GPS is confident and
+// agrees the robot is near `expected`.
+void fix_at(Point expected) {
+    if (kGpsResets) gpsreset::checkpoint(expected.x, expected.y);
+}
+
+// The point `distance` short of `target` on the line from `from`.
+Point standoff(Point from, Point target, float distance) {
+    const float dx = target.x - from.x, dy = target.y - from.y;
+    const float length = std::hypot(dx, dy);
+    return {target.x - dx / length * distance, target.y - dy / length * distance};
+}
+
+// Straight transit leg that hands over to the next motion without settling.
+void chain_to(Point target, bool forwards, int timeoutMs, bool async = false) {
+    chassis.moveToPoint(target.x, target.y, timeoutMs,
+                        {.forwards = forwards, .minSpeed = kChainSpeed,
+                         .earlyExitRange = kChainExitIn}, async);
+}
+
+// Turn the claw toward `target`, handing straight over to the drive.
+void turn_claw_to(Point target) {
+    chassis.turnToPoint(target.x, target.y, 900,
+                        {.forwards = false, .minSpeed = kTurnChainSpeed,
+                         .earlyExitRange = kTurnChainExitDeg}, false);
+}
+
+// Back the claw onto a stack and clamp it. If the lift is still coming down
+// (`lowering`), it must be down before the robot drives at the stack.
+// Returns false if the lift failed; `at` becomes where the robot stopped and
+// `seat` the point kSeatIn farther along the same line.
+bool pick_up(Point& at, Point& seat, Point stack, LiftJob* lowering = nullptr) {
+    const Point gentle_from = standoff(at, stack, kReach + kGentleZoneIn);
+    const Point stop = standoff(at, stack, kReach);
+    seat = standoff(at, stack, kReach - kSeatIn);
+    turn_claw_to(stack);
+    if (lowering && !lowering->wait()) return false;
+    chassis.moveToPoint(gentle_from.x, gentle_from.y, 1500,
+                        {.forwards = false, .minSpeed = kGentleEntrySpeed},
+                        false);
+    set_lateral_kp(kGentleKp);
+    chassis.moveToPoint(stop.x, stop.y, 1500,
+                        {.forwards = false, .minSpeed = kGentleFloor}, false);
+    set_lateral_kp(kLateralKp);
+    brake_drive();
+    claw_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
+    coast_drive();
+    fix_at(stop);
+    at = stop;
+    return true;
+}
+
+// Holding a stack: start the lift, keep going claw-first to `seat`, then
+// turn the claw to the goal and drive up to kGoalStandbyIn short of the
+// scoring spot. The robot goes the rest of the way only once the lift is up
+// (without pausing if it already is), stops on the spot, and releases.
+// `at` becomes where the robot stopped.
+bool score(Point& at, Point seat, float liftDeg, Point goal = kGoal,
+           float reach = kScoreReach) {
+    // The lift starts the instant the stack is clamped, and the robot does
+    // not move until the stack is off the tiles, so it is never dragged.
+    const double lift_start = lift_sensor.get_position() / 100.0;
+    LiftJob raise(liftDeg);
+    const std::uint32_t lifting_since = pros::millis();
+    while (lift_sensor.get_position() / 100.0 > lift_start - kLiftClearDeg &&
+           pros::millis() - lifting_since < 400)
+        pros::delay(10);
+    chassis.moveToPoint(seat.x, seat.y, 1200,
+                        {.forwards = false, .minSpeed = kGentleFloor}, false);
+    brake_drive();
+    coast_drive();
+    const Point standby = standoff(seat, goal, reach + kGoalStandbyIn);
+    const Point stop = standoff(seat, goal, reach);
+    turn_claw_to(goal);
+    chassis.moveToPoint(standby.x, standby.y, 1500,
+                        {.forwards = false, .minSpeed = kChainSpeed}, false);
+    if (!raise.wait()) return false;
+    // A floor on this short leg so it cannot stall short of the goal.
+    chassis.moveToPoint(stop.x, stop.y, 1200,
+                        {.forwards = false, .maxSpeed = kGoalSpeed,
+                         .minSpeed = kGentleFloor}, false);
+    brake_drive();
+    claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
+    coast_drive();
+    fix_at(stop);
+    at = stop;
+    return true;
+}
+}  // namespace three_pin
+
 void three_pin_auton() {
+    using namespace three_pin;
+    // In case an earlier run was cut off mid-pickup.
+    set_lateral_kp(kLateralKp);
+    coast_drive();
     chassis.setPose(0, 0, 180);
-    const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
-    // First motion test: use LemLib's normal output while PID and odometry are
-    // being validated.
-    // Start the approach first so the lift can rise while the chassis drives.
-    chassis.moveToPoint(0, 8, 500,
-                        {.forwards = false},
-                        true);
+    struct AutoReset {
+        explicit AutoReset(bool on) { gpsreset::set_auto_reset(on); }
+        ~AutoReset() { gpsreset::set_auto_reset(false); }
+    } auto_reset(gpsreset::capture_start_as(0, 0, 180) && kGpsResets);
+
+    // TOGGLE: back off the wall while the lift rises, then drive into it.
+    chassis.moveToPoint(0, 8, 500, {.forwards = false}, true);
     if (!liftOrStop(lift_position::matchload - 125)) return;
     chassis.waitUntilDone();
     clamp_piston.set_value(true);
     pros::delay(kPneumaticSettleMs);
-    chassis.moveToPoint(0, -2, 700,
-                        {.forwards = true},
-                        false);
+    chassis.moveToPoint(0, -2, 700, {.forwards = true}, false);
 
-    // PRELOAD -> BLUE Goal. REAR/camera is the scoring side.
-    
-
-    chassis.moveToPoint(0, 15, 700,
-                        {.forwards = false},
-                        false);
-    chassis.turnToHeading(-90, 500);
-    chassis.moveToPoint(13, 13, 700,
-                        {.forwards = false, .maxSpeed = 80},
-                        true);
+    // PRELOAD: back out to the goal's lane, turn the claw to the goal, back
+    // in with the lift still raised, then lower the lift to seat the pin.
+    // Plain, unchained moves: chaining the drive out to the lane made the
+    // robot roll past it and miss the goal.
+    chassis.moveToPoint(0, kGoal.y, 1000, {.forwards = false}, false);
+    chassis.turnToHeading(270, 800, {}, false);
+    const Point preload{kGoal.x - kReach, kGoal.y};
+    chassis.moveToPoint(preload.x, preload.y, 1200,
+                        {.forwards = false, .maxSpeed = kGoalSpeed}, false);
     if (!liftOrStop(lift_position::stage_0_deg)) return;
-    chassis.waitUntilDone();
-    if (gps_anchor_ok) gpsreset::reset();
     claw_piston.set_value(false);
     pros::delay(kPneumaticSettleMs);
-    
-    // Pull straight out only enough to clear the Goal.
-    chassis.moveToPoint(0, 16.5, 650,
-                        {.forwards = true},
-                        false);
-    
-    // PIN #2 BIG ISSUE HERE: rear/camera side faces and enters the Pin.
-    chassis.turnToPoint(13.5,31,650,
-                        {.forwards = false},
-                        false);
-    chassis.moveToPoint(13.5 , 31 , 700,
-                        {.forwards = false},
-                        false);
-    
-    //PICKUP
-    claw_piston.set_value(true);
-    pros::delay(kPneumaticSettleMs);
-    
-    chassis.moveToPoint(20, 36, 1200,
-                        {.forwards = false},
-                        false);
-    // Same side turns back toward Goal.
-    chassis.turnToPoint(20, 14.11, 700,
-                        {.forwards = false},
-                        true);
-    if (!liftOrStop(lift_position::stage_1_deg)) return;
-    chassis.waitUntilDone();
+    fix_at(preload);
 
-    
-    chassis.moveToPoint(20, 17, 1050,
-                        {.forwards = false},
-                        false);
-    
-    //SCORE CUP #1
-    claw_piston.set_value(false);
-    pros::delay(kPneumaticSettleMs);
+    // Pull straight out of the goal to the start line (chained).
+    Point at{0.0f, kGoal.y};
+    chain_to(at, true, 1000);
 
-    // Begin backing out, clear the Goal, then lower while the retreat finishes.
-    chassis.moveToPoint(17, 35, 1200,
-                        {.forwards = true},
-                        true);
+    // STACK 1: lift is already down. Pick up, score one level up.
+    Point seat{};
+    if (!pick_up(at, seat, kStack1)) return;
+    if (!score(at, seat, lift_position::stage_1_deg, kGoalForStack1,
+               kScoreReachStack1))
+        return;
+
+    // Back away from the goal and stop; once the claw is clear, start
+    // lowering the lift for stack 2.
+    const Point retreat = standoff(
+        at, kGoal, std::hypot(kGoal.x - at.x, kGoal.y - at.y) + 16.0f);
+    chassis.moveToPoint(retreat.x, retreat.y, 1200, {.forwards = true}, true);
     chassis.waitUntil(kGoalClearanceIn);
-    if (!liftOrStop(lift_position::stage_0_deg)) return;
+    LiftJob lower(lift_position::stage_0_deg);
     chassis.waitUntilDone();
-    
-    chassis.turnToPoint(-12, 35, 700,
-                        {.forwards = false},
-                        false);
-    chassis.moveToPoint(0.5, 35, 700,
-                        {.forwards = false},
-                        false);
-    claw_piston.set_value(true);
-    pros::delay(kPneumaticSettleMs);
-    chassis.turnToHeading(180, 700);
-    chassis.moveToPoint(0.5, 40, 1200,
-                        {.forwards = false},
-                        false);
-    /*
-    // PIN #3: direct after clearing Goal; REAR/camera side picks it up.
-    chassis.turnToPoint(38, 14.5, 700,
-                        {.forwards = false},
-                        false);
-    chassis.moveToPoint(38, 15, 1200,
-                        {.forwards = false},
-                        false);
+    at = retreat;
 
-    // Add Pin #3 pickup action here.
-    claw_piston.set_value(true);
-    if (!liftOrStop(lift_position::stage_2_deg)) return;
-    chassis.moveToPoint(43.20, 16, 1200,
-                        {.forwards = true},
-                        false);
-    chassis.turnToPoint(7, 15, 700,
-                        {.forwards = false},
-                        false);
-    
-    chassis.moveToPoint(15, 16, 1050,
-                        {.forwards = false},
-                        false);
-    claw_piston.set_value(false);
-    chassis.moveToPoint(43, 16, 1050,
-                        {.forwards = true},
-                        false);
-    chassis.turnToPoint(0, 45, 1050,{.forwards = false}, false);
-    chassis.moveToPoint(0,45,2000, {.forwards = false}, false);
+    // GPS reset before the long diagonal to stack 2, in every build: by now
+    // odometry has absorbed a pickup and a score. Applied only if the GPS is
+    // confident, the robot is stopped, and the GPS agrees it is within 6 in
+    // of this spot and 8 in of odometry; otherwise odometry is kept.
+    const bool gps_fixed =
+        gpsreset::checkpoint(retreat.x, retreat.y, 6.0, 350);
+    fieldviz::print(7, gps_fixed ? "GPS reset applied" : "GPS reset skipped");
 
-    
-*/
+    // STACK 2: pick up, score two levels up.
+    if (!pick_up(at, seat, kStack2, &lower)) return;
+    if (!score(at, seat, lift_position::stage_2_deg)) return;
+
+    // Leave the goal with the lift still up so nothing drags the stack.
+    const Point done = standoff(
+        at, kGoal, std::hypot(kGoal.x - at.x, kGoal.y - at.y) + 8.0f);
+    chassis.moveToPoint(done.x, done.y, 1000, {.forwards = true}, false);
 }
 
-    
+
 
 void skills() {
     chassis.setPose(0, 0, 180);

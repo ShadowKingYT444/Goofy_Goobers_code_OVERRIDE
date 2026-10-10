@@ -1,6 +1,7 @@
 #include "main.h"
 #include "autons.hpp"
 #include "gps_reset/gps_reset.hpp"
+#include "field_map.hpp"
 #include <cstdint>
 #include <cstdio>
 namespace {
@@ -9,14 +10,10 @@ namespace {
 std::atomic_bool arm_auto_moving{false};
 std::atomic_bool arm_auto_cancelled{false};
 
-// Image: footprint spans 16 in inward from the right wall and 12 in above
-// the centerline. Its center is (+72 - 16/2, +12/2) in field coordinates.
-constexpr double kGpsDisplayStartXIn = 64.0;
-constexpr double kGpsDisplayStartYIn = 6.0;
-
 void boot_stage(const char* stage) {
     std::printf("BOOT_STAGE,%s\n", stage);
     std::fflush(stdout);
+    fieldviz::status(stage);
 }
 }
 // Drive wiring and direction match the old Goofy Goobers project.
@@ -38,7 +35,8 @@ lemlib::OdomSensors sensors(
     &imu
 );
 
-// First lateral P speed experiment; verify endpoint accuracy and slip physically.
+// Hand-set values. The first autotuner's result (lateral 42/0/93, angular
+// 8.4/0.67/93) was far too aggressive on the robot and was reverted.
 lemlib::ControllerSettings lateral_controller(6.0, 0, 3, 0, 1, 100, 3, 500, 0);
 lemlib::ControllerSettings angular_controller(2, 0, 10, 3, 1, 100, 3, 500, 0);
 lemlib::ExpoDriveCurve throttle_curve(5, 0, 1.0);
@@ -60,11 +58,9 @@ void print_arm_degrees() {
            claw_sensor.get_position() / 100.0);
 }
 void initialize() {
+    fieldviz::start();
     boot_stage("initialize_begin");
-    boot_stage("lcd_begin");
-    pros::lcd::initialize();
-    pros::lcd::print(0, "Starting 3-pin / sensors...");
-    boot_stage("lcd_done");
+    boot_stage("field_map_begin");
     boot_stage("aux_reset_begin");
     claw_arm.tare_position();
     claw_sensor.reset_position();
@@ -75,60 +71,39 @@ void initialize() {
     slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
     boot_stage("aux_reset_done");
     boot_stage("chassis_calibrate_begin");
-    pros::lcd::print(1, "Calibrating motor odom + IMU");
     chassis.calibrate();
     boot_stage("chassis_calibrate_done");
     claw_piston.set_value(true);
     clamp_piston.set_value(false);
     boot_stage("gps_init_begin");
-    gpsreset::init(chassis, 10, /*forward_in=*/7.0, /*right_in=*/4.5);
+    // The camera looks out of the robot's right side. If GPS X/Y come out
+    // mirrored on both axes relative to the motor pose, use 270 instead.
+    gpsreset::init(chassis, 10, /*forward_in=*/3.0, /*right_in=*/3.7,
+                   /*facing_deg=*/90.0);
+    gpsreset::set_anchor_observer(fieldviz::set_anchor);
     boot_stage("gps_init_done");
 
     chassis.setPose(0, 0, 180);  // Same starting pose as the 3-pin auton.
     boot_stage("gps_anchor_begin");
-    pros::lcd::print(1, "Capturing GPS start anchor");
     const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
     boot_stage(gps_anchor_ok ? "gps_anchor_ok" : "gps_anchor_no_fix");
 
     boot_stage("screen_task_begin");
     static pros::Task screen_task([]() {
-        // Rebooting the Brain starts a fresh IMU baseline.
-        bool have_baseline = false;
-        double baseline_rotation = 0.0;
-
+        // Read only the sensor here; anchor metadata arrives via the observer.
         while (true) {
-            const double lift_deg = lift_sensor.get_position()/100.0;
-            const double claw_deg = claw_sensor.get_position()/100.0;
-            const double imu_rotation = imu.get_rotation();
-
-            if (!have_baseline) {
-                baseline_rotation = imu_rotation;
-                have_baseline = true;
-            }
-
-            auto pose = chassis.getPose();
-
-            pros::lcd::print(0, "MOTOR X%.1f Y%.1f in", pose.x, pose.y);
-            pros::lcd::print(1, "MOTOR heading %.1f deg", pose.theta);
-
-            pros::lcd::print(
-                2, "IMU %.2f dT %.1f",
-                imu_rotation,
-                imu_rotation - baseline_rotation
-            );
-            pros::lcd::print(
-                3, "Lift %.2f deg", lift_deg
-            );
-            pros::lcd::print(
-                4, "Claw %.2f deg", claw_deg
-            );
-            pros::lcd::print(
-                5, "Drive RPM L%.0f R%.0f",
-                left_motors.get_actual_velocity(0),
-                right_motors.get_actual_velocity(0)
-            );
-            pros::lcd::print(6, "Local start: 0,0 / 180 deg");
-            pros::delay(100);
+            const auto pose = chassis.getPose();
+            const auto gps_pose = gpsreset::live_pose();
+            fieldviz::publish({
+                {pose.x, pose.y, pose.theta},
+                {gps_pose.x_in, gps_pose.y_in, gps_pose.theta_deg},
+                gps_pose.ok,
+                gps_pose.jump,
+                imu.get_rotation(),
+                lift_sensor.get_position() / 100.0,
+                claw_sensor.get_position() / 100.0
+            });
+            pros::delay(50);  // also the rate GPS route checkpoints are served
         }
     });
     boot_stage("initialize_done");
@@ -137,18 +112,29 @@ void initialize() {
 void disabled() { arm_auto_cancelled.store(true); }
 void competition_initialize() { arm_auto_cancelled.store(true); }
 
+// Routine run by autonomous() and the LEFT hotkey. Build another one into a
+// slot without editing this file:
+//   pros make EXTRA_CXXFLAGS=-DAUTON_ROUTINE=pid_autotune_auton
+#ifndef AUTON_ROUTINE
+#define AUTON_ROUTINE three_pin_auton
+#endif
+#define AUTON_NAME_(name) #name
+#define AUTON_NAME(name) AUTON_NAME_(name)
+
 void autonomous() {
     arm_auto_cancelled.store(true);
     const std::uint32_t startedAt = pros::millis();
-    three_pin_auton();
+    AUTON_ROUTINE();
     const std::uint32_t elapsedMs = pros::millis() - startedAt;
+    // Shown on the Brain so a run can be checked against the 15 s period.
+    fieldviz::print(7, "Auto took %.1f s", elapsedMs / 1000.0);
     const lemlib::Pose pose = chassis.getPose();
     const std::int32_t liftPosition = lift_sensor.get_position();
     const std::int32_t liftVelocity = lift_sensor.get_velocity();
     // CSV-style record for repeated field trials. Pose is odometry output;
     // compare endpoint error against an independent field measurement.
     std::printf(
-        "AUTON_RESULT,three_pin,%lu,%.2f,%.2f,%.1f,%d,%d\n",
+        "AUTON_RESULT," AUTON_NAME(AUTON_ROUTINE) ",%lu,%.2f,%.2f,%.1f,%d,%d\n",
         static_cast<unsigned long>(elapsedMs),
         static_cast<double>(pose.x),
         static_cast<double>(pose.y),
@@ -163,7 +149,6 @@ void opcontrol() {
     bool clamp_pressed = false;
     bool claw_pressed = false;
     uint32_t next_lift_report = 0;
-    std::uint32_t last_gps_display_ms = pros::millis() - 100;
     arm_auto_cancelled.store(true);
 
     while (true) {
@@ -204,8 +189,9 @@ void opcontrol() {
             slider_right.move(-127);
             pros::delay(150);
         }
-        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_X) &&
-            master.get_digital(pros::E_CONTROLLER_DIGITAL_Y)) {
+        // LEFT is otherwise unbound. Runs the selected autonomous from driver
+        // control, so routines longer than the 15 s autonomous period finish.
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT)) {
             autonomous();
         }
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_L1)) {
@@ -239,12 +225,6 @@ void opcontrol() {
 
                 claw_arm.move(arm);
             }
-        const std::uint32_t now = pros::millis();
-        if (now - last_gps_display_ms >= 100) {
-            last_gps_display_ms = now;
-            gpsreset::print_position_from_start(kGpsDisplayStartXIn,
-                                                kGpsDisplayStartYIn);
-        }
         pros::delay(20);
     }
 }
