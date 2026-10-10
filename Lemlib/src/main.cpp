@@ -23,32 +23,17 @@ void boot_stage(const char* stage) {
 pros::MotorGroup left_motors({-17, -18}, pros::MotorGears::blue);
 pros::MotorGroup right_motors({11, 13}, pros::MotorGears::blue);
 pros::Imu imu(14);
-// Reversed because the raw sensors decreased for front/right motion.
-pros::Rotation vertical_odom(-15);
-pros::Rotation horizontal_odom(-1);
 pros::Motor side_toggle(4);
 pros::adi::DigitalOut claw_piston('B');
 lemlib::Drivetrain drivetrain(&left_motors, &right_motors,
                               12, lemlib::Omniwheel::NEW_275, 450, 2);
 
-// Temporary diagnostic geometry. The offsets are measured from the LemLib
-// tracking center: vertical is 0.5 in left, horizontal is 5.1 in forward.
-lemlib::TrackingWheel vertical_wheel(
-    &vertical_odom,
-    lemlib::Omniwheel::NEW_2,
-    -0.5,
-    1.0
-);
-lemlib::TrackingWheel horizontal_wheel(
-    &horizontal_odom,
-    lemlib::Omniwheel::NEW_2,
-    5.1,
-    1.0
-);
+// No external tracking wheels are installed. LemLib creates its vertical
+// odometry inputs from the drivetrain motor encoders during calibrate().
 lemlib::OdomSensors sensors(
-    &vertical_wheel,
     nullptr,
-    &horizontal_wheel,
+    nullptr,
+    nullptr,
     nullptr,
     &imu
 );
@@ -104,25 +89,16 @@ void initialize() {
 
     boot_stage("screen_task_begin");
     static pros::Task screen_task([]() {
-        // Rebooting the Brain starts a fresh baseline. The delta values below
-        // are therefore the signed sensor changes since initialization.
+        // Rebooting the Brain starts a fresh IMU baseline.
         bool have_baseline = false;
-        double baseline_vertical = 0.0;
-        double baseline_horizontal = 0.0;
         double baseline_rotation = 0.0;
 
         while (true) {
             const double lift_deg = lift_sensor.get_position()/100.0;
             const double claw_deg = claw_sensor.get_position()/100.0;
-            const double vertical_distance =
-                vertical_wheel.getDistanceTraveled();
-            const double horizontal_distance =
-                horizontal_wheel.getDistanceTraveled();
             const double imu_rotation = imu.get_rotation();
 
             if (!have_baseline) {
-                baseline_vertical = vertical_distance;
-                baseline_horizontal = horizontal_distance;
                 baseline_rotation = imu_rotation;
                 have_baseline = true;
             }
@@ -144,15 +120,11 @@ void initialize() {
                 4, "Claw %.2f deg", claw_deg
             );
             pros::lcd::print(
-                5, "V %.2f H %.2f",
-                vertical_distance,
-                horizontal_distance
+                5, "Drive RPM L%.0f R%.0f",
+                left_motors.get_actual_velocity(0),
+                right_motors.get_actual_velocity(0)
             );
-            pros::lcd::print(
-                6, "dV %.2f dH %.2f",
-                vertical_distance - baseline_vertical,
-                horizontal_distance - baseline_horizontal
-            );
+            pros::lcd::print(6, "Odometry: drive motors + IMU");
             pros::delay(100);
         }
     });

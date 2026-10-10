@@ -64,6 +64,13 @@ class FirmwareImageTests(unittest.TestCase):
         self.assertNotIn("ts::selector", self.symbols)
         self.assertNotIn("_GLOBAL__sub_I_registry_internal", self.symbols)
 
+    def test_no_external_tracking_wheels(self):
+        for name in ("vertical_odom", "horizontal_odom", "vertical_wheel",
+                     "horizontal_wheel"):
+            self.assertNotIn(" " + name + "\n", self.symbols)
+        for name in ("lift_sensor", "claw_sensor", "imu"):
+            self.assertIn(" " + name + "\n", self.symbols)
+
 
 if __name__ == "__main__":
     unittest.main()

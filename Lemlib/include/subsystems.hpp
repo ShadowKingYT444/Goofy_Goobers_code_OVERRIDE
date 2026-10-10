@@ -16,7 +16,6 @@ extern lemlib::Chassis chassis;
 extern pros::MotorGroup left_motors;
 extern pros::MotorGroup right_motors;
 extern pros::Imu imu;
-//extern lemlib::TrackingWheel vertical_wheel;
 
 extern pros::adi::DigitalOut claw_piston;
 extern pros::Motor slider_left;
