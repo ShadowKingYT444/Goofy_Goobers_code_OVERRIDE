@@ -751,7 +751,7 @@ void three_pin_auton() {
                         {.forwards = false},
                         false);
     chassis.turnToHeading(-90, 500);
-    chassis.moveToPoint(13, 15, 700,
+    chassis.moveToPoint(13, 13, 700,
                         {.forwards = false, .maxSpeed = 80},
                         true);
     if (!liftOrStop(lift_position::stage_0_deg)) return;

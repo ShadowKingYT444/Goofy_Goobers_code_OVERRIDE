@@ -184,7 +184,7 @@ void opcontrol() {
         slider_left.move(-lift);
         slider_right.move(-lift);
         const int spin = (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2)
-                             ? 67
+                             ? 100
                 
                                     : 0);
         side_toggle.move(spin);
