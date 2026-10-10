@@ -51,3 +51,10 @@ TEMPLATE_FILES=$(INCDIR)/$(LIBNAME)/*.h $(INCDIR)/$(LIBNAME)/*.hpp
 ################################################################################
 ########## Nothing below this line should be edited by typical users ###########
 -include ./common.mk
+
+# The kernel exposes LCD calls and display_initialize as weak stubs. A
+# monolithic link will not extract liblvgl for those references, leaving a
+# blank screen or an unresolved initialize() call. Load its objects before
+# the ordinary library group so the real implementations replace the stubs;
+# --gc-sections still removes unused code.
+LNK_FLAGS := --whole-archive $(FWDIR)/liblvgl.a --no-whole-archive $(LNK_FLAGS)

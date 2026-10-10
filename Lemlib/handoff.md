@@ -1,5 +1,40 @@
 # LemLib odometry / PID autotune handoff for Astra
 
+## Current status — 2026-10-09
+
+The sections below describe an older tracking-wheel investigation. Current
+hardware configuration in `src/main.cpp` has no external odometry Rotation
+Sensors or TrackingWheel objects: LemLib uses drive motor encoders and IMU
+port 14. Lift Rotation Sensor 16 and claw Rotation Sensor 12 remain installed.
+The selected autonomous entry point is `three_pin_auton()`.
+
+The Brain display uses LLEMU exclusively. The monolithic link previously
+retained weak kernel graphics stubs and omitted the real LVGL/LCD backend;
+`Makefile` now explicitly loads `liblvgl.a` before the ordinary library group.
+The firmware regression verifies real executable LCD initialization, printing,
+LVGL label rendering, display initialization and timer implementations.
+
+The screen labels motor/IMU X/Y in inches and heading in degrees. During
+opcontrol, GPS coordinates refresh every 100 ms when the startup anchor and
+GPS confidence are valid. GPS uses assumed physical start center `(64, 6)`
+field inches (16-by-12 footprint against the right wall, above the centerline),
+rotated into declared local start `(0, 0, 180 degrees)` using captured GPS
+heading. Lost fixes and missing anchors display explicit status. Reading this
+display does not apply GPS corrections to the motor/IMU pose.
+
+Validation: clean `pros make -- -j2` succeeded; all seven firmware/GPS tests
+passed. The new LCD regression fails against the preceding firmware image.
+Wireless slot-1 upload reached 100%, then CLI 3.5.6 reported a finalization
+NACK (`Attempted to download/upload uninitialized`). Reading Brain metadata
+afterward confirms `slot_1.bin` matches this build: compressed size 508958
+bytes, VEX CRC 2853918422; `slot_1.ini` is also present. The program was uploaded
+with `--after screen`; the corrected program's running display still needs
+physical verification after starting slot 1.
+Implementation ran directly in Codex because Bello is unavailable locally;
+there is no Bello run directory or report for this change.
+
+---
+
 ## Mission
 
 Diagnose the large LemLib pose error during a pure in-place turn before running or trusting the PID autotuner.

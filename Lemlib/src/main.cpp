@@ -61,6 +61,10 @@ void print_arm_degrees() {
 }
 void initialize() {
     boot_stage("initialize_begin");
+    boot_stage("lcd_begin");
+    pros::lcd::initialize();
+    pros::lcd::print(0, "Starting 3-pin / sensors...");
+    boot_stage("lcd_done");
     boot_stage("aux_reset_begin");
     claw_arm.tare_position();
     claw_sensor.reset_position();
@@ -70,10 +74,8 @@ void initialize() {
     slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
     slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
     boot_stage("aux_reset_done");
-    boot_stage("lcd_begin");
-    pros::lcd::initialize();
-    boot_stage("lcd_done");
     boot_stage("chassis_calibrate_begin");
+    pros::lcd::print(1, "Calibrating motor odom + IMU");
     chassis.calibrate();
     boot_stage("chassis_calibrate_done");
     claw_piston.set_value(true);
@@ -84,6 +86,7 @@ void initialize() {
 
     chassis.setPose(0, 0, 180);  // Same starting pose as the 3-pin auton.
     boot_stage("gps_anchor_begin");
+    pros::lcd::print(1, "Capturing GPS start anchor");
     const bool gps_anchor_ok = gpsreset::capture_start_as(0, 0, 180);
     boot_stage(gps_anchor_ok ? "gps_anchor_ok" : "gps_anchor_no_fix");
 
@@ -105,8 +108,8 @@ void initialize() {
 
             auto pose = chassis.getPose();
 
-            pros::lcd::print(0, "X %.2f Y %.2f", pose.x, pose.y);
-            pros::lcd::print(1, "T %.2f", pose.theta);
+            pros::lcd::print(0, "MOTOR X%.1f Y%.1f in", pose.x, pose.y);
+            pros::lcd::print(1, "MOTOR heading %.1f deg", pose.theta);
 
             pros::lcd::print(
                 2, "IMU %.2f dT %.1f",
@@ -124,7 +127,7 @@ void initialize() {
                 left_motors.get_actual_velocity(0),
                 right_motors.get_actual_velocity(0)
             );
-            pros::lcd::print(6, "Odometry: drive motors + IMU");
+            pros::lcd::print(6, "Local start: 0,0 / 180 deg");
             pros::delay(100);
         }
     });

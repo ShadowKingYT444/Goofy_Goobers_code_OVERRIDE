@@ -60,6 +60,18 @@ class FirmwareImageTests(unittest.TestCase):
         for (address,) in struct.iter_unpack("<I", contents):
             self.assertTrue(self.executable(address), hex(address))
 
+    def test_real_lcd_backend_is_linked(self):
+        # PROS's weak no-op stubs otherwise allow a successful build with a
+        # blank screen (and an unresolved C++ LCD initialization call).
+        for name in ("display_initialize", "lcd_initialize", "lcd_print",
+                     "_lcd_vprint", "lv_label_set_text",
+                     "pros::lcd::initialize()", "lv_init", "lv_timer_handler"):
+            entries = [line for line in self.symbols.splitlines()
+                       if line.endswith(" T " + name)]
+            self.assertEqual(len(entries), 1, name)
+            self.assertTrue(self.executable(int(entries[0].split()[0], 16)),
+                            name)
+
     def test_unused_selector_is_not_linked(self):
         self.assertNotIn("ts::selector", self.symbols)
         self.assertNotIn("_GLOBAL__sub_I_registry_internal", self.symbols)
