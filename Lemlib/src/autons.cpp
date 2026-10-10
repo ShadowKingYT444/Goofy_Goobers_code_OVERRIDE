@@ -102,12 +102,14 @@ bool liftOrStop(double targetDeg) {
 }
 }  // namespace
 
-void moveArm(double targetDeg, volatile bool* cancel) {
+void moveArm(double targetDeg, std::atomic_bool* cancel) {
     const double kP = 0.55;
     const double tolerance = 3.0;
+    const auto starting_mode = pros::competition::get_status();
 
     while (true) {
-        if (cancel != nullptr && *cancel)
+        if ((cancel != nullptr && cancel->load()) ||
+            pros::competition::get_status() != starting_mode)
             break;
         double current = claw_sensor.get_position() / 100.0;
         double error = targetDeg - current;

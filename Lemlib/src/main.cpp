@@ -1,11 +1,19 @@
 #include "main.h"
 #include "autons.hpp"
-#include "titanselect/titanselect.hpp"
 #include "gps_reset/gps_reset.hpp"
 #include <cstdint>
 #include <cstdio>
-ts::auton one_pin("1 Pin", one_pin_auton);
-ts::auton three_pin("3 Pin", three_pin_auton);
+namespace {
+// Competition control deletes/reuses the opcontrol stack on mode changes.
+// Background tasks must only refer to state that outlives that stack.
+std::atomic_bool arm_auto_moving{false};
+std::atomic_bool arm_auto_cancelled{false};
+
+void boot_stage(const char* stage) {
+    std::printf("BOOT_STAGE,%s\n", stage);
+    std::fflush(stdout);
+}
+}
 // Drive wiring and direction match the old Goofy Goobers project.
 pros::MotorGroup left_motors({-17, -18}, pros::MotorGears::blue);
 pros::MotorGroup right_motors({11, 13}, pros::MotorGears::blue);
@@ -62,6 +70,8 @@ void print_arm_degrees() {
            claw_sensor.get_position() / 100.0);
 }
 void initialize() {
+    boot_stage("initialize_begin");
+    boot_stage("aux_reset_begin");
     claw_arm.tare_position();
     claw_sensor.reset_position();
     lift_sensor.reset_position();
@@ -69,16 +79,23 @@ void initialize() {
     // and paired-motor behavior with the loaded mechanism during validation.
     slider_left.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
     slider_right.set_brake_mode(pros::E_MOTOR_BRAKE_HOLD);
+    boot_stage("aux_reset_done");
+    boot_stage("lcd_begin");
     pros::lcd::initialize();
+    boot_stage("lcd_done");
+    boot_stage("chassis_calibrate_begin");
     chassis.calibrate();
+    boot_stage("chassis_calibrate_done");
     claw_piston.set_value(true);
     clamp_piston.set_value(false);
+    boot_stage("gps_init_begin");
     gpsreset::init(chassis, 10, /*forward_in=*/7.0, /*right_in=*/4.5);
+    boot_stage("gps_init_done");
 
     chassis.setPose(0, 0, 180);  // Same starting pose as the 3-pin auton.
-    //ts::selector::get()->display();
 
-    pros::Task screen_task([]() {
+    boot_stage("screen_task_begin");
+    static pros::Task screen_task([]() {
         // Rebooting the Brain starts a fresh baseline. The delta values below
         // are therefore the signed sensor changes since initialization.
         bool have_baseline = false;
@@ -135,13 +152,14 @@ void initialize() {
             pros::delay(100);
         }
     });
-    
+    boot_stage("initialize_done");
 }
 
-void disabled() {}
-void competition_initialize() {}
+void disabled() { arm_auto_cancelled.store(true); }
+void competition_initialize() { arm_auto_cancelled.store(true); }
 
 void autonomous() {
+    arm_auto_cancelled.store(true);
     const std::uint32_t startedAt = pros::millis();
     gps_reset_test_auton();
     const std::uint32_t elapsedMs = pros::millis() - startedAt;
@@ -166,8 +184,7 @@ void opcontrol() {
     bool clamp_pressed = false;
     bool claw_pressed = false;
     uint32_t next_lift_report = 0;
-    volatile bool arm_auto_moving = false;
-    volatile bool arm_auto_cancelled = false;
+    arm_auto_cancelled.store(true);
 
     while (true) {
         // Preserve the old single-stick arcade behavior and turn direction.
@@ -194,12 +211,12 @@ void opcontrol() {
             clamp_piston.set_value(clamp_pressed);
         }
         
-        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_Y)) {
-            arm_auto_cancelled = false;
-            pros::Task([&arm_auto_moving, &arm_auto_cancelled] {
-                arm_auto_moving = true;
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_Y) &&
+            !arm_auto_moving.exchange(true)) {
+            arm_auto_cancelled.store(false);
+            pros::Task([] {
                 moveArm(530, &arm_auto_cancelled);
-                arm_auto_moving = false;
+                arm_auto_moving.store(false);
             });
         }
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
