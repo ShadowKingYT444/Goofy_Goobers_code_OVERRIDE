@@ -27,11 +27,16 @@ and the GPS estimate (yellow), drawn from an LVGL timer on the display
 daemon. Local `(0, 0, 180)` is the GPS pose captured at the start.
 
 GPS (`include/gps_reset/`): pipeline is documented at the top of
-`gps_reset.hpp`. `live_pose()` blends GPS with odometry (Estimator) and is
-what the map shows. Route corrections exist (`checkpoint`, `set_auto_reset`,
-`reset`) but in back-to-back runs the three-pin was more accurate without
-them, so the route uses a single checkpoint after scoring stack 1 and nothing
-else unless built with `-DTHREE_PIN_GPS_RESETS=1`.
+`gps_reset.hpp`; a review of the correction path is in
+`docs/GPS_RESET_FINDINGS.md`. `live_pose()` blends GPS with odometry
+(Estimator) and is what the map shows. Corrections (`checkpoint`, `reset`)
+are separate: they average raw fixes with the robot parked, in the calling
+task, and report why they did or did not apply (`GPS_FIX` lines, Brain status
+line). The three-pin uses one checkpoint after scoring stack 1; in earlier
+back-to-back runs the route was more accurate with no corrections at all, and
+the mount offsets have not been re-measured with the fixed-center survey
+(`gps_mount_survey_auton`, `tools/fit_gps_mount.py`), so treat GPS accuracy as
+unproven.
 
 Three-pin (`src/autons.cpp`, namespace `three_pin`): toggle, preload, two
 stacks. Element positions are field-tuned estimates at the top of the
@@ -42,7 +47,7 @@ then turns and scores. The user reports the run fits in 15 s; stack 1 scoring
 and all of stack 2 were still being tuned when this was written, and the
 latest change (5 in post-clamp drive) has not been run.
 
-Validation: `pros make` and `python3 -m unittest discover -s tests` (9 tests)
+Validation: `pros make` and `python3 -m unittest discover -s tests` (13 tests)
 pass. Host tests cover map math, GPS estimator/corrections and the autotuner
 model; none of them exercise the route.
 

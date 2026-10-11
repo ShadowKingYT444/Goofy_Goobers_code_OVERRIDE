@@ -13,7 +13,7 @@ struct State {
     bool anchor_ok = false;
     gpsreset::FramePose anchor{0, 0, 0};
     char status[96] = "Starting sensors...";
-    char report[256] = "";
+    char report[384] = "";
 };
 State& state() { static State value; return value; }
 constexpr std::uint32_t kMotorColor = 0x36d9ee;
@@ -172,7 +172,7 @@ void render(lv_timer_t*) {
     bool anchor_ok;
     gpsreset::FramePose anchor;
     char message[96];
-    char report[256];
+    char report[384];
     auto& shared = state();
     {
         std::lock_guard<pros::Mutex> guard(shared.mutex);
@@ -271,7 +271,7 @@ bool fieldviz::print(std::int16_t line, const char* format, ...) {
 }
 
 void fieldviz::report(const char* format, ...) {
-    char text[256];
+    char text[384];
     va_list args;
     va_start(args, format);
     std::vsnprintf(text, sizeof(text), format, args);

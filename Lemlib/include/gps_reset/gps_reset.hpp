@@ -52,9 +52,10 @@ inline void init(lemlib::Chassis& chassis, std::uint8_t gps_port,
 // auton coordinates, e.g. (0, 0, 180) to match setPose(0,0,180) autons.
 // Afterwards reset() applies readings in the declared start-relative frame,
 // so routes can receive start-relative GPS position corrections.
-// Returns false if a stable reading is not available within a bounded 250 ms
-// window; failure invalidates the
-// current run's anchor so relative reset() calls fail closed.
+// Uses the live estimate when the robot has already been parked with good
+// fixes for a second (the usual case at the start of a route); otherwise it
+// averages raw fixes for up to 600 ms. Returns false if neither is available;
+// failure invalidates the anchor so corrections fail closed.
 inline bool capture_start_as(double x_in, double y_in, double theta_deg);
 
 using AnchorObserver = void (*)(bool valid, double field_x_in,
@@ -70,18 +71,40 @@ inline void set_anchor_observer(AnchorObserver observer);
 // changed. Turn it on at the start of a route and off at the end.
 inline void set_auto_reset(bool enabled);
 
-// Route checkpoint: call right after a motion that was driving to (x, y) in
-// route coordinates. If the GPS is confident, the robot is stopped, the GPS
-// places it within radius_in of that waypoint and within 8 in of odometry,
-// LemLib's X/Y is set from the GPS (heading untouched). Gaps under 1.5 in are
-// left alone. Waits at most wait_ms for those conditions; returns true if a
-// correction was applied. Needs the telemetry task to be calling live_pose().
-inline bool checkpoint(double x_in, double y_in, double radius_in = 6.0,
-                       std::uint32_t wait_ms = 200);
+// Outcome of a correction attempt. Only APPLIED changed LemLib's pose.
+enum class Fix {
+    APPLIED,          // odometry X/Y set from the GPS
+    ALREADY_ALIGNED,  // GPS and odometry agree; nothing to do
+    NO_GPS,           // init() has not run
+    NO_ANCHOR,        // capture_start_as() failed or was never called
+    MOVING,           // robot never came to rest in time
+    NO_FIX,           // no confident reading while parked
+    UNSTABLE,         // readings while parked disagreed with each other
+    OFF_TARGET,       // GPS puts the robot too far from the expected waypoint
+    TOO_LARGE,        // GPS and odometry differ by more than 8 in
+};
+struct Correction {
+    Fix status = Fix::NO_GPS;
+    double gap_in = 0.0;         // GPS vs odometry, route frame
+    double off_target_in = 0.0;  // GPS vs the expected waypoint
+    double gps_x_in = 0.0, gps_y_in = 0.0;
+    double odom_x_in = 0.0, odom_y_in = 0.0;
+    int samples = 0;             // raw fixes averaged
+    explicit operator bool() const { return status == Fix::APPLIED; }
+};
+inline const char* fix_name(Fix status);
 
-// Bounded reset for auton: requires a stable GPS sample, a valid anchor in
-// relative mode, stable odometry, a stopped chassis, and a plausible correction.
-// It updates X/Y while preserving LemLib heading. Returns true only if applied.
+// Route checkpoint: call right after a motion that drove to (x, y) in route
+// coordinates. Blocks in the calling task for up to wait_ms: waits for the
+// robot to be parked, averages raw GPS fixes, and sets LemLib's X/Y from them
+// (heading untouched) only if the GPS places the robot within radius_in of
+// that waypoint and between 1.5 and 8 in from odometry. The reason for every
+// outcome is returned, printed as a GPS_FIX line and shown on the Brain.
+inline Correction checkpoint(double x_in, double y_in, double radius_in = 6.0,
+                             std::uint32_t wait_ms = 450);
+
+// The same correction without a waypoint check and with no minimum gap, for
+// routes that do not know where they expect to be. True only if applied.
 inline bool reset();
 
 }  // namespace gpsreset

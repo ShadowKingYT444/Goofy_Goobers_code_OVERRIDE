@@ -3,6 +3,37 @@
 Date: 2026-10-10  
 Reviewed branch: `main` at `c8d65bd80defcea065f55de49aa7557666005fc3`
 
+## Status after this review
+
+Findings 3-6 below were confirmed against the code and fixed in
+`include/gps_reset/gps_reset_impl.hpp`:
+
+- **3, 4 (checkpoint consumed early; relock longer than the wait):**
+  `checkpoint()` and `reset()` no longer use the smoothed estimate or a
+  request handed to the telemetry task. They run in the calling task: wait for
+  the robot to be parked, average up to six raw fixes that agree with each
+  other, then decide. There is nothing to consume early and no relock to wait
+  for.
+- **5 (anchor captured twice):** `capture_start_as()` now prefers the live
+  estimate when the robot has been parked with good fixes for a second (an
+  average of many fixes, available instantly), and otherwise averages raw
+  fixes for up to 600 ms instead of 250 ms. The initialization-time capture is
+  kept because the Brain map needs an anchor in driver control; a failed
+  recapture still fails closed.
+- **6 (unsynchronized shared state):** `state_mutex()` guards the estimator,
+  the anchor and every pose correction across the telemetry and autonomous
+  tasks. The request/acknowledge fields are gone.
+- **Rejection reasons:** corrections return a `Correction` with a `Fix`
+  status (`APPLIED`, `ALREADY_ALIGNED`, `NO_ANCHOR`, `MOVING`, `NO_FIX`,
+  `UNSTABLE`, `OFF_TARGET`, `TOO_LARGE`), print a `GPS_FIX` line with the GPS
+  and odometry positions, gap, distance from the waypoint and sample count,
+  and show the status on the Brain.
+
+Still open: finding 7. The mount offsets have not been re-measured with the
+fixed-center survey, so absolute GPS accuracy is unproven and continuous
+automatic resets stay off (finding 2 is that deliberate default). The fair
+validation at the end of this document has not been run.
+
 ## Conclusion
 
 The Brain map looking correct does **not** prove that an autonomous correction was applied. The map displays `live_pose()`, which is an odometry-propagated and GPS-smoothed estimate. The route correction has additional gates and can return `false` without showing which gate rejected it.

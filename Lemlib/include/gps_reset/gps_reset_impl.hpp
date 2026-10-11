@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "api.h"
@@ -45,23 +46,26 @@ constexpr double kRestTimeS = 0.3;           // for at least this long
 constexpr double kAutoResetMinIn = 0.75;     // smaller gaps are just noise
 constexpr std::uint32_t kAutoResetPeriodMs = 500;
 
-// ---- Route checkpoints (checkpoint) -----------------------------------------
+// ---- Stationary fixes (start anchor, checkpoint, reset) ---------------------
+// Corrections and the anchor come from RAW fixes averaged while the robot is
+// parked, not from the odometry-blended estimate: that estimate lags a new
+// disagreement by design, which is right for a display and wrong for a
+// correction.
+constexpr std::uint32_t kFixPollMs = 25;
+constexpr std::uint32_t kFixSettleMs = 100;  // let the camera catch up to the stop
+constexpr int kFixSamples = 6;               // readings averaged when time allows
+constexpr int kFixMinSamples = 3;            // fewest that still count
+constexpr double kFixStillIn = 0.3;          // odometry may move this little
+constexpr double kFixStillDeg = 1.5;
 constexpr double kCheckpointMinIn = 1.5;     // leave odometry alone below this
-constexpr double kCheckpointRadiusIn = 6.0;  // GPS must agree the robot is here
-
-constexpr std::uint32_t kStableReadBudgetMs = 250;
-constexpr std::uint32_t kResetPollMs = 50;
-constexpr std::uint32_t kStableReadCount = 3;
-// These stability gates are starting candidates. Validate them on the field;
-// PROS's RMS position error is not a bound on the true position error.
-constexpr double kStablePositionDeltaIn = 3.0;
-constexpr double kStableHeadingDeltaDeg = 3.0;
-constexpr double kStableOdomPositionDeltaIn = 0.5;
-constexpr double kStableOdomHeadingDeltaDeg = 1.5;
 // Reject unexpectedly large GPS corrections until their safe range has been
-// measured on the field. This is a conservative starting limit, not a tuned
-// localization threshold.
+// measured on the field. A conservative starting limit, not a tuned one.
 constexpr double kMaxPositionCorrectionIn = 8.0;
+// The anchor prefers the live estimate once the robot has sat still with
+// good fixes this long (about a second of averaging); otherwise it takes
+// stationary raw fixes within kAnchorWaitMs.
+constexpr double kAnchorSteadyS = 1.0;
+constexpr std::uint32_t kAnchorWaitMs = 600;
 // Legacy row 7 routes status to the field map without cross-task drawing.
 constexpr int kGpsLcdLine = 7;
 
@@ -104,6 +108,8 @@ struct Estimator {
     bool fix_used = false;          // latest update was corrected by a fix
     double speed = 0.0;             // in/s and deg/s from odometry, latest update
     double turn_rate = 0.0;
+    double steady_s = 0.0;          // time parked with every fix accepted
+    double steady_heading = 0.0;    // field heading over that time
 
     GpsPose update(double odom_x, double odom_y, double odom_theta,
                    const GpsPose& fix, double dt_s) {
@@ -132,9 +138,11 @@ struct Estimator {
         if (locked) { x += fx; y += fy; }
         if (cluster_ > 0) { cluster_x_ += fx; cluster_y_ += fy; }
 
+        if (!parked) steady_s = 0.0;
         if (!fix.ok) {
             rejecting = false;
             no_fix_s_ += dt_s;
+            if (no_fix_s_ > 0.5) steady_s = 0.0;
             if (no_fix_s_ > kCoastS) { locked = false; cluster_ = 0; }
             return output(odom_theta, 0.0);
         }
@@ -159,6 +167,10 @@ struct Estimator {
         if (gap <= kGateIn + kGateLatencyS * speed) {
             rejecting = false;
             cluster_ = 0;
+            if (parked) {
+                steady_s += dt_s;
+                steady_heading = normalize_deg(odom_theta + frame_deg);
+            }
             if (turn_rate <= kMaxTurnForFixDeg) {
                 fix_used = true;
                 // Scaled so the smoothing does not depend on the call rate.
@@ -169,6 +181,7 @@ struct Estimator {
             }
         } else {
             rejecting = true;
+            steady_s = 0.0;
             // If the "outliers" keep agreeing with each other while the
             // robot is steady, the estimate is what is wrong (a shove, wheel
             // slip): start over from them.
@@ -237,10 +250,6 @@ struct SharedState {
     double rest_s = 0.0;
     std::uint32_t auto_reset_ms = 0;
     int auto_resets = 0;
-    // Pending route checkpoint, served by the telemetry task in live_pose().
-    bool checkpoint_pending = false;
-    bool checkpoint_applied = false;
-    double checkpoint_x = 0.0, checkpoint_y = 0.0, checkpoint_radius = 0.0;
     // Start anchor from capture_start_as(): the field pose the robot had at
     // the start, and the route-frame pose that spot is declared to be.
     bool relative = false;
@@ -255,6 +264,15 @@ struct SharedState {
 inline SharedState& shared_state() {
     static SharedState state;
     return state;
+}
+
+// The telemetry task (live_pose) and the autonomous task (anchor capture,
+// corrections) both touch the estimator, the anchor and LemLib's pose. Hold
+// this for any read-modify-write of those. Not recursive: never call a
+// gpsreset function that locks while holding it.
+inline pros::Mutex& state_mutex() {
+    static pros::Mutex mutex;
+    return mutex;
 }
 
 inline void set_anchor_observer(AnchorObserver observer) {
@@ -419,192 +437,183 @@ inline GpsPose live_pose() {
     auto& st = shared_state();
     if (!st.initialized || st.gps == nullptr || st.chassis == nullptr)
         return {};
+    const GpsPose fix = read_pose(*st.gps);
+    std::lock_guard<pros::Mutex> lock(state_mutex());
     const std::uint32_t now = pros::millis();
     const double dt_s = st.estimator_ms == 0 ? 0.0
                                              : (now - st.estimator_ms) / 1000.0;
     st.estimator_ms = now;
     const lemlib::Pose odom = st.chassis->getPose();
-    const GpsPose estimate = st.estimator.update(
-        odom.x, odom.y, odom.theta, read_pose(*st.gps), dt_s);
+    const GpsPose estimate =
+        st.estimator.update(odom.x, odom.y, odom.theta, fix, dt_s);
 
     const bool resting = st.estimator.speed < kRestSpeedIn &&
                          st.estimator.turn_rate < kRestTurnDeg &&
                          !st.chassis->isInMotion();
     st.rest_s = resting ? st.rest_s + dt_s : 0.0;
-    // Both kinds of correction need the same evidence: a start anchor, a
-    // locked estimate that a fresh confident fix just agreed with, and a
-    // robot that is not moving.
-    const bool confident = st.relative && st.anchor_valid && estimate.ok &&
-                           st.estimator.fix_used && resting;
-    const GpsPose route = to_auton_frame(estimate);
-    const double gap = std::hypot(route.x_in - odom.x, route.y_in - odom.y);
-    auto apply = [&](const char* why) {
-        st.chassis->setPose(route.x_in, route.y_in, odom.theta);
-        st.estimator.rebase(route.x_in, route.y_in, odom.theta);
-        st.auto_reset_ms = now;
-        ++st.auto_resets;
-        std::printf("%s,%.2f,%.2f,%.2f,%.2f\n", why,
-                    static_cast<double>(odom.x), static_cast<double>(odom.y),
-                    route.x_in, route.y_in);
-    };
-    if (st.checkpoint_pending && confident) {
-        // The GPS has to place the robot at the waypoint the route just
-        // drove to, and not wildly far from where odometry has it.
-        const double off_target = std::hypot(route.x_in - st.checkpoint_x,
-                                             route.y_in - st.checkpoint_y);
-        if (std::isfinite(gap) && gap >= kCheckpointMinIn &&
-            gap <= kMaxPositionCorrectionIn &&
-            off_target <= st.checkpoint_radius) {
-            apply("GPS_CHECKPOINT");
-            st.checkpoint_applied = true;
+    if (st.auto_reset && st.relative && st.anchor_valid && estimate.ok &&
+        st.estimator.fix_used && st.rest_s >= kRestTimeS &&
+        now - st.auto_reset_ms >= kAutoResetPeriodMs) {
+        const GpsPose route = to_auton_frame(estimate);
+        const double gap = std::hypot(route.x_in - odom.x, route.y_in - odom.y);
+        if (std::isfinite(gap) && gap >= kAutoResetMinIn &&
+            gap <= kMaxPositionCorrectionIn) {
+            st.chassis->setPose(route.x_in, route.y_in, odom.theta);
+            st.estimator.rebase(route.x_in, route.y_in, odom.theta);
+            st.auto_reset_ms = now;
+            ++st.auto_resets;
+            std::printf("GPS_AUTO_RESET,%.2f,%.2f,%.2f,%.2f\n",
+                        static_cast<double>(odom.x), static_cast<double>(odom.y),
+                        route.x_in, route.y_in);
         }
-        st.checkpoint_pending = false;
-    } else if (st.auto_reset && confident && st.rest_s >= kRestTimeS &&
-               now - st.auto_reset_ms >= kAutoResetPeriodMs &&
-               std::isfinite(gap) && gap >= kAutoResetMinIn &&
-               gap <= kMaxPositionCorrectionIn) {
-        apply("GPS_AUTO_RESET");
     }
     return estimate;
 }
 
-// Ask the telemetry task for one correction at a route waypoint.
-inline void request_checkpoint(double x_in, double y_in, double radius_in) {
-    auto& st = shared_state();
-    st.checkpoint_x = x_in;
-    st.checkpoint_y = y_in;
-    st.checkpoint_radius = radius_in;
-    st.checkpoint_applied = false;
-    st.checkpoint_pending = true;
-}
-
-inline bool checkpoint(double x_in, double y_in, double radius_in,
-                       std::uint32_t wait_ms) {
-    auto& st = shared_state();
-    if (!st.initialized || !st.relative || !st.anchor_valid) return false;
-    request_checkpoint(x_in, y_in, radius_in);
-    const std::uint32_t began = pros::millis();
-    while (st.checkpoint_pending && pros::millis() - began < wait_ms)
-        pros::delay(10);
-    st.checkpoint_pending = false;
-    return st.checkpoint_applied;
-}
-
 inline void set_auto_reset(bool enabled) {
+    std::lock_guard<pros::Mutex> lock(state_mutex());
     auto& st = shared_state();
     st.auto_reset = enabled;
     st.rest_s = 0.0;
 }
 
-inline bool read_stable_pose(const pros::Gps& gps,
-                             lemlib::Chassis& chassis,
-                             GpsPose& result) {
-    const std::uint32_t start = pros::millis();
-    std::uint32_t stable_count = 0;
-    double reference_x = 0.0;
-    double reference_y = 0.0;
-    double reference_theta = 0.0;
-    lemlib::Pose odom_reference{0.0f, 0.0f, 0.0f};
-    double sum_x = 0.0;
-    double sum_y = 0.0;
-    double sum_heading_sin = 0.0;
-    double sum_heading_cos = 0.0;
-    GpsPose latest{};
+inline const char* fix_name(Fix status) {
+    switch (status) {
+        case Fix::APPLIED: return "APPLIED";
+        case Fix::ALREADY_ALIGNED: return "ALREADY_ALIGNED";
+        case Fix::NO_GPS: return "NO_GPS";
+        case Fix::NO_ANCHOR: return "NO_ANCHOR";
+        case Fix::MOVING: return "MOVING";
+        case Fix::NO_FIX: return "NO_FIX";
+        case Fix::UNSTABLE: return "UNSTABLE";
+        case Fix::OFF_TARGET: return "OFF_TARGET";
+        case Fix::TOO_LARGE: return "TOO_LARGE";
+    }
+    return "?";
+}
 
-    do {
-        latest = read_pose(gps);
-        const lemlib::Pose odom = chassis.getPose();
-        if (latest.ok && !chassis.isInMotion()) {
-            const double dx = latest.x_in - reference_x;
-            const double dy = latest.y_in - reference_y;
-            const double odom_dx = odom.x - odom_reference.x;
-            const double odom_dy = odom.y - odom_reference.y;
-            const bool stable_position =
-                std::hypot(dx, dy) <= kStablePositionDeltaIn;
-            const bool stable_heading =
-                heading_delta_deg(latest.theta_deg, reference_theta) <=
-                kStableHeadingDeltaDeg;
-            const bool stable_odometry =
-                std::hypot(odom_dx, odom_dy) <= kStableOdomPositionDeltaIn &&
-                heading_delta_deg(odom.theta, odom_reference.theta) <=
-                    kStableOdomHeadingDeltaDeg;
-            if (stable_count == 0 ||
-                (stable_position && stable_heading && stable_odometry)) {
-                if (stable_count == 0) {
-                    reference_x = latest.x_in;
-                    reference_y = latest.y_in;
-                    reference_theta = latest.theta_deg;
-                    odom_reference = odom;
-                    sum_x = 0.0;
-                    sum_y = 0.0;
-                    sum_heading_sin = 0.0;
-                    sum_heading_cos = 0.0;
+// Blocking, caller's task: wait for the robot to be parked, then average raw
+// robot-center fixes that agree with each other. Returns true with the mean
+// in `mean` (field frame); otherwise `why` says what was missing when
+// wait_ms ran out.
+inline bool stationary_fix(std::uint32_t wait_ms, GpsPose& mean, int& count,
+                           Fix& why) {
+    auto& st = shared_state();
+    const std::uint32_t began = pros::millis();
+    lemlib::Pose still_at = st.chassis->getPose();
+    std::uint32_t still_since = began;
+    double sum_x = 0.0, sum_y = 0.0, sum_sin = 0.0, sum_cos = 0.0, sum_err = 0.0;
+    bool was_parked = false, saw_fix = false;
+    count = 0;
+    auto finish = [&] {
+        mean = {};
+        mean.ok = true;
+        mean.x_in = sum_x / count;
+        mean.y_in = sum_y / count;
+        mean.theta_deg =
+            normalize_deg(std::atan2(sum_sin, sum_cos) * 180.0 / kPi);
+        mean.err_m = sum_err / count;
+        return true;
+    };
+    while (true) {
+        const std::uint32_t now = pros::millis();
+        const lemlib::Pose odom = st.chassis->getPose();
+        const bool moved = st.chassis->isInMotion() ||
+            std::hypot(odom.x - still_at.x, odom.y - still_at.y) > kFixStillIn ||
+            heading_delta_deg(odom.theta, still_at.theta) > kFixStillDeg;
+        if (moved) {
+            still_at = odom;
+            still_since = now;
+            count = 0;
+            sum_x = sum_y = sum_sin = sum_cos = sum_err = 0.0;
+        } else if (now - still_since >= kFixSettleMs) {
+            was_parked = true;
+            const GpsPose p = read_pose(*st.gps);
+            if (p.ok) {
+                saw_fix = true;
+                // A reading that disagrees with the run so far restarts it.
+                if (count > 0 &&
+                    std::hypot(p.x_in - sum_x / count, p.y_in - sum_y / count) >
+                        kClusterIn) {
+                    count = 0;
+                    sum_x = sum_y = sum_sin = sum_cos = sum_err = 0.0;
                 }
-                ++stable_count;
-                sum_x += latest.x_in;
-                sum_y += latest.y_in;
-                const double heading_rad = latest.theta_deg * kPi / 180.0;
-                sum_heading_sin += std::sin(heading_rad);
-                sum_heading_cos += std::cos(heading_rad);
-                if (stable_count >= kStableReadCount) {
-                    latest.x_in = sum_x / stable_count;
-                    latest.y_in = sum_y / stable_count;
-                    latest.theta_deg = normalize_deg(
-                        std::atan2(sum_heading_sin, sum_heading_cos) *
-                        180.0 / kPi
-                    );
-                    result = latest;
-                    // Repeated API reads are not guaranteed to be distinct
-                    // camera fixes; this window is only a stability filter.
-                    return true;
-                }
-            } else {
-                reference_x = latest.x_in;
-                reference_y = latest.y_in;
-                reference_theta = latest.theta_deg;
-                odom_reference = odom;
-                sum_x = latest.x_in;
-                sum_y = latest.y_in;
-                const double heading_rad = latest.theta_deg * kPi / 180.0;
-                sum_heading_sin = std::sin(heading_rad);
-                sum_heading_cos = std::cos(heading_rad);
-                stable_count = 1;
+                ++count;
+                sum_x += p.x_in;
+                sum_y += p.y_in;
+                sum_sin += std::sin(p.theta_deg * kPi / 180.0);
+                sum_cos += std::cos(p.theta_deg * kPi / 180.0);
+                sum_err += p.err_m;
+                if (count >= kFixSamples) return finish();
             }
-        } else {
-            stable_count = 0;
         }
-
-        if (pros::millis() - start >= kStableReadBudgetMs) break;
-        pros::delay(kResetPollMs);
-    } while (pros::millis() - start <= kStableReadBudgetMs);
-
+        if (now - began >= wait_ms) break;
+        pros::delay(kFixPollMs);
+    }
+    if (count >= kFixMinSamples) return finish();
+    why = !was_parked ? Fix::MOVING : saw_fix ? Fix::UNSTABLE : Fix::NO_FIX;
     return false;
 }
 
-inline bool apply_reset(const GpsPose& p) {
+// Shared by checkpoint() and reset(): one bounded odometry X/Y correction
+// from a stationary raw GPS fix. Every outcome is logged with its numbers.
+inline Correction correct(bool has_waypoint, double waypoint_x,
+                          double waypoint_y, double radius_in,
+                          double min_gap_in, std::uint32_t wait_ms) {
     auto& st = shared_state();
-    if (!p.ok || st.chassis == nullptr || st.chassis->isInMotion() ||
-        (st.relative && !st.anchor_valid))
-        return false;
+    Correction c{};
+    if (!st.initialized || st.gps == nullptr || st.chassis == nullptr) {
+        c.status = Fix::NO_GPS;
+    } else if (st.relative && !st.anchor_valid) {
+        c.status = Fix::NO_ANCHOR;
+    } else {
+        GpsPose fix{};
+        Fix why = Fix::NO_FIX;
+        if (!stationary_fix(wait_ms, fix, c.samples, why)) {
+            c.status = why;
+        } else {
+            std::lock_guard<pros::Mutex> lock(state_mutex());
+            const GpsPose route = to_auton_frame(fix);
+            const lemlib::Pose odom = st.chassis->getPose();
+            c.gps_x_in = route.x_in;
+            c.gps_y_in = route.y_in;
+            c.odom_x_in = odom.x;
+            c.odom_y_in = odom.y;
+            c.gap_in = std::hypot(route.x_in - odom.x, route.y_in - odom.y);
+            c.off_target_in = has_waypoint
+                ? std::hypot(route.x_in - waypoint_x, route.y_in - waypoint_y)
+                : 0.0;
+            if (!std::isfinite(c.gap_in) || !std::isfinite(c.off_target_in)) {
+                c.status = Fix::NO_FIX;
+            } else if (has_waypoint && c.off_target_in > radius_in) {
+                c.status = Fix::OFF_TARGET;
+            } else if (c.gap_in > kMaxPositionCorrectionIn) {
+                c.status = Fix::TOO_LARGE;
+            } else if (c.gap_in < min_gap_in) {
+                c.status = Fix::ALREADY_ALIGNED;
+            } else {
+                // Position only: heading stays with the IMU.
+                st.chassis->setPose(route.x_in, route.y_in, odom.theta);
+                st.estimator.rebase(route.x_in, route.y_in, odom.theta);
+                c.status = Fix::APPLIED;
+            }
+        }
+    }
+    std::printf("GPS_FIX,%s,gps=%.2f/%.2f,odom=%.2f/%.2f,gap=%.2f,"
+                "off_target=%.2f,samples=%d\n", fix_name(c.status), c.gps_x_in,
+                c.gps_y_in, c.odom_x_in, c.odom_y_in, c.gap_in,
+                c.off_target_in, c.samples);
+    fieldviz::print(kGpsLcdLine, "GPS %s %.1f in", fix_name(c.status), c.gap_in);
+    return c;
+}
 
-    const GpsPose f = to_auton_frame(p);
-    if (!std::isfinite(f.x_in) || !std::isfinite(f.y_in) ||
-        !std::isfinite(f.theta_deg))
-        return false;
-    const lemlib::Pose current = st.chassis->getPose();
-    if (std::hypot(f.x_in - current.x, f.y_in - current.y) >
-        kMaxPositionCorrectionIn)
-        return false;
+inline Correction checkpoint(double x_in, double y_in, double radius_in,
+                             std::uint32_t wait_ms) {
+    return correct(true, x_in, y_in, radius_in, kCheckpointMinIn, wait_ms);
+}
 
-    // Position is corrected first; retain LemLib's validated odometry/IMU
-    // heading until GPS heading has been independently qualified.
-    st.chassis->setPose(f.x_in, f.y_in, current.theta);
-    // Brain screen: the pose the GPS just reset the robot to.
-    // "GPSR" = relative (auton-frame) mode, "GPS" = absolute field frame.
-    fieldviz::print(kGpsLcdLine, st.relative ? "GPSR (%.1f, %.1f, %.0f)"
-                                           : "GPS (%.1f, %.1f, %.0f)",
-                     f.x_in, f.y_in, current.theta);
-    return true;
+inline bool reset() {
+    return correct(false, 0.0, 0.0, 0.0, 0.0, 400).status == Fix::APPLIED;
 }
 
 inline void init(lemlib::Chassis& chassis, std::uint8_t gps_port,
@@ -639,24 +648,48 @@ inline bool capture_start_as(double x_in, double y_in, double theta_deg) {
     auto& st = shared_state();
     if (!st.initialized || st.gps == nullptr) return false;
 
-    // A capture begins a new localization run. Clear every piece of state
-    // that could otherwise reuse data from an earlier
-    // autonomous invocation. Invalid or unavailable anchors remain in
-    // relative mode but fail closed; they never fall back to absolute field
-    // coordinates behind a start-relative route's back.
-    st.relative = true;
-    st.anchor_valid = false;
+    // A capture begins a new localization run. An invalid or unavailable
+    // anchor leaves relative mode on but failing closed; it never falls back
+    // to absolute field coordinates behind a start-relative route's back.
+    {
+        std::lock_guard<pros::Mutex> lock(state_mutex());
+        st.relative = true;
+        st.anchor_valid = false;
+    }
     if (st.anchor_observer) st.anchor_observer(false, 0.0, 0.0, 0.0);
     if (!std::isfinite(x_in) || !std::isfinite(y_in) ||
         !std::isfinite(theta_deg) || st.chassis == nullptr ||
         st.chassis->isInMotion()) {
-        fieldviz::print(kGpsLcdLine,
-                            "GPS no anchor");
+        fieldviz::print(kGpsLcdLine, "GPS no anchor");
         return false;
     }
 
+    // Best source: the live estimate, when the robot has been parked with
+    // good fixes long enough for it to be an average of many of them.
     GpsPose p{};
-    if (read_stable_pose(*st.gps, *st.chassis, p)) {
+    const char* source = "estimate";
+    {
+        std::lock_guard<pros::Mutex> lock(state_mutex());
+        const Estimator& e = st.estimator;
+        if (e.locked && e.steady_s >= kAnchorSteadyS) {
+            p.ok = true;
+            p.x_in = e.x;
+            p.y_in = e.y;
+            p.theta_deg = e.steady_heading;
+        }
+    }
+    if (!p.ok) {
+        source = "raw";
+        int count = 0;
+        Fix why = Fix::NO_FIX;
+        if (!stationary_fix(kAnchorWaitMs, p, count, why)) {
+            std::printf("GPS_ANCHOR,FAILED,%s\n", fix_name(why));
+            fieldviz::print(kGpsLcdLine, "GPS no anchor: %s", fix_name(why));
+            return false;
+        }
+    }
+    {
+        std::lock_guard<pros::Mutex> lock(state_mutex());
         st.anchor_x_in = p.x_in;
         st.anchor_y_in = p.y_in;
         st.anchor_theta_deg = p.theta_deg;
@@ -664,30 +697,12 @@ inline bool capture_start_as(double x_in, double y_in, double theta_deg) {
         st.decl_y_in = y_in;
         st.decl_theta_deg = normalize_deg(theta_deg);
         st.anchor_valid = true;
-        if (st.anchor_observer) st.anchor_observer(true, p.x_in, p.y_in, p.theta_deg);
-        fieldviz::print(kGpsLcdLine, "GPS anchor ok");
-        return true;
     }
-    fieldviz::print(kGpsLcdLine, "GPS no fix");
-    return false;
-}
-
-inline bool reset() {
-    auto& st = shared_state();
-    if (!st.initialized || st.chassis == nullptr || st.gps == nullptr)
-        return false;
-    if (st.relative && !st.anchor_valid) {
-        fieldviz::print(kGpsLcdLine,
-                            "GPS no anchor");
-        return false;
-    }
-    if (st.chassis->isInMotion()) return false;
-
-    GpsPose p{};
-    if (read_stable_pose(*st.gps, *st.chassis, p) && apply_reset(p)) return true;
-    // No stable, plausible, stationary fix within 250 ms: skip this correction.
-    fieldviz::print(kGpsLcdLine, "GPS no fix");
-    return false;
+    if (st.anchor_observer) st.anchor_observer(true, p.x_in, p.y_in, p.theta_deg);
+    std::printf("GPS_ANCHOR,%s,%.2f,%.2f,%.1f\n", source, p.x_in, p.y_in,
+                p.theta_deg);
+    fieldviz::print(kGpsLcdLine, "GPS anchor ok");
+    return true;
 }
 
 }  // namespace gpsreset

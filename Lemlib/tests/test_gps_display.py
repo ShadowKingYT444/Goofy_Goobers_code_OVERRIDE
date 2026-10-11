@@ -18,15 +18,27 @@ namespace pros {
 inline std::uint32_t clock_ms = 0;
 inline std::uint32_t millis() { return clock_ms; }
 inline void delay(std::uint32_t ms) { clock_ms += ms; }
+class Mutex {
+public:
+    void lock() {}
+    void unlock() {}
+};
 struct gps_status_s_t { double x = 0, y = 0; };
 class Gps {
 public:
     inline static double error = 0.01, heading = 90;
     inline static gps_status_s_t position{};
+    // Non-zero: successive readings alternate this far (meters) either side.
+    inline static double wobble_m = 0;
+    inline static int reads = 0;
     Gps(std::uint8_t, double, double) {}
     double get_error() const { return error; }
     double get_heading() const { return heading; }
-    gps_status_s_t get_position_and_orientation() const { return position; }
+    gps_status_s_t get_position_and_orientation() const {
+        gps_status_s_t p = position;
+        p.x += (++reads % 2 ? wobble_m : -wobble_m);
+        return p;
+    }
 };
 namespace lcd {
 inline std::string text;
@@ -306,36 +318,85 @@ int main() {
     assert(chassis.set_pose_calls == before_auto + 1);
     set_auto_reset(false);
 
-    // Route checkpoints: one correction, only if the GPS agrees the robot is
-    // at the waypoint and not wildly far from odometry.
+    // Route checkpoints: a correction from stationary RAW fixes, with the
+    // reason for every outcome.
+    chassis.pose = {15, 16, 177};
     const int before_cp = chassis.set_pose_calls;
-    chassis.pose = {13, 16, 177};                         // 2 in off
-    shared_state().estimator.rebase(13, 16, 177);
-    request_checkpoint(30, 16, 6);                        // wrong waypoint
-    pros::delay(50); live_pose();
-    assert(chassis.set_pose_calls == before_cp && !shared_state().checkpoint_pending);
-    request_checkpoint(15, 16, 6);
-    chassis.moving = true;                                // not stopped yet
-    pros::delay(50); live_pose();
-    assert(chassis.set_pose_calls == before_cp && shared_state().checkpoint_pending);
+    auto cp = checkpoint(15, 16);
+    assert(cp.status == Fix::ALREADY_ALIGNED && !cp && cp.samples >= kFixMinSamples);
+    chassis.pose = {13, 16, 177};                         // odometry 2 in off
+    cp = checkpoint(30, 16);                              // wrong waypoint
+    assert(cp.status == Fix::OFF_TARGET); near(cp.off_target_in, 15);
+    chassis.moving = true;
+    assert(checkpoint(15, 16).status == Fix::MOVING);
     chassis.moving = false;
-    pros::delay(50); live_pose();
-    assert(chassis.set_pose_calls == before_cp + 1 && shared_state().checkpoint_applied);
+    pros::Gps::error = infinity;
+    assert(checkpoint(15, 16).status == Fix::NO_FIX);
+    pros::Gps::error = 0.01;
+    pros::Gps::wobble_m = 4 * 0.0254;                     // readings 8 in apart
+    assert(checkpoint(15, 16).status == Fix::UNSTABLE);
+    pros::Gps::wobble_m = 0.5 * 0.0254;                   // ordinary jitter averages out
+    assert(chassis.set_pose_calls == before_cp);
+    cp = checkpoint(15, 16);
+    assert(cp.status == Fix::APPLIED && cp && cp.samples == kFixSamples);
+    near(cp.gap_in, 2); near(cp.gps_x_in, 15); near(cp.odom_x_in, 13);
     near(chassis.pose.x, 15); near(chassis.pose.y, 16); near(chassis.pose.theta, 177);
-    chassis.pose = {14, 16, 177};                         // 1 in: leave it
-    shared_state().estimator.rebase(14, 16, 177);
-    request_checkpoint(15, 16, 6);
-    pros::delay(50); live_pose();
-    assert(chassis.set_pose_calls == before_cp + 1 && !shared_state().checkpoint_applied);
-    chassis.pose = {15, 6, 177};                          // 10 in: not believable
-    shared_state().estimator.rebase(15, 6, 177);
-    request_checkpoint(15, 16, 6);
-    pros::delay(50); live_pose();
     assert(chassis.set_pose_calls == before_cp + 1);
-    // Nobody serving requests (or no anchor): checkpoint() gives up, no hang.
-    assert(!checkpoint(15, 16));
-    assert(!shared_state().checkpoint_pending);
+    pros::Gps::wobble_m = 0;
+    chassis.pose = {15, 6, 177};                          // 10 in: not believable
+    assert(checkpoint(15, 16).status == Fix::TOO_LARGE);
+    assert(chassis.set_pose_calls == before_cp + 1);
+
+    // The case the old checkpoint missed: odometry slips right before the
+    // stop, so the smoothed estimate still agrees with odometry while the
+    // raw GPS does not. The correction must come from the raw fixes.
     chassis.pose = {15, 16, 180};
+    shared_state().estimator.rebase(15, 16, 180);
+    for (int i = 0; i < 10; ++i) { pros::delay(50); live_pose(); }
+    near(live_pose().x_in, 48);
+    reading(53, 21, 90);                  // truth is 5 in away: route (15, 11)
+    pros::delay(50);
+    const auto lagging = to_auton_frame(live_pose());
+    assert(std::hypot(lagging.x_in - 15, lagging.y_in - 16) < 1.5);  // not yet visible
+    cp = checkpoint(15, 11);
+    assert(cp.status == Fix::APPLIED); near(cp.gap_in, 5);
+    near(chassis.pose.x, 15); near(chassis.pose.y, 11);
+    // ...and the live estimate is not dragged along by that pose change: it
+    // keeps converging on the GPS from where it was (a shifted estimate
+    // would land beyond the GPS position, below 11).
+    pros::delay(50);
+    const auto after_cp = to_auton_frame(live_pose());
+    assert(after_cp.y_in > 11.0 && after_cp.y_in < lagging.y_in);
+    near(after_cp.x_in, 15);
+    reading(48, 21, 90);
+    chassis.pose = {15, 16, 180};
+    shared_state().estimator.rebase(15, 16, 180);
+
+    // Start anchor from the live estimate: after a second parked with good
+    // fixes it is used even if the GPS drops out at the instant of capture,
+    // and it is an average, not three raw samples.
+    pros::Gps::wobble_m = 1.0 * 0.0254;
+    for (int i = 0; i < 40; ++i) { pros::delay(50); live_pose(); }
+    assert(shared_state().estimator.steady_s >= kAnchorSteadyS);
+    pros::Gps::error = infinity;
+    assert(capture_start_as(15, 16, 180));
+    assert(std::abs(shared_state().anchor_x_in - 48) < 0.4);
+    near(shared_state().anchor_y_in, 21);
+    assert(std::abs(shared_state().anchor_theta_deg - 90) < 0.5);
+    pros::Gps::error = 0.01;
+    pros::Gps::wobble_m = 0;
+    // Without that history it falls back to raw fixes and fails closed
+    // (with the reason) when there are none.
+    shared_state().estimator.reset();
+    pros::Gps::error = infinity;
+    assert(!capture_start_as(15, 16, 180));
+    assert(checkpoint(15, 16).status == Fix::NO_ANCHOR);
+    pros::Gps::error = 0.01;
+    reading(64, 6, 90);
+    assert(capture_start_as(0, 0, 180));
+    anchor_notifications = 2;                             // as after one good capture
+    chassis.pose = {15, 16, 180};
+    reading(48, 21, 90);
 
     // A failed recapture invalidates the anchor (resets fail closed and the
     // map hides the motor marker); a successful one republishes it.

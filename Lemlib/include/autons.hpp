@@ -3,10 +3,11 @@
 #include <cstdint>
 #include <atomic>
 
-void one_pin_auton();
+void two_pin_far_auton();  // replaces the old one_pin_auton
 void three_pin_auton();
 void gps_reset_test_auton();
 void gps_mount_survey_auton();
+void curve_autotune_auton();  // src/curve_autotune.cpp
 void test_shi();
 // void pid_autotune_auton();  // src/pid_autotune.cpp, disabled
 void motion_test_auton();
