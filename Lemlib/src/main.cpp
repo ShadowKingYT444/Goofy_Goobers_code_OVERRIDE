@@ -2,6 +2,7 @@
 #include "autons.hpp"
 #include "gps_reset/gps_reset.hpp"
 #include "field_map.hpp"
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 namespace {
@@ -9,6 +10,53 @@ namespace {
 // Background tasks must only refer to state that outlives that stack.
 std::atomic_bool arm_auto_moving{false};
 std::atomic_bool arm_auto_cancelled{false};
+std::atomic_bool lift_auto_cancelled{false};
+std::atomic_bool claw_pressed{false};
+
+// RIGHT macro: the arm comes down to arm_position::release_deg, the claw
+// piston lets go of the element halfway there, then the lift lowers to rest.
+// The skills route repeats this sequence (put_on in src/autons.cpp).
+constexpr double kReleaseArmDeg = arm_position::release_deg;
+constexpr std::uint32_t kReleaseSettleMs = arm_position::release_settle_ms;
+
+void cancel_driver_macros() {
+    arm_auto_cancelled.store(true);
+    lift_auto_cancelled.store(true);
+}
+
+void release_and_lower() {
+    const double start_deg = claw_sensor.get_position() / 100.0;
+    const double release_within_deg =
+        std::abs(start_deg - kReleaseArmDeg) / 2.0;
+    pros::Task([] {
+        moveArm(kReleaseArmDeg, &arm_auto_cancelled);
+        arm_auto_moving.store(false);
+    });
+    while (std::abs(claw_sensor.get_position() / 100.0 - kReleaseArmDeg) >
+           release_within_deg) {
+        // The arm stopped short of halfway: keep hold of the element.
+        if (arm_auto_cancelled.load() || !arm_auto_moving.load()) return;
+        pros::delay(10);
+    }
+    // Open, whatever L1 last did: autonomous moves this piston too, so the
+    // L1 toggle's idea of its state cannot be trusted here.
+    claw_pressed.store(false);
+    claw_piston.set_value(false);
+    pros::delay(kReleaseSettleMs);
+    lowerLiftToRest(&lift_auto_cancelled);
+}
+
+// Ends any automatic arm or lift move still running, so a new one can start.
+// moveArm() can sit just short of its target indefinitely, which used to
+// leave Y and RIGHT dead until DOWN was pressed.
+void take_over_arm() {
+    cancel_driver_macros();
+    for (int i = 0; i < 10 && arm_auto_moving.load(); ++i) pros::delay(10);
+    pros::delay(30);  // every macro loop has seen the cancel by now
+    arm_auto_moving.store(true);
+    arm_auto_cancelled.store(false);
+    lift_auto_cancelled.store(false);
+}
 
 void boot_stage(const char* stage) {
     std::printf("BOOT_STAGE,%s\n", stage);
@@ -44,19 +92,12 @@ lemlib::ExpoDriveCurve steer_curve(5, 0, 1.0);
 lemlib::Chassis chassis(drivetrain, lateral_controller, angular_controller,
                         sensors, &throttle_curve, &steer_curve);
 
-pros::Motor slider_left(-9, pros::MotorGears::green);
+pros::Motor slider_left(-19, pros::MotorGears::green);
 pros::Motor slider_right(2, pros::MotorGears::green);
 pros::Rotation lift_sensor(16);
 pros::Rotation claw_sensor(12);
 pros::Motor claw_arm(20, pros::MotorGears::green);
 pros::adi::DigitalOut clamp_piston('A');
-// Prints the arm rotation sensor (claw_sensor, port 7) degrees to the terminal
-// so default/max/1-pin arm heights can be read off and set for auton.
-void print_arm_degrees() {
-    printf("Arm angle: %.2f deg | position: %.2f deg\n",
-           claw_sensor.get_angle() / 100.0,
-           claw_sensor.get_position() / 100.0);
-}
 void initialize() {
     fieldviz::start();
     boot_stage("initialize_begin");
@@ -109,12 +150,15 @@ void initialize() {
     boot_stage("initialize_done");
 }
 
-void disabled() { arm_auto_cancelled.store(true); }
-void competition_initialize() { arm_auto_cancelled.store(true); }
+void disabled() {
+    cancel_driver_macros();
+    setLiftLock(false);
+}
+void competition_initialize() { cancel_driver_macros(); }
 
 // Routine run by autonomous() and the LEFT hotkey. Build another one into a
 // slot without editing this file:
-//   pros make EXTRA_CXXFLAGS=-DAUTON_ROUTINE=pid_autotune_auton
+//   pros make EXTRA_CXXFLAGS=-DAUTON_ROUTINE=two_pin_far_auton
 #ifndef AUTON_ROUTINE
 #define AUTON_ROUTINE three_pin_auton
 #endif
@@ -122,9 +166,11 @@ void competition_initialize() { arm_auto_cancelled.store(true); }
 #define AUTON_NAME(name) AUTON_NAME_(name)
 
 void autonomous() {
-    arm_auto_cancelled.store(true);
+    cancel_driver_macros();
     const std::uint32_t startedAt = pros::millis();
+    setLiftLock(true);
     AUTON_ROUTINE();
+    setLiftLock(false);
     const std::uint32_t elapsedMs = pros::millis() - startedAt;
     // Shown on the Brain so a run can be checked against the 15 s period.
     fieldviz::print(7, "Auto took %.1f s", elapsedMs / 1000.0);
@@ -147,9 +193,10 @@ void autonomous() {
 void opcontrol() {
     pros::Controller master(pros::E_CONTROLLER_MASTER);
     bool clamp_pressed = false;
-    bool claw_pressed = false;
     uint32_t next_lift_report = 0;
-    arm_auto_cancelled.store(true);
+    cancel_driver_macros();
+    // Driver control runs the lift lock itself, below.
+    setLiftLock(false);
 
     while (true) {
         // Preserve the old single-stick arcade behavior and turn direction.
@@ -161,10 +208,13 @@ void opcontrol() {
                              : (master.get_digital(pros::E_CONTROLLER_DIGITAL_R2)
                                     ? -127
                                     : 0);
-    
-        
-        slider_left.move(-lift);
-        slider_right.move(-lift);
+        // R1/R2 take the lift back from the RIGHT macro. With neither held,
+        // the lift is locked at max height once it is 95% of the way up.
+        if (lift != 0) lift_auto_cancelled.store(true);
+        if (lift != 0 || (!liftMoveActive() && !holdLiftAtMax())) {
+            slider_left.move(-lift);
+            slider_right.move(-lift);
+        }
         const int spin = (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2)
                              ? 100
                 
@@ -176,15 +226,19 @@ void opcontrol() {
             clamp_piston.set_value(clamp_pressed);
         }
         
-        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_Y) &&
-            !arm_auto_moving.exchange(true)) {
-            arm_auto_cancelled.store(false);
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_Y)) {
+            take_over_arm();
             pros::Task([] {
-                moveArm(530, &arm_auto_cancelled);
+                moveArm(arm_position::max_deg, &arm_auto_cancelled);
                 arm_auto_moving.store(false);
             });
         }
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_RIGHT)) {
+            take_over_arm();
+            pros::Task release_task(release_and_lower);
+        }
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
+            lift_auto_cancelled.store(true);
             slider_left.move(-127);
             slider_right.move(-127);
             pros::delay(150);
@@ -194,16 +248,25 @@ void opcontrol() {
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT)) {
             autonomous();
         }
+        // UP records a hand-driven curve for the two-pin far route.
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_UP))
+            master.rumble(curveCaptureToggle() ? "." : "-");
+        curveCaptureSample();
+        // X notes the lift and arm heights on the Brain, for the skills
+        // route's stacking levels.
+        if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_X)) {
+            master.print(0, 0, "Height %d noted  ", recordHeights());
+            pros::delay(60);  // the controller drops commands sent closer
+            master.rumble(".");
+        }
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_L1)) {
-            claw_pressed = !claw_pressed;
-            claw_piston.set_value(claw_pressed);
+            claw_pressed.store(!claw_pressed.load());
+            claw_piston.set_value(claw_pressed.load());
         }
         // B prints a snapshot of the arm degrees on demand.
         
-        constexpr double ARM_MAX_DEG = 550.2;
         constexpr double ARM_MIN_DEG = 0.0;
         const bool manual_arm_input =
-            master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) ||
             master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN);
         if (manual_arm_input && arm_auto_moving) {
             // Manual input has priority over the automatic Y move.
@@ -215,13 +278,10 @@ void opcontrol() {
             double arm_deg = claw_sensor.get_position() / 100.0;
 
                 int arm =
-                    (master.get_digital(pros::E_CONTROLLER_DIGITAL_RIGHT) &&
-                    arm_deg < ARM_MAX_DEG)
-                        ? -127
-                        : ((master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN) &&
-                            arm_deg > ARM_MIN_DEG)
-                            ? 127
-                            : 0);
+                    (master.get_digital(pros::E_CONTROLLER_DIGITAL_DOWN) &&
+                     arm_deg > ARM_MIN_DEG)
+                        ? 127
+                        : 0;
 
                 claw_arm.move(arm);
             }

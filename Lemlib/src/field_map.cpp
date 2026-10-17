@@ -13,7 +13,8 @@ struct State {
     bool anchor_ok = false;
     gpsreset::FramePose anchor{0, 0, 0};
     char status[96] = "Starting sensors...";
-    char report[384] = "";
+    char report[768] = "";
+    bool report_full = false;  // over the whole screen, map included
 };
 State& state() { static State value; return value; }
 constexpr std::uint32_t kMotorColor = 0x36d9ee;
@@ -172,7 +173,8 @@ void render(lv_timer_t*) {
     bool anchor_ok;
     gpsreset::FramePose anchor;
     char message[96];
-    char report[384];
+    char report[768];
+    bool report_full;
     auto& shared = state();
     {
         std::lock_guard<pros::Mutex> guard(shared.mutex);
@@ -181,6 +183,7 @@ void render(lv_timer_t*) {
         anchor = shared.anchor;
         std::snprintf(message, sizeof(message), "%s", shared.status);
         std::snprintf(report, sizeof(report), "%s", shared.report);
+        report_full = shared.report_full;
     }
     if (!view.screen) create_view(view);
     auto motor_field = to_field(sample.motor, anchor);
@@ -215,6 +218,8 @@ void render(lv_timer_t*) {
                           sample.imu_deg, sample.lift_deg, sample.claw_deg);
     if (report[0]) {
         lv_label_set_text(view.report, report);
+        lv_obj_set_pos(view.report, report_full ? 0 : 222, 0);
+        lv_obj_set_size(view.report, report_full ? 480 : 258, 240);
         lv_obj_remove_flag(view.report, LV_OBJ_FLAG_HIDDEN);
     } else lv_obj_add_flag(view.report, LV_OBJ_FLAG_HIDDEN);
     move_start(view, anchor, anchor_ok);
@@ -279,4 +284,12 @@ void fieldviz::report(const char* format, ...) {
     auto& shared = state();
     std::lock_guard<pros::Mutex> guard(shared.mutex);
     std::snprintf(shared.report, sizeof(shared.report), "%s", text);
+    shared.report_full = false;
+}
+
+void fieldviz::report_full(const char* text) {
+    auto& shared = state();
+    std::lock_guard<pros::Mutex> guard(shared.mutex);
+    std::snprintf(shared.report, sizeof(shared.report), "%s", text);
+    shared.report_full = true;
 }

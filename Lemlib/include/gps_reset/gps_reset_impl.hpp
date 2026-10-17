@@ -608,8 +608,8 @@ inline Correction correct(bool has_waypoint, double waypoint_x,
 }
 
 inline Correction checkpoint(double x_in, double y_in, double radius_in,
-                             std::uint32_t wait_ms) {
-    return correct(true, x_in, y_in, radius_in, kCheckpointMinIn, wait_ms);
+                             std::uint32_t wait_ms, double min_gap_in) {
+    return correct(true, x_in, y_in, radius_in, min_gap_in, wait_ms);
 }
 
 inline bool reset() {

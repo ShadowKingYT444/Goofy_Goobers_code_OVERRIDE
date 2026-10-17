@@ -1,0 +1,1249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Our Autonomous Works</title>
+<meta name="description" content="An animated walkthrough of how the robot knows where it is, how it plans its moves, and how PID control decides motor power.">
+<style>
+:root {
+  --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1f23; --muted: #5b616b; --line: #dcd9d1;
+  --grid: #e9e6de; --field: #eef0ea; --wall: #3b3f46; --code: #efede7;
+  --robot: #2563eb; --ghost: #e8590c; --good: #2f9e44; --bad: #d6336c; --gold: #c98a00;
+  --accent: #2563eb; --soft: #e7eefc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131519; --panel: #1b1e24; --ink: #e9e7e2; --muted: #9ba2ad; --line: #30343c;
+    --grid: #262a31; --field: #1e2228; --wall: #c9ccd2; --code: #23272e;
+    --robot: #6b9bff; --ghost: #ff8a3d; --good: #5fd27a; --bad: #ff6b9a; --gold: #f2c14e;
+    --accent: #6b9bff; --soft: #212b3d;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131519; --panel: #1b1e24; --ink: #e9e7e2; --muted: #9ba2ad; --line: #30343c;
+  --grid: #262a31; --field: #1e2228; --wall: #c9ccd2; --code: #23272e;
+  --robot: #6b9bff; --ghost: #ff8a3d; --good: #5fd27a; --bad: #ff6b9a; --gold: #f2c14e;
+  --accent: #6b9bff; --soft: #212b3d;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 960px; margin: 0 auto; padding: 0 16px 80px; }
+header.hero { max-width: 960px; margin: 0 auto; padding: 48px 16px 16px; }
+.eyebrow { color: var(--muted); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 8px; }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.15; margin: 0 0 12px; letter-spacing: -.01em; }
+h2 { font-size: 28px; line-height: 1.2; margin: 64px 0 8px; letter-spacing: -.01em; }
+h3 { font-size: 20px; margin: 36px 0 6px; }
+p { margin: 0 0 14px; }
+.lede { font-size: 18px; color: var(--muted); max-width: 720px; }
+.section-num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 8px; }
+nav.toc {
+  position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(6px); border-bottom: 1px solid var(--line);
+}
+nav.toc .inner { max-width: 960px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; align-items: center; }
+nav.toc a, nav.toc button {
+  white-space: nowrap; color: var(--ink); text-decoration: none; font-size: 14px;
+  padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel);
+  font-family: inherit; cursor: pointer;
+}
+nav.toc a:hover, nav.toc button:hover { border-color: var(--accent); }
+nav.toc .spacer { flex: 1; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 16px 0 20px; }
+.card canvas { display: block; width: 100%; border-radius: 8px; background: var(--field); }
+.caption { font-size: 14px; color: var(--muted); margin: 10px 0 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 0; font-size: 14px; }
+.controls button {
+  font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); cursor: pointer;
+}
+.controls button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.controls label { display: inline-flex; align-items: center; gap: 8px; }
+.controls input[type=range] { width: 140px; accent-color: var(--accent); }
+.controls output { font-variant-numeric: tabular-nums; min-width: 3ch; display: inline-block; }
+.readouts { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 10px; font-size: 14px; }
+.readouts b { font-variant-numeric: tabular-nums; }
+.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px 0; }
+.three > div { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.three h4 { margin: 0 0 4px; font-size: 16px; }
+.three p { margin: 0; font-size: 14px; color: var(--muted); }
+.three .q { font-size: 13px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+@media (max-width: 680px) { .three { grid-template-columns: 1fr; } }
+.loop { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+.loop .step {
+  flex: 1 1 150px; border: 1.5px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  background: var(--bg); transition: border-color .25s, background .25s, transform .25s;
+}
+.loop .step b { display: block; font-size: 15px; }
+.loop .step span { font-size: 13px; color: var(--muted); }
+.loop .step.active { border-color: var(--accent); background: var(--soft); transform: translateY(-2px); }
+.loop-foot { font-size: 14px; color: var(--muted); margin-top: 10px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.formula {
+  background: var(--code); border-radius: 8px; padding: 10px 14px; margin: 10px 0 14px;
+  font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-x: auto;
+}
+.note { border-left: 3px solid var(--gold); padding: 6px 12px; margin: 14px 0; background: var(--panel); border-radius: 0 8px 8px 0; font-size: 15px; }
+.lesson { border-left: 3px solid var(--good); padding: 6px 12px; margin: 14px 0; background: var(--panel); border-radius: 0 8px 8px 0; font-size: 15px; }
+ul.checks { list-style: none; padding: 0; margin: 12px 0 0; font-size: 14px; }
+ul.checks li { padding: 4px 0 4px 28px; position: relative; color: var(--muted); transition: color .2s; }
+ul.checks li::before {
+  content: ""; position: absolute; left: 4px; top: 8px; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--line);
+}
+ul.checks li.ok { color: var(--ink); }
+ul.checks li.ok::before { background: var(--good); border-color: var(--good); }
+ul.checks li.fail { color: var(--ink); }
+ul.checks li.fail::before { background: var(--bad); border-color: var(--bad); }
+ol.route-steps { padding-left: 22px; margin: 12px 0 0; font-size: 15px; }
+ol.route-steps li { padding: 3px 6px; border-radius: 6px; transition: background .2s; }
+ol.route-steps li.active { background: var(--soft); }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; min-height: 28px; }
+.tag { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
+td:first-child { white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); margin-top: 8px; }
+.legend i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+#odomCanvas { aspect-ratio: 16 / 10; } #contactCanvas { aspect-ratio: 16 / 9; } #gpsCanvas { aspect-ratio: 2 / 1; }
+#motionCanvas { aspect-ratio: 16 / 11; } #chainCanvas { aspect-ratio: 16 / 10; } #pickupCanvas { aspect-ratio: 16 / 8; }
+#stallCanvas { aspect-ratio: 16 / 8; } #pidCanvas { aspect-ratio: 16 / 11; } #liftCanvas { aspect-ratio: 16 / 7; } #routeCanvas { aspect-ratio: 16 / 12; }
+@media (max-width: 640px) {
+  #odomCanvas { aspect-ratio: 1 / 1; } #contactCanvas { aspect-ratio: 1 / 1; } #gpsCanvas { aspect-ratio: 2 / 1.15; }
+  #motionCanvas { aspect-ratio: 1 / 1; } #chainCanvas { aspect-ratio: 1 / 1; } #pickupCanvas { aspect-ratio: 1 / 1; }
+  #stallCanvas { aspect-ratio: 1 / 1; } #pidCanvas { aspect-ratio: 3 / 4; } #liftCanvas { aspect-ratio: 1 / 1; } #routeCanvas { aspect-ratio: 1 / 1.05; }
+}
+footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); margin-top: 60px; padding-top: 16px; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <p class="eyebrow">Goofy Goobers · V5RC Override · autonomous code walkthrough</p>
+  <h1>How our robot drives itself</h1>
+  <p class="lede">For the first 15 seconds of a match nobody touches the controller. The robot has to work out where it is, decide how to reach the next goal or stack, and choose how hard to drive each motor, about a hundred times a second. This page walks through each of those parts as they exist in our code today, with animations.</p>
+</header>
+
+<nav class="toc" aria-label="Sections">
+  <div class="inner">
+    <a href="#overview">Overview</a>
+    <a href="#where">1 · Where am I?</a>
+    <a href="#how">2 · How do I get there?</a>
+    <a href="#pid">3 · How much power?</a>
+    <a href="#route">4 · A full run</a>
+    <a href="#numbers">Key numbers</a>
+    <span class="spacer"></span>
+    <button id="pauseAll" type="button" aria-pressed="false">Pause animations</button>
+  </div>
+</nav>
+
+<main>
+
+<!-- ================= OVERVIEW ================= -->
+<section id="overview">
+  <h2>The big picture</h2>
+  <p>Everything the robot does on its own comes down to three questions, answered over and over:</p>
+  <div class="three">
+    <div><div class="q">Question 1</div><h4>Where am I?</h4><p>Localization: an estimate of the robot's position (x, y in inches) and heading (the direction it faces, in degrees).</p></div>
+    <div><div class="q">Question 2</div><h4>How do I get there?</h4><p>Motion control: turning a target such as "back the claw onto the stack" into a path: straight lines, turns and curves.</p></div>
+    <div><div class="q">Question 3</div><h4>How much power?</h4><p>PID control: how hard to drive each motor right now so the robot arrives quickly without overshooting.</p></div>
+  </div>
+  <p>These run as one loop. Every 10 milliseconds the robot reads its sensors, updates its position estimate, works out where it should be heading, picks a motor power, and sends it to the motors. Then it does it all again with the new sensor readings.</p>
+  <div class="card">
+    <div class="loop" id="loop">
+      <div class="step"><b>1. Read sensors</b><span>Wheel motor encoders, inertial sensor (IMU), GPS camera</span></div>
+      <div class="step"><b>2. Update position</b><span>Add the latest wheel movement in the direction the IMU reports</span></div>
+      <div class="step"><b>3. Plan the move</b><span>Distance and angle to the target, or to a point on a curve</span></div>
+      <div class="step"><b>4. PID</b><span>Turn those errors into a power for the left and right wheels</span></div>
+      <div class="step"><b>5. Drive motors</b><span>The robot moves a little, and the sensors see it</span></div>
+    </div>
+    <div class="loop-foot"><span>One pass takes 10 ms, so this loop runs 100 times a second.</span><span id="loopCount">Passes: 0</span></div>
+  </div>
+  <p>We use two libraries: <b>PROS</b>, which talks to the V5 hardware, and <b>LemLib</b>, an open-source library that provides the position tracking, the driving motions and the PID controllers. Our own code adds the parts LemLib does not have: ending moves when the robot is pushed against something, slowing down for pickups, correcting position from goals and from the GPS, and the routes themselves.</p>
+  <p class="note"><b>About the animations:</b> they are simplified models built from our code's numbers (gains, distances, thresholds). They show how each part behaves; they are not recordings of the real robot.</p>
+</section>
+
+<!-- ================= LOCALIZATION ================= -->
+<section id="where">
+  <h2><span class="section-num">1</span>Where am I? (localization)</h2>
+  <p>The robot keeps one running estimate of its <b>position</b> and <b>heading</b>. Our match routes measure position from the starting spot: the start is (0, 0), the robot faces the wall with the toggle (heading 180°), and +y points away from that wall. Headings are measured clockwise, with 0° pointing along +y. The skills route uses field coordinates instead (inches from the field's center), and converts them to the same system.</p>
+
+  <h3>Odometry: counting wheel turns</h3>
+  <p>Our robot has no separate tracking wheels, so it measures distance with the encoders built into the drive motors. Each encoder counts how far its wheel has turned. Our wheels are 2.75 in across, so one full turn rolls the robot about 8.6 in (2.75 × π). The <b>inertial sensor (IMU)</b> measures heading by sensing rotation, much like the sensor that rotates a phone screen.</p>
+  <p>Every 10 ms the robot takes the small distance the wheels moved since last time and adds it to its position, in the direction the IMU says it is facing:</p>
+  <div class="formula">distance = average of (left wheel change, right wheel change)<br>x = x + distance × sin(heading)<br>y = y + distance × cos(heading)</div>
+  <div class="card">
+    <canvas id="odomCanvas" role="img" aria-label="Animation: a robot drives a figure-eight while its wheel counters and heading dial update, and its estimated path is drawn next to its real path."></canvas>
+    <div class="controls">
+      <button id="odomSlip" type="button">Add wheel slip</button>
+      <button id="odomReset" type="button">Restart</button>
+    </div>
+    <div class="legend"><span><i style="background:var(--robot)"></i>Real robot and path</span><span><i style="background:var(--ghost)"></i>Where odometry thinks it is</span></div>
+    <p class="caption">With perfect grip the estimate sits right on top of the real path. Turn on wheel slip: the wheels spin a little more than the robot actually moves, mostly in turns, and the estimate slowly drifts away. The heading stays correct because it comes from the IMU, not the wheels.</p>
+  </div>
+  <p>Odometry is smooth and updates instantly, but every small error adds up and is never removed. On our robot the biggest causes are:</p>
+  <ul>
+    <li><b>Wheel slip.</b> Omni wheels skid sideways a little in fast turns and when the robot pushes into something.</li>
+    <li><b>Turning with a stack raised.</b> With the weight on the claw end, the robot pivots about a point behind its center. The center swings several inches and the drive wheels cannot see it.</li>
+    <li><b>Contact.</b> Hitting a goal or wall can shove the robot without the wheels turning the same amount.</li>
+  </ul>
+  <p>So we correct odometry from two other sources: physical contact with goals, and the GPS sensor.</p>
+
+  <h3>Contact references: using the goal as a ruler</h3>
+  <p>This is the reference we trust most. When the robot has just placed a stack on a goal, the claw's grip is sitting on the goal's center. The grip is 8 in behind the robot's center. The goal's position is known, and the IMU gives the heading, so the robot's center must be exactly 8 in from the goal along that heading, whatever odometry says. The code overwrites its position with that point.</p>
+  <div class="card">
+    <canvas id="contactCanvas" role="img" aria-label="Animation: the robot backs onto a goal. Its drifted estimate is several inches off; on contact the estimate jumps to a point 8 inches from the goal center along the robot's heading."></canvas>
+    <div class="legend"><span><i style="background:var(--robot)"></i>Real robot</span><span><i style="background:var(--ghost)"></i>Odometry estimate</span></div>
+    <p class="caption">Odometry thought the robot was a few inches off. Once the claw is on the goal, the position is reset from the goal: center = goal + 8 in along the heading. The heading itself is left alone, since the IMU is reliable.</p>
+  </div>
+
+  <h3>GPS: an absolute position from the field walls</h3>
+  <p>The VEX GPS sensor is a camera. The field walls carry a printed strip of black and white code, and the camera reads it to work out where it is on the field, the same way every time, without building up drift. It also reports how confident it is. On our robot the camera looks out of the robot's right side, with the lens 3.0 in forward of and 3.7 in to the right of the robot's center. The code shifts each reading by that offset so it describes the robot's center, not the camera's.</p>
+  <p>GPS readings jump around by an inch or so and can be wrong when the camera is blurred by fast spinning or when a wall is too close to see the strip. So we never just copy GPS into the position. A correction only happens at a <b>checkpoint</b>, and only if it passes these tests:</p>
+  <div class="card">
+    <canvas id="gpsCanvas" role="img" aria-label="Animation: the robot parks, the GPS camera takes several readings which appear as dots, one bad reading is dropped, the rest are averaged and checked before odometry is corrected."></canvas>
+    <ul class="checks" id="gpsChecks">
+      <li data-k="0">The robot is parked: wheels still, so the camera image is sharp</li>
+      <li data-k="1">Readings the sensor itself rates worse than 3 in are dropped; the rest are averaged (about 6 readings in a quarter second)</li>
+      <li data-k="2">The average is within 6 in of where the route expected the robot to be</li>
+      <li data-k="3">The average is within 8 in of odometry (a bigger gap is more likely a bad reading)</li>
+      <li data-k="4" id="gpsResult">Odometry's x and y are moved to the GPS average; the heading stays with the IMU</li>
+    </ul>
+    <div class="legend"><span><i style="background:var(--robot)"></i>Real robot</span><span><i style="background:var(--ghost)"></i>Odometry</span><span><i style="background:var(--good)"></i>Accepted reading</span><span><i style="background:var(--bad)"></i>Rejected reading</span></div>
+    <p class="caption">Left: the whole field, with the code strips on the walls and the camera's view. Right: a close-up around the robot. The animation alternates between a correction that is accepted and one that is refused because GPS and odometry disagree too much.</p>
+  </div>
+  <p>Separately, a background filter mixes every GPS reading with odometry for the live display on the Brain screen. It moves with the odometry between readings and is pulled about 20% of the way toward GPS every tenth of a second while parked (6% while driving). It ignores readings more than about 6 in from its current estimate, needs 3 readings that agree before it trusts GPS at all, and starts over if 8 "outliers" in a row agree with each other (which means the robot was really shoved). This keeps the display smooth while still being anchored to the field.</p>
+  <div class="lesson"><b>What we learned by testing:</b> more GPS corrections did not mean more accuracy. Running the three-pin route back to back, the version with a correction at every stop missed stack 1 and the version without corrections did not. Continuous correction while driving made it worse too. The route now uses contact references after every score and a single GPS checkpoint, right after clamping stack 2, where the odometry has drifted the most. We also take resets at the same spot and heading every time, so any error in the GPS mount repeats and can be tuned out instead of changing from run to run.</div>
+</section>
+
+<!-- ================= MOTION ================= -->
+<section id="how">
+  <h2><span class="section-num">2</span>How do I get there? (motion control)</h2>
+  <p>A route is a list of moves. LemLib gives us three kinds, and our code builds the rest on top of them:</p>
+  <ul>
+    <li><b>Turn</b> in place to a heading, or to face a point.</li>
+    <li><b>Move to a point</b>: drive to an (x, y) while steering toward it.</li>
+    <li><b>Move to a pose</b>: drive to an (x, y) and arrive facing a chosen heading, by following a curve.</li>
+  </ul>
+  <p>Our claw is on the back of the robot, so every pickup and every score is driven <b>backwards</b>, claw first. The same motions work in reverse; the robot simply aims its back at the target.</p>
+
+  <h3>Curves: the "carrot on a stick" method</h3>
+  <p>To arrive at a point already facing the right way (for example square onto a wall stack), LemLib uses a method called <b>boomerang</b>. Instead of aiming straight at the target, the robot chases a "carrot" point placed behind the target, on the line of the final heading. The carrot sits a fraction (the <b>lead</b>) of the remaining distance back from the target. As the robot gets closer, the carrot slides in toward the target, so the robot swings round and lines up. Our curve tuner, which drives test curves on the real robot and measures the result, picked a lead of 0.45.</p>
+  <div class="card">
+    <canvas id="motionCanvas" role="img" aria-label="Interactive animation: a robot drives to a target either straight or along a boomerang curve that chases a moving carrot point."></canvas>
+    <div class="controls">
+      <button id="mPoint" type="button">Straight to the point</button>
+      <button id="mPose" type="button" class="on">Curve to the pose</button>
+      <label>Lead <input id="mLead" type="range" min="0" max="0.9" step="0.05" value="0.45"><output id="mLeadOut">0.45</output></label>
+      <button id="mReplay" type="button">Replay</button>
+    </div>
+    <div class="legend"><span><i style="background:var(--robot)"></i>Robot</span><span><i style="background:var(--ghost)"></i>Carrot point it is chasing</span><span><i style="background:var(--muted)"></i>7.5 in final zone</span></div>
+    <p class="caption">Straight: the robot turns to face the target and drives at it, arriving at whatever angle it came in at. Curve: it arrives facing right (east). A bigger lead makes a wider swing. Inside the dashed 7.5 in circle LemLib stops steering toward the point and only holds the final heading, which is why any sideways error left over from a curve is carried into the target.</p>
+  </div>
+  <p>Our two-pin routes use a curve onto the wall stack that was not guessed: we drove it by hand while a recorder (the UP button) logged the path, then turned the recording into waypoints and headings. A curve pushed by hand disagreed with a controller-driven one by 7 in, so we use the controller-driven recording.</p>
+
+  <h3>Chaining moves: not stopping when you don't need to</h3>
+  <p>By default a move ends only once the robot has <b>settled</b>: slowed down and stayed within 1 in of the target for a moment. That is accurate but slow: on the robot each stop cost about half a second to a second. When one move leads straight into another, we give the first one a <b>minimum speed</b> (40 out of 127): it never drops below that power, and it ends as soon as it gets within 2 in of its target (or crosses the finish line through it). The next move then picks up while the robot is still rolling. Turns that hand over end within 4° at a floor of 20.</p>
+  <div class="card">
+    <canvas id="chainCanvas" role="img" aria-label="Animation comparing two robots driving two legs of 24 inches: one stops and settles at the middle point, the other rolls through it. A speed graph shows both."></canvas>
+    <div class="readouts" id="chainReadouts"></div>
+    <p class="caption">Both robots run the same two 24 in legs with our PID gains. The top one settles at the middle point; the bottom one hands over at 40 power. The graph is speed over time.</p>
+  </div>
+
+  <h3>Arriving gently at a stack</h3>
+  <p>Arriving fast at a stack can knock it over before the claw closes. The robot's arrival speed is set by the PID gain (more on that below): close to the target, the drive power is roughly 6 × the distance left. So for the last 10 in of every pickup our code switches the gain down to 3 and sets a minimum power of 24, so the robot still creeps all the way onto the stack instead of stalling short. The claw closes 8 in before the robot's center reaches the stack, which puts the grip right on it.</p>
+  <div class="card">
+    <canvas id="pickupCanvas" role="img" aria-label="Animation: the robot backs toward a stack; in the last 10 inches it slows down. A graph compares its speed with a normal approach."></canvas>
+    <div class="readouts" id="pickupReadouts"></div>
+    <div class="legend"><span><i style="background:var(--robot)"></i>Our pickup (gentle last 10 in)</span><span><i style="background:var(--ghost)"></i>Normal approach, for comparison</span></div>
+    <p class="caption">The graph shows speed against distance travelled. Inside the gentle zone our pickup runs at roughly half the speed of a normal approach, but the power floor keeps it moving until the claw is in place.</p>
+  </div>
+
+  <h3>Knowing when you have arrived</h3>
+  <p>When the robot drives into a goal or a wall, it may be stopped by the goal a little before its target point. Waiting to "settle" would then never finish: the robot just pushes until the move's time limit runs out. That was the cause of a bug where the robot waited about a second at every goal. LemLib has no way to notice this, so we added our own check: when a move is driven into contact, the code watches the drive wheels, and if they spin slower than 12 rpm for 150 ms (after the first 300 ms of the move) it ends the move there.</p>
+  <div class="card">
+    <canvas id="stallCanvas" role="img" aria-label="Animation: wheel speed drops as the robot hits the goal; our stall check ends the move 150 ms later, while waiting to settle would push until the time limit."></canvas>
+    <p class="caption">We also send these moves to a point slightly past the contact point on purpose, so the robot always reaches the goal and the stall check decides when it is done.</p>
+  </div>
+</section>
+
+<!-- ================= PID ================= -->
+<section id="pid">
+  <h2><span class="section-num">3</span>How much power? (PID control)</h2>
+  <p>At every step the robot knows its <b>error</b>: how far it still is from the target (in inches for driving, degrees for turning). A PID controller turns that error into a motor power between −127 and 127. It adds up three parts:</p>
+  <div class="three">
+    <div><div class="q">P · Proportional</div><h4>How far is left?</h4><p>Power proportional to the distance left. Far away means full power; close means gentle. With our setting of 6, the robot is still at full power until about 21 in out (6 × 21 ≈ 127).</p></div>
+    <div><div class="q">I · Integral</div><h4>How long have I been short?</h4><p>Adds up error over time to push through small leftover gaps. We set it to 0: it keeps growing while the robot is blocked and then overshoots. Minimum speeds and stall checks do its job instead.</p></div>
+    <div><div class="q">D · Derivative</div><h4>How fast am I closing?</h4><p>Looks at how quickly the error is shrinking and pushes back against it, like easing off the gas before a stop sign. It damps overshoot.</p></div>
+  </div>
+  <div class="formula">power = kP × error + kI × (sum of errors) + kD × (change in error since last step)</div>
+  <p>The numbers kP, kI and kD are the <b>gains</b>. Ours are 6, 0, 3 for driving and 2, 0, 10 for turning. Try them in the simulation below, then try the others.</p>
+  <div class="card">
+    <canvas id="pidCanvas" role="img" aria-label="Interactive PID simulation: a robot drives 36 inches. Graphs show its position and the motor power from the P and D parts over time."></canvas>
+    <div class="controls">
+      <button type="button" class="on" data-preset="6,3">Ours (6 / 0 / 3)</button>
+      <button type="button" data-preset="42,93">Autotuner (42 / 0 / 93)</button>
+      <button type="button" data-preset="2,0">Too gentle (2 / 0 / 0)</button>
+      <button type="button" data-preset="15,0">P only, high (15 / 0 / 0)</button>
+    </div>
+    <div class="controls">
+      <label>kP <input id="kP" type="range" min="0" max="50" step="0.5" value="6"><output id="kPOut">6</output></label>
+      <label>kD <input id="kD" type="range" min="0" max="120" step="1" value="3"><output id="kDOut">3</output></label>
+    </div>
+    <div class="readouts" id="pidReadouts"></div>
+    <div class="legend"><span><i style="background:var(--robot)"></i>Position</span><span><i style="background:var(--muted)"></i>Target (36 in)</span><span><i style="background:var(--good)"></i>Power from P</span><span><i style="background:var(--ghost)"></i>Power from D</span><span><i style="background:var(--ink)"></i>Total power</span></div>
+    <p class="caption">The model includes the motors' delay in speeding up and slowing down, and a little friction, so a very gentle controller stops short. It is a simplified model of our drive, not a measurement.</p>
+  </div>
+  <div class="lesson"><b>What we learned by testing:</b> we tried an automatic PID tuner, which suggested 42 / 0 / 93 for driving. On the real robot that was far too aggressive: jerky starts and stops and overshoot. We went back to hand-set gains and removed the tuner. The gentle-zone trick above is the same idea applied on purpose: changing kP for one part of a move (called gain scheduling).</div>
+
+  <h3>The same idea on the lift</h3>
+  <p>The lift uses a simpler controller: power = 0.45 × (degrees left to go), read from a rotation sensor on the lift. Rubber bands pull the lift up, so going down needs more help: the power never drops below 110 going down or 60 going up, and the move ends within 8° of the target. Near the top (95% of full height) the code holds the lift at the top against gravity. Lift and arm moves run alongside driving, so the robot does not wait for them.</p>
+  <div class="card">
+    <canvas id="liftCanvas" role="img" aria-label="Animation: the lift moves between preset heights; a readout shows the power the controller chooses."></canvas>
+  </div>
+</section>
+
+<!-- ================= ROUTE ================= -->
+<section id="route">
+  <h2><span class="section-num">4</span>Putting it together: the three-pin run</h2>
+  <p>Here is our main match route with every technique labelled as it happens. The positions come from the route's code; the timing is approximate. Watch the orange outline: odometry drifts during turns with a stack raised and is pulled back by the contact references and the GPS checkpoint.</p>
+  <div class="card">
+    <canvas id="routeCanvas" role="img" aria-label="Animation of the full three-pin autonomous route, from the toggle hit to scoring two stacks, with labels for each technique used."></canvas>
+    <div class="tags" id="routeTags"></div>
+    <ol class="route-steps" id="routeSteps">
+      <li>Hit the toggle: back off the wall while the lift rises, then drive into the wall and stop on stall</li>
+      <li>Score the preload: back out, turn, back into the goal, lower the lift onto the pin, open the claw</li>
+      <li>Pick up field stack 1: aim the claw, fast approach, gentle last 10 in, clamp</li>
+      <li>Score stack 1 one level up, then reset position from the goal</li>
+      <li>Pick up field stack 2, then a GPS checkpoint while the lift rises</li>
+      <li>Score stack 2 two levels up, then reset position from the goal</li>
+      <li>Pull away from the goal. Done, inside 15 seconds</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================= NUMBERS ================= -->
+<section id="numbers">
+  <h2>Key numbers</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Setting</th><th>Value</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>Control loop</td><td>every 10 ms</td><td>How often sensors are read and motor power is updated</td></tr>
+      <tr><td>Drive PID</td><td>6 / 0 / 3</td><td>Power from distance left (P) and how fast it is closing (D)</td></tr>
+      <tr><td>Turn PID</td><td>2 / 0 / 10</td><td>The same for heading, in degrees</td></tr>
+      <tr><td>Settled</td><td>within 1 in for 0.1 s</td><td>When a normal move counts as finished (or within 3 in for 0.5 s)</td></tr>
+      <tr><td>Chained move</td><td>floor 40, ends within 2 in</td><td>Rolls into the next move instead of stopping</td></tr>
+      <tr><td>Chained turn</td><td>floor 20, ends within 4°</td><td>The same for turns; 10 and 2° when holding a raised stack</td></tr>
+      <tr><td>Gentle pickup</td><td>kP 3, floor 24, last 10 in</td><td>Arrives at a stack slowly without stopping short</td></tr>
+      <tr><td>Stall check</td><td>under 12 rpm for 150 ms</td><td>Ends a move that has been stopped by a goal or wall</td></tr>
+      <tr><td>Curve</td><td>lead 0.45</td><td>How wide the boomerang curve swings, from the curve tuner</td></tr>
+      <tr><td>Final zone</td><td>7.5 in</td><td>Inside this, LemLib stops steering toward the point</td></tr>
+      <tr><td>Goal reference</td><td>8 in</td><td>Robot center to claw grip, used to reset position from a goal</td></tr>
+      <tr><td>GPS checkpoint</td><td>within 6 in of plan, 8 in of odometry</td><td>When a GPS correction is allowed</td></tr>
+      <tr><td>GPS mount</td><td>3.0 in forward, 3.7 in right, facing right</td><td>Shifts each reading from the camera to the robot center</td></tr>
+      <tr><td>Lift control</td><td>0.45 × error, floors 110 down / 60 up</td><td>Moves the lift to a preset height, within 8°</td></tr>
+      <tr><td>Wheels</td><td>2.75 in omni, 450 rpm, 12 in apart</td><td>About 8.6 in per wheel turn, about 65 in/s top speed</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <footer>
+    Built from the code in this repository: <code>src/main.cpp</code> (sensors and PID gains), <code>src/autons.cpp</code> (routes, pickups, scoring, stall check, contact references), <code>include/curve_motion.hpp</code> (curves) and <code>include/gps_reset/</code> (GPS checkpoints and filter). Animations are simplified models, not recordings.
+  </footer>
+</section>
+</main>
+
+<script>
+(() => {
+"use strict";
+const DEG = Math.PI / 180;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+const wrap = d => { d = (d + 180) % 360; if (d < 0) d += 360; return d - 180; };
+let C = {};
+function readColors() {
+  const cs = getComputedStyle(document.documentElement);
+  for (const k of ["bg","panel","ink","muted","line","grid","field","wall","robot","ghost","good","bad","gold","accent","soft"])
+    C[k] = cs.getPropertyValue("--" + k).trim();
+}
+readColors();
+let paused = false;
+const scenes = [];
+function scene(id, s) {
+  const canvas = document.getElementById(id);
+  s.canvas = canvas; s.ctx = canvas.getContext("2d"); s.visible = false; s.t = 0;
+  new IntersectionObserver(es => { s.visible = es[0].isIntersecting; }, { rootMargin: "100px" }).observe(canvas);
+  scenes.push(s);
+  return s;
+}
+function fit(s) {
+  const r = s.canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (s.canvas.width !== W || s.canvas.height !== H) { s.canvas.width = W; s.canvas.height = H; }
+  s.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  s.w = r.width; s.h = r.height;
+}
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  readColors();
+  for (const s of scenes) {
+    if (!s.visible) continue;
+    fit(s);
+    if (!paused && s.update) s.update(dt);
+    s.ctx.clearRect(0, 0, s.w, s.h);
+    s.draw(s.ctx, s.w, s.h);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+document.getElementById("pauseAll").addEventListener("click", e => {
+  paused = !paused;
+  e.target.textContent = paused ? "Play animations" : "Pause animations";
+  e.target.setAttribute("aria-pressed", String(paused));
+});
+
+// ---------- drawing helpers ----------
+// World inches -> screen, y up, keeping aspect.
+function view(x0, y0, w, h, X0, X1, Y0, Y1, pad = 10) {
+  const s = Math.min((w - 2 * pad) / (X1 - X0), (h - 2 * pad) / (Y1 - Y0));
+  const ox = x0 + (w - (X1 - X0) * s) / 2 - X0 * s;
+  const oy = y0 + (h + (Y1 - Y0) * s) / 2 + Y0 * s;
+  return { s, X: x => ox + x * s, Y: y => oy - y * s };
+}
+function grid(ctx, v, X0, X1, Y0, Y1, step, color) {
+  ctx.strokeStyle = color || C.grid; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = Math.ceil(X0 / step) * step; x <= X1; x += step) { ctx.moveTo(v.X(x), v.Y(Y0)); ctx.lineTo(v.X(x), v.Y(Y1)); }
+  for (let y = Math.ceil(Y0 / step) * step; y <= Y1; y += step) { ctx.moveTo(v.X(X0), v.Y(y)); ctx.lineTo(v.X(X1), v.Y(y)); }
+  ctx.stroke();
+}
+function rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+// Robot: 12 in wide, 16 in long, front arrow, claw at the rear, GPS camera on the right.
+function robot(ctx, v, x, y, hdg, o = {}) {
+  const s = v.s, col = o.color || C.robot;
+  ctx.save(); ctx.translate(v.X(x), v.Y(y)); ctx.rotate(hdg * DEG);
+  if (o.gpsCone) {
+    ctx.fillStyle = C.good; ctx.globalAlpha = 0.12; ctx.beginPath();
+    ctx.moveTo(3.7 * s, -3 * s); ctx.lineTo((3.7 + o.gpsCone) * s, (-3 - o.gpsCone * 0.45) * s);
+    ctx.lineTo((3.7 + o.gpsCone) * s, (-3 + o.gpsCone * 0.45) * s); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  rrect(ctx, -6 * s, -8 * s, 12 * s, 16 * s, 2 * s);
+  if (o.ghost) {
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+  } else {
+    ctx.globalAlpha = 0.18; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+  }
+  // front arrow
+  ctx.fillStyle = col; ctx.globalAlpha = o.ghost ? 0.7 : 1; ctx.beginPath();
+  ctx.moveTo(0, -7 * s); ctx.lineTo(-2.6 * s, -3.6 * s); ctx.lineTo(2.6 * s, -3.6 * s); ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = 1;
+  if (!o.ghost) {
+    // claw prongs at the back
+    ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, 0.6 * s); ctx.beginPath();
+    ctx.moveTo(-2 * s, 4.5 * s); ctx.lineTo(-2 * s, 8 * s); ctx.moveTo(2 * s, 4.5 * s); ctx.lineTo(2 * s, 8 * s); ctx.stroke();
+    if (o.gps !== false) { ctx.fillStyle = C.good; ctx.fillRect(2.7 * s, -4 * s, 2 * s, 2 * s); }
+  }
+  ctx.restore();
+}
+function dot(ctx, x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+function label(ctx, text, x, y, o = {}) {
+  ctx.font = (o.bold ? "600 " : "") + (o.size || 13) + "px system-ui, sans-serif";
+  ctx.fillStyle = o.color || C.ink; ctx.textAlign = o.align || "left"; ctx.textBaseline = o.base || "alphabetic";
+  ctx.fillText(text, x, y);
+}
+function pill(ctx, text, x, y, o = {}) {
+  ctx.font = "600 " + (o.size || 13) + "px system-ui, sans-serif";
+  const w = ctx.measureText(text).width + 16, h = (o.size || 13) + 10;
+  const left = o.align === "center" ? x - w / 2 : x;
+  rrect(ctx, left, y, w, h, h / 2); ctx.fillStyle = o.bg || C.panel; ctx.fill();
+  ctx.strokeStyle = o.border || C.line; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = o.color || C.ink; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(text, left + 8, y + h / 2 + 0.5);
+}
+function goal(ctx, v, x, y, o = {}) {
+  const X = v.X(x), Y = v.Y(y), r = 3.2 * v.s;
+  ctx.fillStyle = o.fill || C.gold; ctx.globalAlpha = 0.3; ctx.beginPath(); ctx.arc(X, Y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1; ctx.strokeStyle = o.fill || C.gold; ctx.lineWidth = 2; ctx.stroke();
+  dot(ctx, X, Y, Math.max(2, 0.8 * v.s), o.fill || C.gold);
+}
+function stack(ctx, v, x, y, levels = 1) {
+  const X = v.X(x), Y = v.Y(y), r = 2.4 * v.s;
+  ctx.fillStyle = C.bad; ctx.globalAlpha = 0.85; ctx.beginPath(); ctx.arc(X, Y, r, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+  ctx.strokeStyle = C.panel; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(X, Y, r * 0.5, 0, Math.PI * 2); ctx.stroke();
+}
+function plotAxes(ctx, x, y, w, h, o) {
+  ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+  if (o.ylabel) label(ctx, o.ylabel, x + 6, y + 15, { size: 12, color: C.muted });
+  if (o.xlabel) label(ctx, o.xlabel, x + w - 6, y + h - 6, { size: 12, color: C.muted, align: "right" });
+}
+function polyline(ctx, pts, col, width = 2, dash) {
+  if (pts.length < 2) return;
+  ctx.strokeStyle = col; ctx.lineWidth = width; if (dash) ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke(); ctx.setLineDash([]);
+}
+
+// ---------- 1D drive model shared by the PID, chaining and pickup demos ----------
+// Power (-127..127) sets a target wheel speed; the drive reaches it with a
+// 0.12 s lag after a 20 ms delay; a little power is lost to friction.
+const DT = 0.01, VMAX = 64.8, TAU = 0.12, DELAY = 2, FRICTION = 6;
+function drive() { return { x: 0, v: 0, t: 0, q: new Array(DELAY).fill(0) }; }
+function physics(st, u) {
+  st.q.push(u); const ua = st.q.shift();
+  const eff = Math.sign(ua) * Math.max(0, Math.abs(ua) - FRICTION);
+  st.v += (eff / 127 * VMAX - st.v) * DT / TAU;
+  if (Math.abs(st.v) < 0.05 && eff === 0) st.v = 0;
+  st.x += st.v * DT; st.t += DT;
+}
+// One LemLib-style move along a line. Ends on settle, on hand-over (minSpeed), or timeout.
+function leg(st, target, o, rec) {
+  const kP = o.kP ?? 6, kD = o.kD ?? 3, minSpeed = o.minSpeed || 0, early = o.earlyExit || 0, timeout = o.timeout ?? 3;
+  const sign0 = Math.sign(target - st.x) || 1;
+  let prev = target - st.x, small = 0, large = 0; const t0 = st.t;
+  while (st.t - t0 < timeout) {
+    const e = target - st.x;
+    if (minSpeed && (Math.sign(e) !== sign0 || Math.abs(e) < early)) return "handover";
+    const p = kP * e, d = kD * (e - prev); prev = e;
+    let u = clamp(p + d, -127, 127);
+    if (minSpeed && Math.abs(u) < minSpeed) u = sign0 * minSpeed;
+    physics(st, u);
+    if (rec) rec.push({ t: st.t, x: st.x, v: st.v, u, p, d });
+    if (!minSpeed && !o.noExit) {
+      small = Math.abs(e) < 1 ? small + DT : 0; large = Math.abs(e) < 3 ? large + DT : 0;
+      if (small >= 0.1 || large >= 0.5) return "settled";
+    }
+  }
+  return "timeout";
+}
+function idle(st, secs, rec) { const t0 = st.t; while (st.t - t0 < secs) { physics(st, 0); rec && rec.push({ t: st.t, x: st.x, v: st.v, u: 0, p: 0, d: 0 }); } }
+
+// ================= Control loop highlight =================
+{
+  const steps = [...document.querySelectorAll("#loop .step")];
+  const count = document.getElementById("loopCount");
+  let i = 0, passes = 0;
+  setInterval(() => {
+    if (paused) return;
+    steps.forEach((s, k) => s.classList.toggle("active", k === i));
+    i = (i + 1) % steps.length;
+    if (i === 0) { passes++; count.textContent = "Passes: " + passes + " (slowed down about 100× here)"; }
+  }, 800);
+}
+
+// ================= Odometry =================
+{
+  const A = 30, B = 22, RATE = 0.42;
+  const st = { slip: false };
+  function reset() {
+    st.u = 0; const p = pathAt(0);
+    st.true = { ...p }; st.est = { x: p.x, y: p.y }; st.L = 0; st.R = 0;
+    st.trailT = []; st.trailE = []; st.laps = 0;
+  }
+  function pathAt(u) {
+    const x = A * Math.sin(u), y = B * Math.sin(u) * Math.cos(u);
+    const dx = A * Math.cos(u), dy = B * Math.cos(2 * u);
+    return { x, y, h: Math.atan2(dx, dy) / DEG };
+  }
+  reset();
+  const btn = document.getElementById("odomSlip");
+  btn.addEventListener("click", () => { st.slip = !st.slip; btn.classList.toggle("on", st.slip); btn.textContent = st.slip ? "Wheel slip: on" : "Add wheel slip"; reset(); });
+  document.getElementById("odomReset").addEventListener("click", reset);
+  scene("odomCanvas", {
+    update(dt) {
+      const sub = 4;
+      for (let k = 0; k < sub; k++) {
+        const nu = st.u + RATE * dt / sub;
+        const p = pathAt(nu);
+        const ds = Math.hypot(p.x - st.true.x, p.y - st.true.y);
+        const dh = wrap(p.h - st.true.h) * DEG;
+        const dl = ds + dh * 6, dr = ds - dh * 6;   // track width 12 in
+        const turnRate = Math.abs(dh) / (dt / sub);
+        const slip = st.slip ? 0.03 + 0.10 * Math.min(1, turnRate / 1.2) : 0;
+        st.L += dl * (1 + slip); st.R += dr * (1 + slip);
+        const dsEst = (dl * (1 + slip) + dr * (1 + slip)) / 2;
+        st.est.x += dsEst * Math.sin(p.h * DEG); st.est.y += dsEst * Math.cos(p.h * DEG);
+        st.true = p; st.u = nu;
+      }
+      st.trailT.push([st.true.x, st.true.y]); st.trailE.push([st.est.x, st.est.y]);
+      if (st.trailT.length > 900) { st.trailT.shift(); st.trailE.shift(); }
+      if (st.u > Math.PI * 4) reset();
+    },
+    draw(ctx, w, h) {
+      // Wide: field on the left, readouts on the right. Narrow: readouts below.
+      const narrow = w < 520;
+      const v = narrow ? view(0, 0, w, h * 0.66, -44, 44, -34, 34, 10) : view(0, 0, w * 0.68, h, -44, 44, -34, 34, 14);
+      grid(ctx, v, -44, 44, -34, 34, 12);
+      polyline(ctx, st.trailT.map(p => [v.X(p[0]), v.Y(p[1])]), C.robot, 2);
+      polyline(ctx, st.trailE.map(p => [v.X(p[0]), v.Y(p[1])]), C.ghost, 2, [6, 4]);
+      robot(ctx, v, st.est.x, st.est.y, st.true.h, { ghost: true, color: C.ghost });
+      robot(ctx, v, st.true.x, st.true.y, st.true.h, { gps: false });
+      const sz = narrow ? 12 : clamp(w / 52, 11, 15);
+      const err = Math.hypot(st.est.x - st.true.x, st.est.y - st.true.y);
+      const hd = ((st.true.h % 360) + 360) % 360;
+      const rows = [
+        ["Left wheels", st.L.toFixed(1) + " in (" + (st.L / (2.75 * Math.PI)).toFixed(1) + " turns)", C.ink],
+        ["Right wheels", st.R.toFixed(1) + " in (" + (st.R / (2.75 * Math.PI)).toFixed(1) + " turns)", C.ink],
+        ["Position error", err.toFixed(1) + " in", err > 1 ? C.ghost : C.good],
+      ];
+      let px, py, r, cx, cy;
+      if (narrow) {
+        px = 12; py = h * 0.66 + 18;
+        rows.forEach(([a, b, col], k) => {
+          label(ctx, a, px, py + k * (sz * 2 + 10), { size: sz, color: C.muted });
+          label(ctx, b, px, py + k * (sz * 2 + 10) + sz + 4, { size: sz + 1, bold: true, color: col });
+        });
+        r = Math.min(h * 0.12, w * 0.14); cx = w - r - 24; cy = py + r + 4;
+      } else {
+        px = w * 0.68 + 8; py = 26;
+        rows.forEach(([a, b, col], k) => {
+          label(ctx, a, px, py + k * (sz * 2 + 14), { size: sz, color: C.muted });
+          label(ctx, b, px, py + k * (sz * 2 + 14) + sz + 6, { size: sz + 1, bold: true, color: col });
+        });
+        r = clamp(Math.min((w - px) / 2 - 16, h * 0.16), 18, 46); cx = px + r + 4; cy = py + 3 * (sz * 2 + 14) + r + 10;
+      }
+      label(ctx, "IMU heading", cx, cy - r - 8, { size: sz, color: C.muted, align: "center" });
+      ctx.strokeStyle = C.line; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = C.robot; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.sin(hd * DEG) * (r - 4), cy - Math.cos(hd * DEG) * (r - 4)); ctx.stroke();
+      label(ctx, hd.toFixed(0) + "°", cx, cy + r + sz + 6, { size: sz + 2, bold: true, align: "center" });
+    }
+  });
+}
+
+// ================= Contact reference =================
+{
+  const G = { x: 0, y: 0 }, H = 20, REACH = 8;
+  const fwd = { x: Math.sin(H * DEG), y: Math.cos(H * DEG) };
+  const end = { x: G.x + REACH * fwd.x, y: G.y + REACH * fwd.y };
+  const start = { x: G.x + 36 * fwd.x, y: G.y + 36 * fwd.y };
+  const OFF = { x: -3.5, y: -3.2 };
+  const T = { drive: 2.6, show: 1.4, snap: 1.0, hold: 1.8 };
+  const total = T.drive + T.show + T.snap + T.hold;
+  const s = scene("contactCanvas", {
+    update(dt) { this.t = (this.t + dt) % total; },
+    draw(ctx, w, h) {
+      const v = view(0, 0, w, h, -34, 34, -8, 40, 16);
+      grid(ctx, v, -40, 40, -10, 44, 6);
+      const t = this.t;
+      const k = ease(clamp(t / T.drive, 0, 1));
+      const rx = lerp(start.x, end.x, k), ry = lerp(start.y, end.y, k);
+      let off = 1;
+      const tSnap = t - T.drive - T.show;
+      if (tSnap > 0) off = 1 - ease(clamp(tSnap / T.snap, 0, 1));
+      goal(ctx, v, G.x, G.y);
+      label(ctx, "goal (known position)", v.X(G.x) + 4 * v.s, v.Y(G.y) + 4, { size: 13, color: C.muted });
+      robot(ctx, v, rx + OFF.x * off, ry + OFF.y * off, H, { ghost: true, color: C.ghost });
+      robot(ctx, v, rx, ry, H, { gps: false });
+      if (t > T.drive) {
+        // dimension line goal -> center
+        const a = clamp((t - T.drive) / 0.4, 0, 1);
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = C.good; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(v.X(G.x), v.Y(G.y)); ctx.lineTo(v.X(end.x), v.Y(end.y)); ctx.stroke();
+        dot(ctx, v.X(end.x), v.Y(end.y), 4, C.good);
+        label(ctx, "8 in along the heading", v.X((G.x + end.x) / 2) - 8 * v.s, v.Y((G.y + end.y) / 2), { size: 14, bold: true, color: C.good, align: "right" });
+        ctx.globalAlpha = 1;
+      }
+      let msg = "Backing onto the goal. Odometry has drifted (orange).";
+      if (t > T.drive) msg = "Claw is on the goal center, so the robot center is 8 in away along its heading.";
+      if (tSnap > 0) msg = "Position reset from the goal. Heading kept from the IMU.";
+      pill(ctx, msg, 12, 12, { size: clamp(w / 50, 11, 14) });
+    }
+  });
+}
+
+// ================= GPS checkpoint =================
+{
+  const checks = [...document.querySelectorAll("#gpsChecks li")];
+  const result = document.getElementById("gpsResult");
+  const R = { x: -36, y: -30, h: 0 };
+  const scenarios = [
+    { odom: { x: 3.2, y: -2.6 }, gpsBias: { x: 0.3, y: -0.2 }, pass: true },
+    { odom: { x: 9.5, y: 5.5 }, gpsBias: { x: 0.2, y: 0.3 }, pass: false },
+  ];
+  const DUR = 8.5;
+  let which = 0, readings = [], lastState = "";
+  function makeReadings(sc) {
+    const out = [];
+    for (let i = 0; i < 7; i++) {
+      const bad = i === 3;
+      const g = () => (Math.random() + Math.random() + Math.random() - 1.5) * 1.3;
+      out.push({ x: R.x + sc.gpsBias.x + (bad ? 4.5 : g()), y: R.y + sc.gpsBias.y + (bad ? -3.5 : g()), bad, t: 1.4 + i * 0.32 });
+    }
+    return out;
+  }
+  readings = makeReadings(scenarios[0]);
+  function setChecks(state) {
+    if (state === lastState) return; lastState = state;
+    const parts = state.split(",");
+    checks.forEach((li, k) => { li.classList.toggle("ok", parts[k] === "o"); li.classList.toggle("fail", parts[k] === "f"); });
+    result.textContent = scenarios[which].pass || parts[4] !== "f"
+      ? "Odometry's x and y are moved to the GPS average; the heading stays with the IMU"
+      : "Refused: GPS and odometry are more than 8 in apart, so odometry is left as it was";
+  }
+  scene("gpsCanvas", {
+    update(dt) {
+      this.t += dt;
+      if (this.t > DUR) { this.t = 0; which = (which + 1) % scenarios.length; readings = makeReadings(scenarios[which]); }
+    },
+    draw(ctx, w, h) {
+      const t = this.t, sc = scenarios[which];
+      const good = readings.filter(r => !r.bad && r.t <= t);
+      const avg = good.length ? { x: good.reduce((a, r) => a + r.x, 0) / good.length, y: good.reduce((a, r) => a + r.y, 0) / good.length } : null;
+      const tAvg = 1.4 + 7 * 0.32 + 0.2, tC2 = tAvg + 0.6, tC3 = tC2 + 0.7, tRes = tC3 + 0.7;
+      let off = 1;
+      if (sc.pass && t > tRes) off = 1 - ease(clamp((t - tRes) / 0.8, 0, 1));
+      const odom = { x: R.x + sc.odom.x * off + (sc.pass && t > tRes && avg ? (avg.x - R.x) * (1 - off) : 0), y: R.y + sc.odom.y * off + (sc.pass && t > tRes && avg ? (avg.y - R.y) * (1 - off) : 0) };
+      // ---- left: whole field ----
+      const half = w / 2;
+      const v = view(0, 0, half, h, -72, 72, -72, 72, 12);
+      ctx.fillStyle = C.panel; ctx.fillRect(v.X(-72), v.Y(72), 144 * v.s, 144 * v.s);
+      grid(ctx, v, -72, 72, -72, 72, 24);
+      // code strips
+      const seg = 6;
+      for (let i = -72; i < 72; i += seg) {
+        const on = ((i / seg) | 0) % 2 === 0;
+        ctx.strokeStyle = on ? C.wall : C.line; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(v.X(i), v.Y(72)); ctx.lineTo(v.X(i + seg), v.Y(72));
+        ctx.moveTo(v.X(i), v.Y(-72)); ctx.lineTo(v.X(i + seg), v.Y(-72));
+        ctx.moveTo(v.X(72), v.Y(i)); ctx.lineTo(v.X(72), v.Y(i + seg));
+        ctx.moveTo(v.X(-72), v.Y(i)); ctx.lineTo(v.X(-72), v.Y(i + seg)); ctx.stroke();
+      }
+      // camera sight line to the east wall
+      ctx.strokeStyle = C.good; ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(v.X(R.x + 3.7), v.Y(R.y + 3)); ctx.lineTo(v.X(72), v.Y(R.y + 3 - 14)); ctx.moveTo(v.X(R.x + 3.7), v.Y(R.y + 3)); ctx.lineTo(v.X(72), v.Y(R.y + 3 + 14)); ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+      robot(ctx, v, odom.x, odom.y, R.h, { ghost: true, color: C.ghost });
+      robot(ctx, v, R.x, R.y, R.h, { gpsCone: 18 });
+      ctx.strokeStyle = C.accent; ctx.lineWidth = 1.5; ctx.strokeRect(v.X(R.x - 16), v.Y(R.y + 16), 32 * v.s, 32 * v.s);
+      label(ctx, "code strip on every wall", v.X(0), v.Y(72) + 18, { size: 12, color: C.muted, align: "center" });
+      // ---- right: zoom ----
+      const z = view(half, 0, half, h, R.x - 16, R.x + 16, R.y - 16, R.y + 16, 12);
+      ctx.save(); ctx.beginPath(); ctx.rect(half + 6, 6, half - 12, h - 12); ctx.clip();
+      ctx.fillStyle = C.panel; ctx.fillRect(half + 6, 6, half - 12, h - 12);
+      grid(ctx, z, R.x - 18, R.x + 18, R.y - 18, R.y + 18, 2);
+      // expected-waypoint radius (6 in)
+      ctx.strokeStyle = C.muted; ctx.setLineDash([3, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(z.X(R.x), z.Y(R.y), 6 * z.s, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      robot(ctx, z, odom.x, odom.y, R.h, { ghost: true, color: C.ghost });
+      robot(ctx, z, R.x, R.y, R.h, {});
+      for (const r of readings) {
+        if (r.t > t) continue;
+        const X = z.X(r.x), Y = z.Y(r.y);
+        if (r.bad) {
+          ctx.strokeStyle = C.bad; ctx.lineWidth = 2.5; ctx.beginPath();
+          ctx.moveTo(X - 6, Y - 6); ctx.lineTo(X + 6, Y + 6); ctx.moveTo(X + 6, Y - 6); ctx.lineTo(X - 6, Y + 6); ctx.stroke();
+          if (t < r.t + 1.2) label(ctx, "rated over 3 in: dropped", X + 9, Y + 4, { size: 12, color: C.bad, bold: true });
+        } else dot(ctx, X, Y, 4.5, C.good);
+      }
+      if (avg && t > tAvg) {
+        const X = z.X(avg.x), Y = z.Y(avg.y);
+        ctx.fillStyle = C.accent; ctx.beginPath(); ctx.moveTo(X, Y - 8); ctx.lineTo(X + 8, Y); ctx.lineTo(X, Y + 8); ctx.lineTo(X - 8, Y); ctx.closePath(); ctx.fill();
+        label(ctx, "average", X + 10, Y - 8, { size: 12, color: C.accent, bold: true });
+        if (t > tC2) {
+          ctx.strokeStyle = sc.pass ? C.good : C.bad; ctx.lineWidth = 2; ctx.setLineDash([2, 3]);
+          ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(z.X(R.x + sc.odom.x * off), z.Y(R.y + sc.odom.y * off)); ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+      ctx.restore();
+      ctx.strokeStyle = C.accent; ctx.lineWidth = 1.5; ctx.strokeRect(half + 6, 6, half - 12, h - 12);
+      label(ctx, "close-up · grid = 2 in · dashed circle = 6 in", half + 14, h - 14, { size: 11, color: C.muted });
+      const gap = Math.hypot(sc.odom.x, sc.odom.y);
+      pill(ctx, sc.pass ? "Checkpoint: gap " + gap.toFixed(1) + " in" : "Checkpoint: gap " + gap.toFixed(1) + " in", half + 14, 14, { size: 12 });
+      // checklist state
+      const st = [
+        t > 0.6 ? "o" : "-",
+        t > tAvg ? "o" : "-",
+        t > tC2 ? "o" : "-",
+        t > tC3 ? (sc.pass ? "o" : "f") : "-",
+        t > tRes ? (sc.pass ? "o" : "f") : "-",
+      ];
+      setChecks(st.join(","));
+    }
+  });
+}
+
+// ================= Motion: point vs boomerang =================
+{
+  const target = { x: 30, y: 30, h: 90 };
+  const ui = { mode: "pose", lead: 0.45 };
+  let sim;
+  function reset() { sim = { x: 0, y: 0, h: 0, vl: 0, vr: 0, prevA: 0, trail: [], carrot: null, done: false, doneT: 0, t: 0 }; }
+  reset();
+  const bPoint = document.getElementById("mPoint"), bPose = document.getElementById("mPose");
+  const lead = document.getElementById("mLead"), leadOut = document.getElementById("mLeadOut");
+  bPoint.onclick = () => { ui.mode = "point"; bPoint.classList.add("on"); bPose.classList.remove("on"); reset(); };
+  bPose.onclick = () => { ui.mode = "pose"; bPose.classList.add("on"); bPoint.classList.remove("on"); reset(); };
+  lead.oninput = () => { ui.lead = +lead.value; leadOut.textContent = (+lead.value).toFixed(2); if (ui.mode === "pose") reset(); };
+  document.getElementById("mReplay").onclick = reset;
+  function step() {
+    const dx = target.x - sim.x, dy = target.y - sim.y, d = Math.hypot(dx, dy);
+    const close = d < 7.5;
+    let carrot = { x: target.x, y: target.y };
+    if (ui.mode === "pose" && !close) {
+      carrot = { x: target.x - ui.lead * d * Math.sin(target.h * DEG), y: target.y - ui.lead * d * Math.cos(target.h * DEG) };
+    }
+    sim.carrot = carrot;
+    let aErr;
+    if (close) aErr = ui.mode === "pose" ? wrap(target.h - sim.h) : 0;
+    else aErr = wrap(Math.atan2(carrot.x - sim.x, carrot.y - sim.y) / DEG - sim.h);
+    const ang = ui.mode === "point" && close ? 0 : 2 * aErr + 10 * (aErr - sim.prevA);
+    sim.prevA = aErr;
+    const toCarrot = Math.atan2(carrot.x - sim.x, carrot.y - sim.y) / DEG - sim.h;
+    const latErr = (close ? d * Math.cos(wrap(Math.atan2(dx, dy) / DEG - sim.h) * DEG) : Math.hypot(carrot.x - sim.x, carrot.y - sim.y) * Math.cos(wrap(toCarrot) * DEG));
+    let lat = clamp(6 * latErr, -127, 127);
+    let l = lat + ang, r = lat - ang;
+    const m = Math.max(Math.abs(l), Math.abs(r));
+    if (m > 127) { l *= 127 / m; r *= 127 / m; }
+    const k = VMAX / 127;
+    sim.vl += (l * k - sim.vl) * DT / 0.1; sim.vr += (r * k - sim.vr) * DT / 0.1;
+    const v = (sim.vl + sim.vr) / 2, w = (sim.vl - sim.vr) / 12;
+    sim.h += w * DT / DEG;
+    sim.x += v * DT * Math.sin(sim.h * DEG); sim.y += v * DT * Math.cos(sim.h * DEG);
+    sim.t += DT;
+    if ((d < 1 && Math.abs(v) < 3) || sim.t > 5) sim.done = true;
+  }
+  scene("motionCanvas", {
+    update(dt) {
+      if (sim.done) { sim.doneT += dt; if (sim.doneT > 2) reset(); return; }
+      const n = Math.round(dt / DT * 0.6);   // shown at 60% speed
+      for (let i = 0; i < n && !sim.done; i++) {
+        step();
+        if (i % 2 === 0) sim.trail.push([sim.x, sim.y]);
+      }
+    },
+    draw(ctx, w, h) {
+      const v = view(0, 0, w, h, -12, 50, -8, 44, 14);
+      grid(ctx, v, -12, 50, -8, 44, 6);
+      // final zone
+      ctx.strokeStyle = C.muted; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(v.X(target.x), v.Y(target.y), 7.5 * v.s, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      // target pose arrow
+      ctx.strokeStyle = C.gold; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(v.X(target.x - 6), v.Y(target.y)); ctx.lineTo(v.X(target.x + 6), v.Y(target.y)); ctx.stroke();
+      ctx.fillStyle = C.gold; ctx.beginPath(); ctx.moveTo(v.X(target.x + 8), v.Y(target.y)); ctx.lineTo(v.X(target.x + 5), v.Y(target.y) - 6); ctx.lineTo(v.X(target.x + 5), v.Y(target.y) + 6); ctx.closePath(); ctx.fill();
+      label(ctx, ui.mode === "pose" ? "target: here, facing east" : "target point", v.X(target.x), v.Y(target.y) - 8.5 * v.s, { size: 13, align: "center", bold: true });
+      polyline(ctx, sim.trail.map(p => [v.X(p[0]), v.Y(p[1])]), C.robot, 2.5);
+      if (ui.mode === "pose" && sim.carrot && !sim.done) {
+        ctx.strokeStyle = C.ghost; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(v.X(sim.x), v.Y(sim.y)); ctx.lineTo(v.X(sim.carrot.x), v.Y(sim.carrot.y)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(v.X(sim.carrot.x), v.Y(sim.carrot.y)); ctx.lineTo(v.X(target.x), v.Y(target.y)); ctx.stroke(); ctx.setLineDash([]);
+        dot(ctx, v.X(sim.carrot.x), v.Y(sim.carrot.y), 6, C.ghost);
+        label(ctx, "carrot", v.X(sim.carrot.x), v.Y(sim.carrot.y) - 10, { size: 12, color: C.ghost, align: "center", bold: true });
+      }
+      robot(ctx, v, sim.x, sim.y, sim.h, { gps: false });
+      const hd = ((sim.h % 360) + 360) % 360;
+      pill(ctx, "heading " + hd.toFixed(0) + "°   time " + sim.t.toFixed(2) + " s" + (sim.done ? "   arrived" : ""), 12, 12, { size: 13 });
+    }
+  });
+}
+
+// ================= Chaining =================
+{
+  function run(chained) {
+    const st = drive(), rec = [];
+    const marks = [];
+    leg(st, 24, chained ? { minSpeed: 40, earlyExit: 2 } : {}, rec);
+    marks.push(st.t);
+    leg(st, 48, {}, rec);
+    const total = st.t;
+    idle(st, 0.6, rec);
+    return { rec, mark: marks[0], total };
+  }
+  const A = run(false), B = run(true);
+  const maxT = Math.max(A.total, B.total) + 0.8;
+  document.getElementById("chainReadouts").innerHTML =
+    `<span>Settle at the middle: <b>${A.total.toFixed(2)} s</b></span><span>Chained: <b>${B.total.toFixed(2)} s</b></span><span>Saved in this model: <b>${(A.total - B.total).toFixed(2)} s</b> for one stop</span>`;
+  function at(run, t) { const i = clamp(Math.round(t / DT) - 1, 0, run.rec.length - 1); return run.rec[i]; }
+  scene("chainCanvas", {
+    update(dt) { this.t = (this.t + dt * 0.7) % (maxT + 1); },
+    draw(ctx, w, h) {
+      const t = Math.min(this.t, maxT);
+      const laneH = h * 0.42;
+      const v = view(0, 0, w, laneH, -6, 54, -9, 9, 8);
+      for (const [run, y, name, col] of [[A, 4.2, "Settle at every point", C.ghost], [B, -4.2, "Chained (floor 40)", C.robot]]) {
+        ctx.strokeStyle = C.line; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(v.X(0), v.Y(y)); ctx.lineTo(v.X(48), v.Y(y)); ctx.stroke();
+        for (const m of [0, 24, 48]) dot(ctx, v.X(m), v.Y(y), 4, C.muted);
+        const r = at(run, t);
+        ctx.save(); ctx.translate(v.X(r.x), v.Y(y)); ctx.fillStyle = col; ctx.globalAlpha = 0.25;
+        rrect(ctx, -5 * v.s, -2.6 * v.s, 10 * v.s, 5.2 * v.s, 3); ctx.fill(); ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+        label(ctx, name, v.X(0), v.Y(y) - 3.4 * v.s, { size: 12, color: col, bold: true });
+      }
+      label(ctx, "start", v.X(0), v.Y(-9) + 2, { size: 11, color: C.muted, align: "center" });
+      label(ctx, "24 in", v.X(24), v.Y(-9) + 2, { size: 11, color: C.muted, align: "center" });
+      label(ctx, "48 in", v.X(48), v.Y(-9) + 2, { size: 11, color: C.muted, align: "center" });
+      // speed graph
+      const gx = 44, gy = laneH + 10, gw = w - gx - 14, gh = h - gy - 26;
+      plotAxes(ctx, gx, gy, gw, gh, { ylabel: "speed (in/s)", xlabel: "time (s)" });
+      const sx = tt => gx + tt / maxT * gw, sy = s => gy + gh - s / VMAX * gh * 0.95;
+      for (let s = 0; s <= 60; s += 20) { label(ctx, String(s), gx - 6, sy(s) + 4, { size: 11, color: C.muted, align: "right" }); }
+      for (let s = 0; s <= maxT; s += 0.5) label(ctx, s.toFixed(1), sx(s), gy + gh + 15, { size: 11, color: C.muted, align: "center" });
+      for (const [run, col] of [[A, C.ghost], [B, C.robot]]) {
+        const pts = []; for (const r of run.rec) { if (r.t > t) break; pts.push([sx(r.t), sy(Math.abs(r.v))]); }
+        polyline(ctx, pts, col, 2.5);
+        if (t >= run.total) { ctx.strokeStyle = col; ctx.setLineDash([3, 3]); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(sx(run.total), gy); ctx.lineTo(sx(run.total), gy + gh); ctx.stroke(); ctx.setLineDash([]); label(ctx, "done " + run.total.toFixed(2) + " s", sx(run.total) + 4, gy + 30 + (col === C.robot ? 0 : 16), { size: 12, color: col, bold: true }); }
+      }
+    }
+  });
+}
+
+// ================= Gentle pickup =================
+{
+  // Distances are measured backwards from the start; the clamp point is at 36 in.
+  const STOP = 36, GENTLE = STOP - 10;
+  function ours() {
+    const st = drive(), rec = [];
+    leg(st, GENTLE, { minSpeed: 45, earlyExit: 0 }, rec);
+    leg(st, STOP, { kP: 3, kD: 3, minSpeed: 24, earlyExit: 0.3, timeout: 2.5 }, rec);
+    idle(st, 0.4, rec);
+    return rec;
+  }
+  function plain() { const st = drive(), rec = []; leg(st, STOP, {}, rec); idle(st, 0.3, rec); return rec; }
+  const O = ours(), P = plain();
+  // Speed as the claw reaches the stack, about 4 in before the clamp point.
+  const speedAt = (rec, x) => { for (const r of rec) if (r.x >= x) return Math.abs(r.v); return 0; };
+  const oA = speedAt(O, STOP - 4), pA = speedAt(P, STOP - 4);
+  document.getElementById("pickupReadouts").innerHTML =
+    `<span>Speed as the claw reaches the stack: normal approach <b>${pA.toFixed(0)} in/s</b>, our pickup <b>${oA.toFixed(0)} in/s</b></span>`;
+  const maxT = Math.max(O[O.length - 1].t, P[P.length - 1].t);
+  scene("pickupCanvas", {
+    update(dt) { this.t = (this.t + dt * 0.6) % (maxT + 1.2); },
+    draw(ctx, w, h) {
+      const t = Math.min(this.t, maxT);
+      const topH = h * 0.42;
+      const v = view(0, 0, w, topH, -4, 52, -9, 9, 6);
+      // zones
+      ctx.fillStyle = C.soft; ctx.fillRect(v.X(GENTLE), v.Y(9), 10 * v.s, 18 * v.s);
+      label(ctx, "gentle zone: kP 3, floor 24", v.X(GENTLE + 5), v.Y(9) + 13, { size: 11, color: C.accent, align: "center", bold: true });
+      stack(ctx, v, STOP + 8, 0);
+      label(ctx, "stack", v.X(STOP + 8) + 3 * v.s, v.Y(0) + 4, { size: 12, color: C.muted });
+      const i = clamp(Math.round(t / DT) - 1, 0, O.length - 1);
+      robot(ctx, v, O[i].x, 0, 270, { gps: false });
+      // speed vs distance graph
+      const gx = 44, gy = topH + 8, gw = w - gx - 14, gh = h - gy - 24;
+      plotAxes(ctx, gx, gy, gw, gh, { ylabel: "speed (in/s)", xlabel: "distance travelled (in)" });
+      const sx = x => gx + clamp(x, 0, 40) / 40 * gw, sy = s => gy + gh - s / VMAX * gh * 0.95;
+      ctx.fillStyle = C.soft; ctx.globalAlpha = 0.6; ctx.fillRect(sx(GENTLE), gy + 1, sx(STOP) - sx(GENTLE), gh - 2); ctx.globalAlpha = 1;
+      ctx.strokeStyle = C.muted; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(sx(STOP), gy); ctx.lineTo(sx(STOP), gy + gh); ctx.stroke(); ctx.setLineDash([]);
+      label(ctx, "claw closes", sx(STOP) + 4, gy + 14, { size: 11, color: C.muted });
+      for (let s = 0; s <= 60; s += 20) label(ctx, String(s), gx - 6, sy(s) + 4, { size: 11, color: C.muted, align: "right" });
+      for (const [rec, col, dash] of [[P, C.ghost, [5, 4]], [O, C.robot, null]]) {
+        const pts = []; for (const r of rec) { if (r.t > t) break; pts.push([sx(r.x), sy(Math.abs(r.v))]); }
+        polyline(ctx, pts, col, 2.5, dash);
+      }
+    }
+  });
+}
+
+// ================= Stall check =================
+{
+  const HIT = 0.75, TIMEOUT = 2.0, LAUNCH = 0.3;
+  const rpmAt = t => {
+    if (t < HIT) return 280 * (1 - Math.exp(-t / 0.09));
+    const n = Math.sin(t * 53) * 1.6 + Math.sin(t * 31) * 1.1;
+    return Math.max(0, 6 + n + 274 * Math.exp(-(t - HIT) / 0.03));
+  };
+  let below = null;
+  for (let t = LAUNCH; t < TIMEOUT; t += 0.01) { if (rpmAt(t) < 12) { if (below === null) below = t; if (t - below >= 0.15) { below = t; break; } } else below = null; }
+  const STALL_END = below;
+  scene("stallCanvas", {
+    update(dt) { this.t = (this.t + dt * 0.6) % (TIMEOUT + 1.0); },
+    draw(ctx, w, h) {
+      const t = Math.min(this.t, TIMEOUT + 0.2);
+      const gx = 44, gy = 34, gw = w - gx - 14, gh = h - gy - 26;
+      plotAxes(ctx, gx, gy, gw, gh, { ylabel: "drive wheel speed (rpm)", xlabel: "time (s)" });
+      const sx = tt => gx + tt / (TIMEOUT + 0.2) * gw, sy = r => gy + gh - r / 320 * gh;
+      for (let r = 0; r <= 300; r += 100) label(ctx, String(r), gx - 6, sy(r) + 4, { size: 11, color: C.muted, align: "right" });
+      for (let s = 0; s <= TIMEOUT; s += 0.5) label(ctx, s.toFixed(1), sx(s), gy + gh + 15, { size: 11, color: C.muted, align: "center" });
+      ctx.strokeStyle = C.bad; ctx.setLineDash([4, 3]); ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(gx, sy(12)); ctx.lineTo(gx + gw, sy(12)); ctx.stroke(); ctx.setLineDash([]);
+      label(ctx, "12 rpm", gx + gw - 4, sy(12) - 5, { size: 11, color: C.bad, align: "right" });
+      ctx.fillStyle = C.soft; ctx.fillRect(sx(STALL_END - 0.15), gy + 1, sx(STALL_END) - sx(STALL_END - 0.15), gh - 2);
+      const pts = []; for (let tt = 0; tt <= t; tt += 0.01) pts.push([sx(tt), sy(rpmAt(tt))]);
+      polyline(ctx, pts, C.robot, 2.5);
+      ctx.strokeStyle = C.muted; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(sx(HIT), gy); ctx.lineTo(sx(HIT), gy + gh); ctx.stroke(); ctx.setLineDash([]);
+      label(ctx, "hits the goal", sx(HIT) - 4, gy + 22, { size: 11, color: C.muted, align: "right" });
+      if (t > STALL_END) {
+        ctx.strokeStyle = C.good; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx(STALL_END), gy); ctx.lineTo(sx(STALL_END), gy + gh); ctx.stroke();
+        label(ctx, "stall check: done at " + STALL_END.toFixed(2) + " s", sx(STALL_END) + 6, gy + 40, { size: 12, color: C.good, bold: true });
+      }
+      if (t >= TIMEOUT) {
+        ctx.strokeStyle = C.bad; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx(TIMEOUT), gy); ctx.lineTo(sx(TIMEOUT), gy + gh); ctx.stroke();
+        label(ctx, "settle wait: time limit", sx(TIMEOUT) - 6, gy + 60, { size: 12, color: C.bad, bold: true, align: "right" });
+      }
+      const status = t < HIT ? "Driving into the goal" : t < STALL_END ? "Pushing on the goal: wheels slowing" : t < TIMEOUT ? "Stalled for 150 ms: move ended, next step starts" : "Without the check it would only now give up";
+      pill(ctx, status, gx, 4, { size: 12 });
+    }
+  });
+}
+
+// ================= PID simulator =================
+{
+  const TARGET = 36;
+  const kP = document.getElementById("kP"), kD = document.getElementById("kD");
+  const kPOut = document.getElementById("kPOut"), kDOut = document.getElementById("kDOut");
+  const presets = [...document.querySelectorAll("[data-preset]")];
+  const readouts = document.getElementById("pidReadouts");
+  let rec = [], settleT = null;
+  function compute() {
+    kPOut.textContent = kP.value; kDOut.textContent = kD.value;
+    const st = drive(); rec = [];
+    leg(st, TARGET, { kP: +kP.value, kD: +kD.value, noExit: true, timeout: 3 }, rec);
+    settleT = null; let inS = 0, maxX = 0;
+    for (const r of rec) { maxX = Math.max(maxX, r.x); inS = Math.abs(TARGET - r.x) < 1 ? inS + DT : 0; if (inS >= 0.1 && settleT === null) settleT = r.t; }
+    const final = rec[rec.length - 1].x;
+    readouts.innerHTML = `<span>Counts as arrived: <b>${settleT === null ? "never (in 3 s)" : settleT.toFixed(2) + " s"}</b></span>` +
+      `<span>Overshoot: <b>${Math.max(0, maxX - TARGET).toFixed(1)} in</b></span>` +
+      `<span>Stopped at: <b>${final.toFixed(1)} in</b> (target ${TARGET})</span>`;
+    presets.forEach(b => b.classList.toggle("on", b.dataset.preset === kP.value + "," + kD.value));
+  }
+  presets.forEach(b => b.onclick = () => { const [p, d] = b.dataset.preset.split(","); kP.value = p; kD.value = d; compute(); s.t = 0; });
+  kP.oninput = kD.oninput = () => { compute(); s.t = 0; };
+  compute();
+  const s = scene("pidCanvas", {
+    update(dt) { this.t = (this.t + dt * 0.7) % 4; },
+    draw(ctx, w, h) {
+      const t = Math.min(this.t, 3);
+      const i = clamp(Math.round(t / DT) - 1, 0, rec.length - 1), r = rec[i];
+      // track
+      const v = view(0, 0, w, h * 0.22, -10, 50, -8, 8, 6);
+      ctx.strokeStyle = C.line; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(v.X(-8), v.Y(0)); ctx.lineTo(v.X(48), v.Y(0)); ctx.stroke();
+      ctx.strokeStyle = C.gold; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(v.X(TARGET), v.Y(-7)); ctx.lineTo(v.X(TARGET), v.Y(7)); ctx.stroke();
+      label(ctx, "target", v.X(TARGET) + 6, v.Y(5), { size: 12, color: C.gold, bold: true });
+      robot(ctx, v, r.x - 8, 0, 90, { gps: false });
+      label(ctx, "error " + (TARGET - r.x).toFixed(1) + " in", 10, 18, { size: 13, bold: true });
+      // graphs
+      const gx = 46, gw = w - gx - 14;
+      const g1y = h * 0.24, g1h = h * 0.36, g2y = g1y + g1h + 12, g2h = h - g2y - 24;
+      plotAxes(ctx, gx, g1y, gw, g1h, { ylabel: "position (in)" });
+      plotAxes(ctx, gx, g2y, gw, g2h, { ylabel: "motor power", xlabel: "time (s)" });
+      const sx = tt => gx + tt / 3 * gw;
+      const sy1 = x => g1y + g1h - x / 44 * g1h;
+      const sy2 = u => g2y + g2h / 2 - u / 140 * (g2h / 2);
+      for (let x = 0; x <= 40; x += 12) label(ctx, String(x), gx - 6, sy1(x) + 4, { size: 11, color: C.muted, align: "right" });
+      for (const u of [-127, 0, 127]) label(ctx, String(u), gx - 6, sy2(u) + 4, { size: 11, color: C.muted, align: "right" });
+      for (let tt = 0; tt <= 3; tt += 0.5) label(ctx, tt.toFixed(1), sx(tt), g2y + g2h + 15, { size: 11, color: C.muted, align: "center" });
+      ctx.strokeStyle = C.muted; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(gx, sy1(TARGET)); ctx.lineTo(gx + gw, sy1(TARGET)); ctx.moveTo(gx, sy2(0)); ctx.lineTo(gx + gw, sy2(0)); ctx.stroke(); ctx.setLineDash([]);
+      const upto = rec.slice(0, i + 1);
+      polyline(ctx, upto.map(q => [sx(q.t), sy1(q.x)]), C.robot, 2.5);
+      polyline(ctx, upto.map(q => [sx(q.t), sy2(clamp(q.p, -140, 140))]), C.good, 1.8);
+      polyline(ctx, upto.map(q => [sx(q.t), sy2(clamp(q.d, -140, 140))]), C.ghost, 1.8);
+      polyline(ctx, upto.map(q => [sx(q.t), sy2(q.u)]), C.ink, 1.4, [2, 2]);
+      if (settleT !== null && t >= settleT) {
+        ctx.strokeStyle = C.good; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(sx(settleT), g1y); ctx.lineTo(sx(settleT), g1y + g1h); ctx.stroke();
+        label(ctx, "arrived", sx(settleT) + 4, g1y + g1h - 8, { size: 12, color: C.good, bold: true });
+      }
+      label(ctx, "P " + r.p.toFixed(0) + "  +  D " + r.d.toFixed(0) + "  =  " + r.u.toFixed(0) + (Math.abs(r.p + r.d) > 127 ? " (capped at 127)" : ""), gx + gw - 6, g2y + 16, { size: 12, align: "right", bold: true });
+    }
+  });
+}
+
+// ================= Lift =================
+{
+  const MAX = 1670;
+  const levels = [["rest", 0], ["carry", 375], ["stage 1", 660.7], ["stage 2", 1150], ["max", MAX]];
+  const seq = [375, 1150, 660.7, 0, 0.97 * MAX, 0];
+  const st = { pos: 0, vel: 0, i: 0, wait: 0.8, power: 0 };
+  scene("liftCanvas", {
+    update(dt) {
+      const target = seq[st.i];
+      const n = Math.round(dt / DT);
+      for (let k = 0; k < n; k++) {
+        const err = target - st.pos;
+        let power = 0;
+        if (st.wait > 0) { st.wait -= DT; power = st.pos >= 0.95 * MAX ? 30 : 0; }
+        else if (Math.abs(err) <= 8) { st.wait = 1.0; st.i = (st.i + 1) % seq.length; }
+        else {
+          power = clamp(0.45 * err, -127, 127);
+          if (err > 0) power = Math.max(power, 60); else power = Math.min(power, -110);
+        }
+        st.power = power;
+        // rubber bands help the lift up: net push = power + 22
+        const net = power === 0 ? 0 : power + 22;
+        const vt = net / 127 * 1400;
+        st.vel += (vt - st.vel) * DT / 0.08;
+        if (power === 0) st.vel *= 0.6;
+        st.pos = clamp(st.pos + st.vel * DT, 0, MAX);
+      }
+    },
+    draw(ctx, w, h) {
+      const bx = 60, by = 14, bh = h - 28, bw = Math.min(70, w * 0.12);
+      const sy = p => by + bh - p / MAX * bh;
+      ctx.fillStyle = C.soft; ctx.fillRect(bx, sy(MAX), bw, sy(0.95 * MAX) - sy(MAX));
+      ctx.strokeStyle = C.line; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, bw, bh);
+      for (const [name, p] of levels) {
+        ctx.strokeStyle = C.line; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(bx - 6, sy(p)); ctx.lineTo(bx + bw + 6, sy(p)); ctx.stroke(); ctx.setLineDash([]);
+        label(ctx, name, bx - 10, sy(p) + 4, { size: 11, color: C.muted, align: "right" });
+      }
+      const target = seq[st.i];
+      ctx.strokeStyle = C.gold; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(bx - 4, sy(target)); ctx.lineTo(bx + bw + 4, sy(target)); ctx.stroke();
+      ctx.fillStyle = C.robot; ctx.globalAlpha = 0.85; ctx.fillRect(bx + 8, sy(st.pos) - 8, bw - 16, 16); ctx.globalAlpha = 1;
+      const tx = bx + bw + 28, sz = clamp(w / 55, 12, 15);
+      const err = target - st.pos;
+      label(ctx, "Target: " + target.toFixed(0) + "°   now: " + st.pos.toFixed(0) + "°", tx, by + 22, { size: sz + 1, bold: true });
+      label(ctx, "power = 0.45 × " + err.toFixed(0) + " = " + (0.45 * err).toFixed(0), tx, by + 22 + sz * 2, { size: sz });
+      let why = "";
+      if (st.wait > 0) why = st.pos >= 0.95 * MAX ? "At the top: held there against gravity" : "Within 8° of the target: done, brakes hold";
+      else if (err > 0 && 0.45 * err < 60) why = "Going up: raised to the 60 minimum";
+      else if (err < 0 && 0.45 * err > -110) why = "Going down: raised to the 110 minimum (fighting the bands)";
+      else why = Math.abs(0.45 * err) > 127 ? "Capped at full power (127)" : "Proportional to the distance left";
+      label(ctx, "sent to motors: " + st.power.toFixed(0), tx, by + 22 + sz * 3.6, { size: sz, bold: true, color: C.accent });
+      label(ctx, why, tx, by + 22 + sz * 5.2, { size: sz, color: C.muted });
+    }
+  });
+}
+
+// ================= Full three-pin route =================
+{
+  const REACH = 8;
+  const goalP = { x: 20, y: 15 };
+  const hdgTo = (from, to, fwd) => { const a = Math.atan2(to.x - from.x, to.y - from.y) / DEG; return ((fwd ? a : a + 180) % 360 + 360) % 360; };
+  const segs = [];
+  let pose = { x: 0, y: 0, h: 180 }, lift = 0;
+  function seg(o) {
+    const s = { from: { ...pose }, to: { ...pose }, liftFrom: lift, liftTo: o.lift ?? lift, ...o };
+    if (o.to) s.to = { ...pose, ...o.to };
+    pose = { ...s.to }; lift = s.liftTo; segs.push(s); return s;
+  }
+  function driveTo(x, y, fwd, dur, o = {}) {
+    const h = hdgTo(pose, { x, y }, fwd);
+    return seg({ kind: "drive", to: { x, y, h: o.keepHeading ? pose.h : h }, dur, ...o });
+  }
+  function turnTo(h, dur, o = {}) { return seg({ kind: "turn", to: { h }, dur, ...o }); }
+  function wait(dur, o = {}) { return seg({ kind: "wait", dur, ...o }); }
+  const ahead = d => ({ x: pose.x + d * Math.sin(pose.h * DEG), y: pose.y + d * Math.cos(pose.h * DEG) });
+  const towards = (from, to, d) => { const L = Math.hypot(to.x - from.x, to.y - from.y); return { x: to.x - (to.x - from.x) / L * d, y: to.y - (to.y - from.y) / L * d }; };
+  const S1 = { x: 20.1, y: 36.79 }, S2 = { x: 42.5, y: 13.25 };
+
+  // 1 toggle
+  driveTo(0, 8, false, 0.55, { step: 0, lift: 375, tags: ["Lift starts while driving"], cap: "Back off the wall, lift rising" });
+  wait(0.2, { step: 0, cap: "Toggle hitter out", tags: ["Pneumatic"] });
+  driveTo(0, -2, true, 0.45, { step: 0, tags: ["Stall ending"], cap: "Drive into the toggle; ends when the wheels stall" });
+  // 2 preload
+  driveTo(0, 15, false, 0.7, { step: 1, keepHeading: true, tags: ["Move to point"], cap: "Back out to the goal's lane" });
+  turnTo(270, 0.55, { step: 1, tags: ["Turn (PID 2 / 0 / 10)"], cap: "Turn the claw to the goal" });
+  driveTo(goalP.x - REACH, goalP.y, false, 0.7, { step: 1, tags: ["Claw-first move"], cap: "Back the preload into the goal" });
+  wait(0.5, { step: 1, lift: 75, release: "pre", tags: ["Lift PID"], cap: "Lower the lift onto the pin, open the claw" });
+  driveTo(0, 15, true, 0.55, { step: 1, keepHeading: true, tags: ["Chained move (floor 40)"], cap: "Pull straight out, rolling into the next move" });
+  // 3 stack 1
+  const a1 = { ...pose };
+  turnTo(hdgTo(a1, S1, false), 0.4, { step: 2, lift: 0, tags: ["Chained turn (floor 20)"], cap: "Aim the claw at stack 1; lift comes down" });
+  const g1 = towards(a1, S1, REACH + 10), st1 = towards(a1, S1, REACH), seat1 = towards(a1, S1, REACH - 5);
+  driveTo(g1.x, g1.y, false, 0.5, { step: 2, tags: ["Fast approach (floor 45)"], cap: "Fast approach" });
+  driveTo(st1.x, st1.y, false, 0.65, { step: 2, tags: ["Gentle zone (kP 3, floor 24)"], cap: "Last 10 in slowly" });
+  wait(0.15, { step: 2, grab: 0, tags: ["Clamp"], cap: "Clamp stack 1" });
+  driveTo(seat1.x, seat1.y, false, 0.35, { step: 3, lift: 660, tags: ["Lift starts while driving"], cap: "Lift rises while carrying on along the line" });
+  // 4 score 1
+  const G1 = { x: 20, y: 15.75 };
+  const h1 = hdgTo(pose, G1, false);
+  turnTo(h1, 0.75, { step: 3, drift: { x: 2.6, y: -2.2 }, tags: ["Turn with a raised stack (floor 10, 2°)"], cap: "Turn to the goal; odometry drifts (heavy end pivots)" });
+  const sc1 = { x: G1.x + REACH * Math.sin(h1 * DEG), y: G1.y + REACH * Math.cos(h1 * DEG) };
+  driveTo(sc1.x, sc1.y, false, 0.75, { step: 3, keepHeading: true, tags: ["Stall ending"], cap: "Into the goal; ends on stall" });
+  wait(0.4, { step: 3, lift: 450, release: 0, tags: ["Lift PID"], cap: "Lower a third of a level, open the claw" });
+  wait(0.35, { step: 3, snap: true, tags: ["Contact reference"], cap: "Reset position from the goal (8 in along the heading)" });
+  const r1 = ahead(10);
+  driveTo(r1.x, r1.y, true, 0.5, { step: 3, keepHeading: true, lift: 0, tags: ["Chained move (floor 40)"], cap: "Pull out 10 in" });
+  // 5 stack 2
+  const a2 = { ...pose };
+  turnTo(hdgTo(a2, S2, false), 0.55, { step: 4, tags: ["Chained turn (floor 20)"], cap: "Aim the claw at stack 2" });
+  const g2 = towards(a2, S2, REACH + 10), st2 = towards(a2, S2, REACH);
+  driveTo(g2.x, g2.y, false, 0.55, { step: 4, tags: ["Fast approach (floor 45)"], cap: "Fast approach" });
+  driveTo(st2.x, st2.y, false, 0.65, { step: 4, drift: { x: 1.6, y: 1.4 }, tags: ["Gentle zone (kP 3, floor 24)"], cap: "Last 10 in slowly" });
+  wait(0.15, { step: 4, grab: 1, tags: ["Clamp"], cap: "Clamp stack 2" });
+  wait(0.3, { step: 4, gps: true, lift: 500, tags: ["GPS checkpoint"], cap: "GPS checkpoint while the lift rises" });
+  const dir2 = { x: st2.x - a2.x, y: st2.y - a2.y };
+  const k2 = (15 - pose.y) / dir2.y;
+  driveTo(pose.x + dir2.x * k2, 15, false, 0.35, { step: 5, lift: 1150, tags: ["Lift starts while driving"], cap: "Carry on to the goal's line" });
+  // 6 score 2
+  turnTo(hdgTo(pose, { x: 0, y: 14.75 }, false), 0.6, { step: 5, drift: { x: -1.8, y: 2.0 }, tags: ["Turn with a raised stack (floor 10, 2°)"], cap: "Turn to the goal" });
+  driveTo(goalP.x + REACH, 14.75, false, 0.7, { step: 5, keepHeading: true, tags: ["Stall ending"], cap: "Into the goal; ends on stall" });
+  wait(0.4, { step: 5, lift: 900, release: 1, tags: ["Lift PID"], cap: "Lower a third of a level, open the claw" });
+  wait(0.35, { step: 5, snap: true, tags: ["Contact reference"], cap: "Reset position from the goal" });
+  const r2 = ahead(8);
+  driveTo(r2.x, r2.y, true, 0.45, { step: 6, keepHeading: true, lift: 0, tags: ["Chained move (floor 40)"], cap: "Pull away. Done" });
+  wait(1.6, { step: 6, cap: "Done" });
+
+  let t0 = 0; for (const s of segs) { s.t0 = t0; t0 += s.dur; } const TOTAL = t0;
+  // Odometry drift, applied per segment.
+  let o = { x: 0, y: 0 }; for (const s of segs) { s.offFrom = { ...o }; if (s.drift) o = { x: o.x + s.drift.x, y: o.y + s.drift.y }; if (s.snap) o = { x: 0, y: 0 }; if (s.gps) o = { x: o.x * 0.2, y: o.y * 0.2 }; s.offTo = { ...o }; }
+  const stepsEl = [...document.querySelectorAll("#routeSteps li")], tagsEl = document.getElementById("routeTags");
+  let lastSeg = -1;
+  function stateAt(t) {
+    let i = segs.findIndex(s => t < s.t0 + s.dur); if (i < 0) i = segs.length - 1;
+    const s = segs[i], k = clamp((t - s.t0) / s.dur, 0, 1), e = ease(k);
+    let x = lerp(s.from.x, s.to.x, e), y = lerp(s.from.y, s.to.y, e);
+    let hd;
+    const dh = wrap(s.to.h - s.from.h);
+    if (s.kind === "turn") hd = s.from.h + dh * e;
+    else hd = s.from.h + dh * ease(clamp(k / 0.3, 0, 1));
+    return { i, s, k, x, y, h: hd, lift: lerp(s.liftFrom, s.liftTo, e), off: { x: lerp(s.offFrom.x, s.offTo.x, e), y: lerp(s.offFrom.y, s.offTo.y, e) } };
+  }
+  scene("routeCanvas", {
+    update(dt) { this.t = (this.t + dt) % TOTAL; },
+    draw(ctx, w, h) {
+      const t = this.t, S = stateAt(t);
+      const gaugeW = 64;
+      const v = view(0, 0, w - gaugeW, h, -14, 54, -14, 46, 12);
+      grid(ctx, v, -14, 54, -12, 46, 6);
+      // toggle wall
+      ctx.strokeStyle = C.wall; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(v.X(-14), v.Y(-10)); ctx.lineTo(v.X(54), v.Y(-10)); ctx.stroke();
+      ctx.strokeStyle = C.gold; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(v.X(-4), v.Y(-10)); ctx.lineTo(v.X(4), v.Y(-10)); ctx.stroke();
+      label(ctx, "wall with toggle", v.X(8), v.Y(-10) + 16, { size: 12, color: C.muted });
+      // goal + stacks
+      goal(ctx, v, goalP.x, goalP.y);
+      label(ctx, "goal", v.X(goalP.x) + 4 * v.s, v.Y(goalP.y) - 4 * v.s, { size: 12, color: C.muted });
+      // where things are at time t
+      const segIdx = S.i;
+      const grabbed = k => segs.some((s, j) => j < segIdx && s.grab === k) || (segs[segIdx].grab === k && S.k > 0.5);
+      const released = k => segs.some((s, j) => j < segIdx && s.release === k) || (segs[segIdx].release === k && S.k > 0.6);
+      const grip = { x: S.x - REACH * Math.sin(S.h * DEG), y: S.y - REACH * Math.cos(S.h * DEG) };
+      let scored = 0; if (released("pre")) scored++;
+      for (const [k, home] of [[0, S1], [1, S2]]) {
+        if (released(k)) scored++;
+        else if (grabbed(k)) { /* drawn with the robot */ }
+        else { stack(ctx, v, home.x, home.y); label(ctx, "stack " + (k + 1), v.X(home.x) + 3 * v.s, v.Y(home.y) + 4, { size: 12, color: C.muted }); }
+      }
+      if (scored) label(ctx, scored + (scored === 1 ? " pin" : " pins") + " on goal", v.X(goalP.x), v.Y(goalP.y) + 5.5 * v.s, { size: 12, bold: true, color: C.gold, align: "center" });
+      // odometry ghost
+      if (Math.hypot(S.off.x, S.off.y) > 0.2) robot(ctx, v, S.x + S.off.x, S.y + S.off.y, S.h, { ghost: true, color: C.ghost });
+      robot(ctx, v, S.x, S.y, S.h, { gpsCone: S.s.gps ? 22 : 0 });
+      const holding = (!released("pre") && segIdx > 0) || (grabbed(0) && !released(0)) || (grabbed(1) && !released(1));
+      if (holding) {
+        if (!released("pre") && !grabbed(0)) dot(ctx, v.X(grip.x), v.Y(grip.y), 1.6 * v.s, C.bad);
+        else stack(ctx, v, grip.x, grip.y);
+      }
+      // lift gauge
+      const gx = w - gaugeW + 18, gy = 34, gh = h - 70;
+      ctx.strokeStyle = C.line; ctx.lineWidth = 1.5; ctx.strokeRect(gx, gy, 18, gh);
+      const lh = S.lift / 1670 * gh;
+      ctx.fillStyle = C.accent; ctx.fillRect(gx + 2, gy + gh - lh, 14, lh);
+      label(ctx, "lift", gx + 9, gy - 8, { size: 12, color: C.muted, align: "center" });
+      // header
+      pill(ctx, "clock " + (t < TOTAL - 1.6 ? t : TOTAL - 1.6).toFixed(1) + " s   ·   " + (S.s.cap || ""), 10, 10, { size: clamp(w / 55, 11, 14) });
+      // DOM updates on segment change
+      if (segIdx !== lastSeg) {
+        lastSeg = segIdx;
+        stepsEl.forEach((li, k) => li.classList.toggle("active", k === S.s.step));
+        tagsEl.innerHTML = (S.s.tags || []).map(x => `<span class="tag">${x}</span>`).join("");
+      }
+    }
+  });
+}
+})();
+</script>
+</body>
+</html>

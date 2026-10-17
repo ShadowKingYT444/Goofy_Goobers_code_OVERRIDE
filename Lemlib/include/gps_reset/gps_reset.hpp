@@ -98,10 +98,13 @@ inline const char* fix_name(Fix status);
 // coordinates. Blocks in the calling task for up to wait_ms: waits for the
 // robot to be parked, averages raw GPS fixes, and sets LemLib's X/Y from them
 // (heading untouched) only if the GPS places the robot within radius_in of
-// that waypoint and between 1.5 and 8 in from odometry. The reason for every
-// outcome is returned, printed as a GPS_FIX line and shown on the Brain.
+// that waypoint and between min_gap_in and 8 in from odometry. The reason for
+// every outcome is returned, printed as a GPS_FIX line and shown on the
+// Brain. min_gap_in = 0 takes the GPS position every time; anything above
+// 8 only measures (the Correction still carries the GPS position and gap).
 inline Correction checkpoint(double x_in, double y_in, double radius_in = 6.0,
-                             std::uint32_t wait_ms = 450);
+                             std::uint32_t wait_ms = 450,
+                             double min_gap_in = 1.5);
 
 // The same correction without a waypoint check and with no minimum gap, for
 // routes that do not know where they expect to be. True only if applied.

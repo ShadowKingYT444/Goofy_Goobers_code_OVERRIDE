@@ -346,6 +346,18 @@ int main() {
     chassis.pose = {15, 6, 177};                          // 10 in: not believable
     assert(checkpoint(15, 16).status == Fix::TOO_LARGE);
     assert(chassis.set_pose_calls == before_cp + 1);
+    // The smallest gap corrected is the caller's: 0 takes the GPS position
+    // however close odometry already is, and a value past the 8 in limit
+    // only measures.
+    chassis.pose = {14.5, 16, 177};                       // 0.5 in off
+    assert(checkpoint(15, 16).status == Fix::ALREADY_ALIGNED);
+    cp = checkpoint(15, 16, 6.0, 450, 100.0);
+    assert(cp.status == Fix::ALREADY_ALIGNED); near(cp.gap_in, 0.5);
+    near(cp.gps_x_in, 15); near(chassis.pose.x, 14.5);
+    assert(chassis.set_pose_calls == before_cp + 1);
+    cp = checkpoint(15, 16, 6.0, 450, 0.0);
+    assert(cp.status == Fix::APPLIED); near(chassis.pose.x, 15);
+    assert(chassis.set_pose_calls == before_cp + 2);
 
     // The case the old checkpoint missed: odometry slips right before the
     // stop, so the smoothed estimate still agrees with odometry while the

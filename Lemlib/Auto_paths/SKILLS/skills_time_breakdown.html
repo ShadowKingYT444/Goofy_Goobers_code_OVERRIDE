@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Skills route: where the time goes</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface-1: #fcfcfb;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10);
+    --drive: #2a78d6; --approach: #eb6834; --turn: #1baf7a; --gps: #eda100; --wait: #e87ba4; --mech: #008300;
+    --threepin: #c3c2b7; --limit: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface-1: #1a1a19;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+      --drive: #3987e5; --approach: #d95926; --turn: #199e70; --gps: #c98500; --wait: #d55181; --mech: #008300;
+      --threepin: #52514e; --limit: #e66767;
+    }
+  }
+  body { margin: 0; }
+  .viz-root { background: var(--page); color: var(--text-primary); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 24px; min-height: 100vh; box-sizing: border-box; }
+  .wrap { max-width: 1060px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 2px; }
+  .sub { color: var(--text-secondary); margin: 0 0 16px; max-width: 80ch; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
+  .tiles { display: flex; gap: 16px; margin-bottom: 16px; }
+  .tile { flex: 1; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+  .tile .label { color: var(--text-secondary); font-size: 13px; }
+  .tile .value { font-size: 30px; font-weight: 600; }
+  .tile .note { color: var(--muted); font-size: 12.5px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 14px; color: var(--text-secondary); font-size: 13px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .chart { position: relative; }
+  .row { display: grid; grid-template-columns: 96px 1fr; align-items: center; height: 30px; position: relative; z-index: 1; }
+  .row .name { color: var(--text-secondary); font-size: 13px; }
+  .row.past .name { color: var(--muted); }
+  .track { position: relative; height: 100%; display: flex; align-items: center; }
+  .bar { display: flex; gap: 2px; height: 18px; }
+  .seg { height: 100%; min-width: 1px; outline: none; }
+  .seg:last-child { border-radius: 0 4px 4px 0; }
+  .seg:hover, .seg:focus-visible { filter: brightness(1.18); box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 3px var(--text-secondary); }
+  .tip-label { margin-left: 6px; padding: 0 4px; background: var(--surface-1); font-size: 12.5px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tip-label b { color: var(--text-primary); font-weight: 600; }
+  .gridline { position: absolute; top: 0; bottom: 22px; width: 1px; background: var(--grid); z-index: 0; }
+  .axis { display: grid; grid-template-columns: 96px 1fr; height: 22px; }
+  .axis .ticks { position: relative; border-top: 1px solid var(--axis); }
+  .axis .ticks span { position: absolute; top: 4px; transform: translateX(-50%); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cut { display: grid; grid-template-columns: 96px 1fr; align-items: center; height: 24px; position: relative; z-index: 1; }
+  .cut div { border-top: 2px solid var(--limit); color: var(--text-secondary); font-size: 12.5px; padding-top: 2px; }
+  .cut span { background: var(--surface-1); padding-right: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--grid); }
+  th { color: var(--text-secondary); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+  details summary { cursor: pointer; color: var(--text-secondary); }
+  #tooltip { position: fixed; pointer-events: none; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0,0,0,.18); max-width: 320px; display: none; z-index: 5; }
+  #tooltip .v { font-weight: 600; font-size: 14px; }
+  #tooltip .k { color: var(--text-secondary); }
+  #tooltip ul { margin: 4px 0 0; padding-left: 16px; color: var(--text-secondary); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 820px) { .cols, .tiles { display: block; } .tile { margin-bottom: 8px; } }
+</style>
+</head>
+<body>
+<div class="viz-root"><div class="wrap">
+  <h1>Skills route: where the time goes</h1>
+  <p class="sub">Estimated from leg distances and how LemLib's moves behave, not measured on the robot. The three-pin is taken as 14.5 s. The same arithmetic came out about 4% low on the two-pin, the one route with a measured time.</p>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <h2>Time per step, in route order</h2>
+    <p class="sub" style="margin-bottom:0">Each bar is one step, split by what the robot is doing. Hover a segment for its legs.</p>
+    <div class="legend" id="legend"></div>
+    <div class="chart" id="steps"></div>
+  </div>
+
+  <div class="cols">
+    <div class="card">
+      <h2>Total by activity, everything after the three-pin</h2>
+      <p class="sub">Seconds across all eleven steps.</p>
+      <div class="chart" id="totals"></div>
+    </div>
+    <div class="card">
+      <h2>One G3 load, leg by leg</h2>
+      <p class="sub">The step that repeats five times.</p>
+      <table id="oneload"></table>
+    </div>
+  </div>
+
+  <div class="card">
+    <details><summary>Table: every leg of every step</summary><table id="all"></table></details>
+  </div>
+</div></div>
+<div id="tooltip"></div>
+<script>
+const STEPS = [{"name": "Three-pin", "legs": [{"label": "Three-pin route (assumed, not broken down)", "cat": "threepin", "s": 14.5}]}, {"name": "G2 load 1", "legs": [{"label": "Drive 19 in to the line-up point", "cat": "drive", "s": 0.79}, {"label": "Trim heading", "cat": "turn", "s": 0.1}, {"label": "Stop and take position from GPS", "cat": "gps", "s": 0.45}, {"label": "Quarter turn, claw to loader (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Back 14 in into the loader until contact", "cat": "approach", "s": 1.12}, {"label": "Wait before clamping", "cat": "wait", "s": 0.5}, {"label": "Clamp and lift the pin clear", "cat": "mech", "s": 0.23}, {"label": "Carry 14 in east", "cat": "drive", "s": 0.68}, {"label": "Turn claw to G2 (90\u00b0, stack raised)", "cat": "turn", "s": 0.65}, {"label": "Back 19 in into G2 until contact", "cat": "approach", "s": 1.24}, {"label": "Set down and release", "cat": "mech", "s": 0.5}, {"label": "Pull 12 in out of G2", "cat": "drive", "s": 0.62}]}, {"name": "G2 load 2", "legs": [{"label": "Drive 15 in to the line-up point", "cat": "drive", "s": 0.7}, {"label": "Trim heading", "cat": "turn", "s": 0.1}, {"label": "Stop and take position from GPS", "cat": "gps", "s": 0.45}, {"label": "Quarter turn, claw to loader (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Back 14 in into the loader until contact", "cat": "approach", "s": 1.12}, {"label": "Wait before clamping", "cat": "wait", "s": 0.5}, {"label": "Clamp and lift the pin clear", "cat": "mech", "s": 0.23}, {"label": "Carry 14 in east", "cat": "drive", "s": 0.68}, {"label": "Turn claw to G2 (90\u00b0, stack raised)", "cat": "turn", "s": 0.65}, {"label": "Back 19 in into G2 until contact", "cat": "approach", "s": 1.24}, {"label": "Set down and release", "cat": "mech", "s": 0.5}, {"label": "Pull 12 in out of G2", "cat": "drive", "s": 0.62}]}, {"name": "Wall pin 2", "legs": [{"label": "Turn nose west (81\u00b0)", "cat": "turn", "s": 0.43}, {"label": "Drive 12 in to the west lane", "cat": "drive", "s": 0.63}, {"label": "Turn claw north (90\u00b0), lift to rest", "cat": "turn", "s": 0.45}, {"label": "Back 8 in up the lane", "cat": "drive", "s": 0.47}, {"label": "Curve 15 in onto the wall pin until contact", "cat": "approach", "s": 1.15}, {"label": "Clamp and lift clear", "cat": "mech", "s": 0.33}, {"label": "Curve 18 in back out", "cat": "drive", "s": 0.81}, {"label": "Turn claw to G2 (34\u00b0, stack raised)", "cat": "turn", "s": 0.53}, {"label": "Back 14 in into G2 until contact", "cat": "approach", "s": 1.11}, {"label": "Set down and release", "cat": "mech", "s": 0.5}, {"label": "Pull 14 in out of G2", "cat": "drive", "s": 0.67}]}, {"name": "G3 load 1", "legs": [{"label": "Turn nose to the line-up point (69\u00b0)", "cat": "turn", "s": 0.4}, {"label": "Drive 21 in to the line-up point", "cat": "drive", "s": 0.82}, {"label": "Square up nose south (35\u00b0)", "cat": "turn", "s": 0.33}, {"label": "Stop and take position from GPS", "cat": "gps", "s": 0.45}, {"label": "Quarter turn, claw to loader (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Back 14 in into the loader until contact", "cat": "approach", "s": 1.12}, {"label": "Wait before clamping", "cat": "wait", "s": 0.5}, {"label": "Clamp and lift the pin clear", "cat": "mech", "s": 0.23}, {"label": "Carry 25 in east", "cat": "drive", "s": 0.89}, {"label": "Turn claw to G3 (140\u00b0, stack raised)", "cat": "turn", "s": 0.76}, {"label": "Back 8 in into G3 until contact", "cat": "approach", "s": 0.9}, {"label": "Set down and release", "cat": "mech", "s": 0.47}, {"label": "Pull 8 in out of G3", "cat": "drive", "s": 0.45}]}, {"name": "G3 load 2", "legs": [{"label": "Turn nose to the line-up point (39\u00b0)", "cat": "turn", "s": 0.34}, {"label": "Drive 11 in to the line-up point", "cat": "drive", "s": 0.59}, {"label": "Square up nose south (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Stop and take position from GPS", "cat": "gps", "s": 0.45}, {"label": "Quarter turn, claw to loader (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Back 14 in into the loader until contact", "cat": "approach", "s": 1.12}, {"label": "Wait before clamping", "cat": "wait", "s": 0.5}, {"label": "Clamp and lift the pin clear", "cat": "mech", "s": 0.23}, {"label": "Carry 25 in east", "cat": "drive", "s": 0.89}, {"label": "Turn claw to G3 (140\u00b0, stack raised)", "cat": "turn", "s": 0.76}, {"label": "Back 8 in into G3 until contact", "cat": "approach", "s": 0.9}, {"label": "Set down and release", "cat": "mech", "s": 0.33}, {"label": "Pull 8 in out of G3", "cat": "drive", "s": 0.45}]}, {"name": "G3 load 3", "legs": [{"label": "Turn nose to the line-up point (39\u00b0)", "cat": "turn", "s": 0.34}, {"label": "Drive 11 in to the line-up point", "cat": "drive", "s": 0.59}, {"label": "Square up nose south (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Stop and take position from GPS", "cat": "gps", "s": 0.45}, {"label": "Quarter turn, claw to loader (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Back 14 in into the loader until contact", "cat": "approach", "s": 1.12}, {"label": "Wait before clamping", "cat": "wait", "s": 0.5}, {"label": "Clamp and lift the pin clear", "cat": "mech", "s": 0.23}, {"label": "Carry 25 in east", "cat": "drive", "s": 0.89}, {"label": "Turn claw to G3 (140\u00b0, stack raised)", "cat": "turn", "s": 0.76}, {"label": "Back 8 in into G3 until contact", "cat": "approach", "s": 0.9}, {"label": "Set down and release", "cat": "mech", "s": 0.5}, {"label": "Pull 8 in out of G3", "cat": "drive", "s": 0.45}]}, {"name": "G3 load 4", "legs": [{"label": "Turn nose to the line-up point (39\u00b0)", "cat": "turn", "s": 0.34}, {"label": "Drive 11 in to the line-up point", "cat": "drive", "s": 0.59}, {"label": "Square up nose south (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Stop and take position from GPS", "cat": "gps", "s": 0.45}, {"label": "Quarter turn, claw to loader (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Back 14 in into the loader until contact", "cat": "approach", "s": 1.12}, {"label": "Wait before clamping", "cat": "wait", "s": 0.5}, {"label": "Clamp and lift the pin clear", "cat": "mech", "s": 0.23}, {"label": "Carry 25 in east", "cat": "drive", "s": 0.89}, {"label": "Turn claw to G3 (140\u00b0, stack raised)", "cat": "turn", "s": 0.76}, {"label": "Back 8 in into G3 until contact", "cat": "approach", "s": 0.9}, {"label": "Set down and release", "cat": "mech", "s": 0.5}, {"label": "Pull 8 in out of G3", "cat": "drive", "s": 0.45}]}, {"name": "G3 load 5", "legs": [{"label": "Turn nose to the line-up point (39\u00b0)", "cat": "turn", "s": 0.34}, {"label": "Drive 11 in to the line-up point", "cat": "drive", "s": 0.59}, {"label": "Square up nose south (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Stop and take position from GPS", "cat": "gps", "s": 0.45}, {"label": "Quarter turn, claw to loader (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Back 14 in into the loader until contact", "cat": "approach", "s": 1.12}, {"label": "Wait before clamping", "cat": "wait", "s": 0.5}, {"label": "Clamp and lift the pin clear", "cat": "mech", "s": 0.23}, {"label": "Carry 25 in east", "cat": "drive", "s": 0.89}, {"label": "Turn claw to G3 (140\u00b0, stack raised)", "cat": "turn", "s": 0.76}, {"label": "Back 8 in into G3 until contact", "cat": "approach", "s": 0.9}, {"label": "Set down and release", "cat": "mech", "s": 0.5}, {"label": "Pull 8 in out of G3", "cat": "drive", "s": 0.45}]}, {"name": "Wall pin 3", "legs": [{"label": "Turn nose west (39\u00b0)", "cat": "turn", "s": 0.34}, {"label": "Drive 7 in to the staging point", "cat": "drive", "s": 0.42}, {"label": "Turn claw east, lift to rest", "cat": "turn", "s": 0.27}, {"label": "Back 6 in along the lane", "cat": "drive", "s": 0.37}, {"label": "Curve 15 in onto the wall pin until contact", "cat": "approach", "s": 1.15}, {"label": "Clamp and lift clear", "cat": "mech", "s": 0.33}, {"label": "Curve 18 in back out", "cat": "drive", "s": 0.81}, {"label": "Turn claw to G3 (31\u00b0, stack raised)", "cat": "turn", "s": 0.52}, {"label": "Back 13 in into G3 until contact", "cat": "approach", "s": 1.1}, {"label": "Set down and release", "cat": "mech", "s": 0.5}, {"label": "Pull 13 in out of G3", "cat": "drive", "s": 0.65}]}, {"name": "Toggle", "legs": [{"label": "Turn nose east (141\u00b0)", "cat": "turn", "s": 0.56}, {"label": "Drive 31 in east under G3", "cat": "drive", "s": 1.0}, {"label": "Turn nose to the wall (90\u00b0)", "cat": "turn", "s": 0.45}, {"label": "Nose into the toggle until contact", "cat": "approach", "s": 0.71}]}, {"name": "Park", "legs": [{"label": "Back 6 in off the wall", "cat": "drive", "s": 0.4}, {"label": "Turn nose north (164\u00b0)", "cat": "turn", "s": 0.61}, {"label": "Drive 33 in north past G3", "cat": "drive", "s": 1.03}, {"label": "Drive 20 in into the center, stop", "cat": "drive", "s": 1.35}]}];
+const CATS = [
+  ['drive', 'Driving between points'],
+  ['approach', 'Backing in until contact'],
+  ['turn', 'Turning in place'],
+  ['gps', 'Stopped for a GPS reset'],
+  ['wait', 'Waiting at the loader'],
+  ['mech', 'Lift, arm and claw'],
+];
+const NAME = Object.fromEntries(CATS); NAME.threepin = 'Three-pin (not broken down)';
+const LIMIT = 60;
+const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const sum = a => a.reduce((x, y) => x + y, 0);
+const fmt = s => s.toFixed(1) + ' s';
+const tip = document.getElementById('tooltip');
+function attachTip(node, build) {
+  const show = (x, y) => { tip.replaceChildren(...build()); tip.style.display = 'block';
+    const r = tip.getBoundingClientRect(); tip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + 'px'; tip.style.top = Math.min(y + 14, innerHeight - r.height - 8) + 'px'; };
+  node.tabIndex = 0;
+  node.addEventListener('pointermove', e => show(e.clientX, e.clientY));
+  node.addEventListener('pointerleave', () => tip.style.display = 'none');
+  node.addEventListener('focus', () => { const r = node.getBoundingClientRect(); show(r.left, r.bottom); });
+  node.addEventListener('blur', () => tip.style.display = 'none');
+}
+function axis(parent, max, step) {
+  const ax = mk('div', 'axis'); ax.appendChild(mk('div')); const ticks = mk('div', 'ticks');
+  for (let v = 0; v <= max; v += step) {
+    const s = mk('span', '', String(v)); s.style.left = (100 * v / max) + '%'; ticks.appendChild(s);
+    const g = mk('div', 'gridline'); g.style.left = `calc(96px + (100% - 96px) * ${v / max})`; parent.appendChild(g);
+  }
+  ax.appendChild(ticks); parent.appendChild(ax);
+}
+
+// legend
+const legend = document.getElementById('legend');
+for (const [k, label] of [...CATS, ['threepin', NAME.threepin]]) { const s = mk('span'); const i = mk('i'); i.style.background = `var(--${k})`; s.append(i, label); legend.appendChild(s); }
+
+// tiles
+const total = sum(STEPS.map(s => sum(s.legs.map(l => l.s))));
+const tiles = document.getElementById('tiles');
+for (const [label, value, note] of [
+  ['Whole plan', fmt(total), 'three-pin, 7 loads, 2 wall pins, toggle, park'],
+  ['Allowed', fmt(LIMIT), 'one skills run'],
+  ['Over by', fmt(total - LIMIT), 'about ' + Math.round((total - LIMIT) / 7.5) + ' loads\' worth'],
+]) { const t = mk('div', 'tile'); t.append(mk('div', 'label', label), mk('div', 'value', value), mk('div', 'note', note)); tiles.appendChild(t); }
+
+// chart 1: steps
+const stepsEl = document.getElementById('steps');
+const MAX1 = 18;
+let cum = 0, cutDrawn = false;
+for (const st of STEPS) {
+  const t = sum(st.legs.map(l => l.s));
+  if (!cutDrawn && cum + t > LIMIT) {
+    const c = mk('div', 'cut'); const msg = mk('div'); msg.appendChild(mk('span', '', `60 s runs out during the next step (${cum.toFixed(1)} s used so far)`)); c.append(mk('div'), msg); c.firstChild.style.border = 'none';
+    stepsEl.appendChild(c); cutDrawn = true;
+  }
+  cum += t;
+  const row = mk('div', 'row' + (cum > LIMIT ? ' past' : ''));
+  row.appendChild(mk('div', 'name', st.name));
+  const track = mk('div', 'track'), bar = mk('div', 'bar');
+  bar.style.width = (100 * t / MAX1) + '%';
+  const order = ['threepin', ...CATS.map(c => c[0])];
+  for (const k of order) {
+    const legs = st.legs.filter(l => l.cat === k); if (!legs.length) continue;
+    const secs = sum(legs.map(l => l.s));
+    const seg = mk('div', 'seg'); seg.style.flex = secs + ' 0 0'; seg.style.background = `var(--${k})`;
+    seg.setAttribute('role', 'img'); seg.setAttribute('aria-label', `${st.name}: ${NAME[k]}, ${fmt(secs)}`);
+    attachTip(seg, () => { const v = mk('div', 'v', fmt(secs)); const kk = mk('div', 'k', `${NAME[k]} · ${st.name}`); const ul = mk('ul');
+      for (const l of legs) ul.appendChild(mk('li', '', `${l.label}: ${l.s.toFixed(2)} s`)); return [v, kk, ul]; });
+    bar.appendChild(seg);
+  }
+  const lab = mk('span', 'tip-label'); const b = mk('b', '', fmt(t)); lab.append(b, `  ends at ${cum.toFixed(1)} s`);
+  track.append(bar, lab); row.appendChild(track); stepsEl.appendChild(row);
+}
+axis(stepsEl, MAX1, 2);
+
+// chart 2: totals by activity (after the three-pin)
+const totals = CATS.map(([k, label]) => [k, label, sum(STEPS.slice(1).flatMap(s => s.legs).filter(l => l.cat === k).map(l => l.s))]).sort((a, b) => b[2] - a[2]);
+const after = sum(totals.map(t => t[2]));
+const totEl = document.getElementById('totals');
+const MAX2 = 30;
+for (const [k, label, secs] of totals) {
+  const row = mk('div', 'row'); row.style.gridTemplateColumns = '170px 1fr'; row.appendChild(mk('div', 'name', label));
+  const track = mk('div', 'track'), bar = mk('div', 'bar'); bar.style.width = (100 * secs / MAX2) + '%';
+  const seg = mk('div', 'seg'); seg.style.flex = '1'; seg.style.background = `var(--${k})`;
+  attachTip(seg, () => [mk('div', 'v', fmt(secs)), mk('div', 'k', `${label} · ${Math.round(100 * secs / after)}% of the ${after.toFixed(0)} s after the three-pin`)]);
+  bar.appendChild(seg);
+  const lab = mk('span', 'tip-label'); lab.append(mk('b', '', fmt(secs)), `  ${Math.round(100 * secs / after)}%`);
+  track.append(bar, lab); row.appendChild(track); totEl.appendChild(row);
+}
+
+// tables
+function legTable(el, steps, withStep) {
+  const head = mk('tr'); if (withStep) head.appendChild(mk('th', '', 'Step'));
+  head.append(mk('th', '', 'Leg'), mk('th', '', 'Activity'), mk('th', 'num', 'Seconds')); el.appendChild(head);
+  for (const st of steps) {
+    for (const l of st.legs) {
+      const tr = mk('tr'); if (withStep) tr.appendChild(mk('td', '', st.name));
+      const act = mk('td'); const i = mk('i'); i.style.background = `var(--${l.cat})`; act.append(i, NAME[l.cat]);
+      tr.append(mk('td', '', l.label), act, mk('td', 'num', l.s.toFixed(2))); el.appendChild(tr);
+    }
+    const tr = mk('tr'); if (withStep) tr.appendChild(mk('td', '', st.name));
+    const b = mk('td'); b.appendChild(mk('b', '', 'Total')); const n = mk('td', 'num'); n.appendChild(mk('b', '', sum(st.legs.map(l => l.s)).toFixed(2)));
+    tr.append(b, mk('td'), n); el.appendChild(tr);
+  }
+}
+legTable(document.getElementById('oneload'), [STEPS.find(s => s.name === 'G3 load 2')], false);
+legTable(document.getElementById('all'), STEPS, true);
+</script>
+</body>
+</html>

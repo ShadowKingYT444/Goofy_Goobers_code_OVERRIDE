@@ -5,4 +5,6 @@ namespace fieldviz {
 bool print(std::int16_t line, const char* format, ...);
 // Multi-line result panel over the readout column; "" hides it again.
 void report(const char* format, ...);
+// The same panel over the whole screen, map included, for longer results.
+void report_full(const char* text);
 }

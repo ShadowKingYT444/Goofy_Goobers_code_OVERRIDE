@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Skills route visualizer</title>
+<style>
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #12161c; color: #dde3ea; display: flex; height: 100vh; }
+  #left { flex: 0 0 auto; padding: 12px; display: flex; flex-direction: column; }
+  svg { background: #5c6066; height: calc(100vh - 150px); aspect-ratio: 1; border: 2px solid #222; }
+  #controls { margin-top: 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #controls input[type=range] { flex: 1; min-width: 200px; }
+  button { background: #2b3644; color: #fff; border: 1px solid #4a5a6e; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
+  #now { margin-top: 6px; font-size: 16px; font-weight: 600; min-height: 22px; }
+  #pose { color: #9fb0c3; }
+  #right { flex: 1; overflow-y: auto; padding: 12px 16px; border-left: 1px solid #2b3644; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  .note { color: #9fb0c3; font-size: 12.5px; margin: 0 0 10px; }
+  ol { padding-left: 34px; margin: 0; }
+  li { padding: 2px 6px; border-radius: 3px; cursor: pointer; }
+  li:hover { background: #1f2835; }
+  li.cur { background: #34506f; color: #fff; }
+  li.skip { color: #8a94a0; font-style: italic; }
+  li.head { list-style: none; margin: 10px 0 2px -22px; font-weight: 700; cursor: default; }
+  .key span { display: inline-block; margin-right: 14px; white-space: nowrap; }
+  .sw { display: inline-block; width: 22px; height: 0; border-top: 3px solid; vertical-align: middle; margin-right: 4px; }
+</style>
+</head>
+<body>
+<div id="left">
+  <svg id="field" viewBox="-76 -76 152 152"></svg>
+  <div id="now"></div>
+  <div id="pose"></div>
+  <div id="controls">
+    <button id="play">Play</button>
+    <button id="prev">&lt; Step</button>
+    <button id="next">Step &gt;</button>
+    <input id="scrub" type="range" min="0" max="1000" value="0">
+    <label>Speed <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>x</label>
+    <label><input id="all" type="checkbox" checked> include steps the clock is expected to skip</label>
+  </div>
+</div>
+<div id="right">
+  <h1>Skills route, as coded in <code>skills_route</code> (src/autons.cpp)</h1>
+  <p class="note">Field coordinates in inches from the center, +X east, +Y north. The three-pin starts at the west wall, facing its toggle, and scores on G2. Element positions come from the guide's screenshots; everything outside the lower-left quadrant is filled in by symmetry. The three-pin part is approximate (it lays itself out from odometry as it runs). Nothing here has run on the robot.</p>
+  <p class="note key">
+    <span><i class="sw" style="border-color:#ffd166"></i>nose first</span>
+    <span><i class="sw" style="border-color:#ffd166;border-top-style:dashed"></i>claw first</span>
+    <span style="color:#4cc9f0">&#9679; GPS reset (position taken)</span>
+    <span style="color:#b388ff">&#9679; GPS read only</span>
+    <span style="color:#7bd88f">&#9679; position from goal</span>
+    <span>Robot: thick end = claw, cyan dot = GPS camera (looks out the right side)</span>
+  </p>
+  <ol id="steps"></ol>
+</div>
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('field');
+const el = (name, attrs, parent = svg) => { const e = document.createElementNS(NS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); parent.appendChild(e); return e; };
+// SVG y runs down; the field's y runs up.
+const P = ([x, y]) => `${x},${-y}`;
+
+// ---- field
+function drawField() {
+  el('rect', { x: -72, y: -72, width: 144, height: 144, fill: '#8d9096', stroke: '#111', 'stroke-width': 1 });
+  for (let i = -48; i <= 48; i += 24) {
+    el('line', { x1: i, y1: -72, x2: i, y2: 72, stroke: '#7b7e84', 'stroke-width': .3 });
+    el('line', { x1: -72, y1: i, x2: 72, y2: i, stroke: '#7b7e84', 'stroke-width': .3 });
+  }
+  const text = (p, s, o = {}) => { const t = el('text', Object.assign({ x: p[0], y: -p[1], 'font-size': 3.2, fill: '#fff', 'text-anchor': 'middle' }, o)); t.textContent = s; return t; };
+  // park zone and loader (lower left)
+  el('path', { d: 'M-24,0 L0,-24 L24,0 L0,24 Z', fill: 'rgba(255,255,255,.08)', stroke: '#fff', 'stroke-width': .5 });
+  text([0, 9], 'park', { 'font-size': 3 });
+  el('rect', { x: -74, y: 55, width: 4, height: 8, fill: '#e5484d' });
+  text([-70, -52.5], 'loader', { 'font-size': 2.6, 'text-anchor': 'start' });
+  // toggles: centre of the top and bottom walls
+  for (const y of [72, -72]) el('rect', { x: -14, y: -y - 1, width: 28, height: 2, fill: '#ffd400' });
+  for (const x of [72, -72]) el('rect', { x: x - 1, y: -14, width: 2, height: 28, fill: '#ffd400' });
+  text([0, -70], 'toggle', { 'font-size': 2.6, fill: '#222' });
+  // goals
+  const goal = (p, c, label) => { el('circle', { cx: p[0], cy: -p[1], r: 3.5, fill: c, stroke: '#111', 'stroke-width': .4 }); if (label) text([p[0] + 6, p[1] + 4], label, { 'font-size': 3.6, 'font-weight': 700 }); };
+  goal([-24, 48], '#e5484d'); goal([-48, -24], '#e5484d', 'G2'); goal([-24, -48], '#e5484d', 'G3'); goal([-48, 24], '#e5484d');
+  for (const p of [[24, 48], [48, 24], [48, -24], [24, -48]]) goal(p, '#3b82f6');
+  for (const p of [[-24, 0], [0, -24], [0, 24], [24, 0]]) goal(p, '#9aa0a8');
+  // field pins; the two the three-pin takes are hollow
+  const pin = (p, taken) => el('circle', { cx: p[0], cy: -p[1], r: 2.5, fill: taken ? 'none' : '#ffe14d', stroke: taken ? '#ffe14d' : '#111', 'stroke-width': .4, 'stroke-dasharray': taken ? '1 1' : '' });
+  pin([-48, -48], true); pin([-24, -24], true);
+  for (const p of [[-48, 48], [-24, 24], [0, 0], [48, 48], [24, 24], [48, -48], [24, -24]]) pin(p, false);
+  // wall pins with a cup either side
+  for (const [x, y, along] of [[-72, -24, 'y'], [-72, 24, 'y'], [-24, -72, 'x'], [-24, 72, 'x'], [72, 24, 'y'], [72, -24, 'y'], [24, 72, 'x'], [24, -72, 'x']]) {
+    for (const d of [-8, 8]) el('circle', { cx: along === 'x' ? x + d : x, cy: -(along === 'y' ? y + d : y), r: 4, fill: '#e8e8e8', stroke: '#111', 'stroke-width': .4 });
+    pin([x, y], false);
+  }
+  text([-66, -24], 'wall pin 2', { 'font-size': 2.4, 'text-anchor': 'start' });
+  text([-24, -66.5], 'wall pin 3', { 'font-size': 2.4 });
+}
+
+// ---- route, mirroring skills_route::run()
+const G2 = [-48, -24], G3 = [-24, -48];
+const LINEUP = [-48, -59], G2OUT = [-48, -44], G3TURN = [-37, -58.5], LOADER = [-62, -59];   // loader: where the robot meets it
+const TOG_LANE = [-6, -59.5], TOG_HIT = [-6, -64], PARK_IN = [-15, -28], PARK = [-11, -8];
+const REACH = 8;
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+const bearing = (a, b) => (deg(Math.atan2(b[0] - a[0], b[1] - a[1])) + 360) % 360;
+const dist = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
+const wrap = d => ((d + 540) % 360) - 180;
+// The three-pin's own frame to the field: turned a quarter round about its
+// start at the west wall (its +Y is east, its +X is south).
+const tp = (x, y) => [-63 + y, -4 - x];
+
+function build(includeSkipped) {
+  const steps = [];
+  let at = tp(0, 0), h = 270, phase = '', skip = false;
+  const add = s => steps.push(Object.assign({ phase, skip, from: at.slice(), h0: h }, s));
+  const turn = (to, label) => { if (Math.abs(wrap(to - h)) < 1) return; add({ kind: 'turn', label, to: at.slice(), h1: to, dur: .25 + Math.abs(wrap(to - h)) / 300 }); h = (to + 360) % 360; };
+  const face = (pt, claw, label) => turn((bearing(at, pt) + (claw ? 180 : 0)) % 360, label);
+  // endH: heading the robot ends on, for the curved moves
+  const drive = (pt, fwd, label, endH) => {
+    const along = (bearing(at, pt) + (fwd ? 0 : 180)) % 360;
+    const h1 = endH === undefined ? along : endH;
+    add({ kind: 'drive', fwd, label, to: pt.slice(), hMid: endH === undefined ? along : null, h1, dur: .3 + dist(at, pt) / 40 });
+    at = pt.slice(); h = h1;
+  };
+  const wait = (dur, label, mark) => add({ kind: 'wait', label, to: at.slice(), h1: h, dur, mark });
+  const contact = goal => { const b = rad(bearing(goal, at)); return [goal[0] + REACH * Math.sin(b), goal[1] + REACH * Math.cos(b)]; };
+  const height = n => n + 1 + (n >= 2 ? ' (arm)' : '');
+
+  // THREE-PIN (approximate)
+  phase = 'Three-pin (approximate)';
+  drive(tp(0, 8), false, 'Back off the wall, lift rising');
+  drive(tp(0, -2), true, 'Hit the west toggle');
+  drive(tp(0, 15), false, 'Back out to the goal\'s lane');
+  turn(0, 'Turn claw to G2');
+  drive(tp(12, 15), false, 'Preload onto G2');
+  drive(tp(0, 15), true, 'Pull out');
+  face(tp(20.1, 36.79), true, 'Turn claw to stack 1');
+  drive(tp(14.7, 30.9), false, 'Back onto stack 1, clamp');
+  drive(tp(18.1, 34.6), false, 'Carry on to G2\'s axis, lift rising');
+  face(G2, true, 'Turn claw to G2');
+  drive(contact(G2), false, 'Stack 1 onto G2');
+  drive(tp(19.5, 33), true, 'Pull out');
+  face(tp(42.5, 13.25), true, 'Turn claw to stack 2');
+  drive(tp(36.4, 18.5), false, 'Back onto stack 2, clamp');
+  drive(tp(40.5, 15), false, 'Carry on to G2\'s axis, lift rising');
+  face(G2, true, 'Turn claw to G2');
+  drive(contact(G2), false, 'Stack 2 onto G2');
+  wait(.3, 'Release; position taken from G2 (now three high)', 'goal');
+  drive(tp(36, 15), true, 'Pull out 8 in (three-pin ends)');
+
+  const goTo = (pt, label) => { if (dist(at, pt) < 3) return; face(pt, false, 'Turn nose'); drive(pt, true, label); };
+  const takeLoad = () => {
+    goTo(LINEUP, 'To the line-up point in front of the loader');
+    turn(180, 'Square up nose south');
+    wait(.45, 'GPS RESET: position taken from the GPS', 'gps');
+    face(LOADER, true, 'Quarter turn: claw to the loader');
+    drive(LOADER, false, 'Back in 14 in until against the loader');
+    wait(.5, 'Wait 0.5 s (GPS read, not used), then clamp', 'read');
+  };
+  const putOn = (goal, name, n) => {
+    face(goal, true, `Turn claw to ${name}, lift rising`);
+    drive(contact(goal), false, `Back in until against ${name}`);
+    wait(.4, `Set down as number ${n + 1} on ${name}${n >= 2 ? ' (arm)' : ''}; position taken from ${name}`, 'goal');
+  };
+  const load = (goal, name, turnPt, out, n) => {
+    takeLoad();
+    drive(turnPt, true, 'Carry it east; lift' + (n >= 2 ? ' and arm' : '') + ' rising once clear of the loader');
+    putOn(goal, name, n);
+    drive(out, true, 'Pull straight out');
+  };
+  
+  // What the clock is expected to cut, from the time estimate.
+  let onG2 = 3, onG3 = 0;
+  for (let i = 0; i < 2; ++i) {
+    skip = false; phase = `G2 load ${i + 1}`;
+    load(G2, 'G2', LINEUP, G2OUT, onG2++);
+  }
+  skip = false;
+  {
+    phase = 'Wall pin 2 onto G2 (untuned first guess)';
+    goTo([-60, -46], 'West to the staging point; lift to rest');
+    face([-60, -38], true, 'Turn claw north');
+    drive([-60, -38], false, 'Back up the west lane');
+    drive([-64, -24], false, 'Curve onto the wall pin, clamp', 90);
+    drive([-60, -42], true, 'Curve back out, lift and arm rising', 180);
+    putOn(G2, 'G2', onG2++);
+    drive([-60, -42], true, 'Pull straight out');
+  }
+  for (let i = 0; i < 5; ++i) {
+    skip = i >= 2;
+    if (skip && !includeSkipped) continue;
+    phase = `G3 load ${i + 1}${i ? '' : ' (the pin)'}` + (skip ? ' (expected to be cut by the clock)' : '');
+    load(G3, 'G3', G3TURN, G3TURN, onG3++);
+  }
+  skip = true;
+  if (includeSkipped) {
+    phase = 'Wall pin 3 onto G3 (expected to be cut by the clock; untuned first guess)';
+    goTo([-44, -59], 'West to the staging point; lift to rest');
+    face([-38, -59.5], true, 'Turn claw east');
+    drive([-38, -59.5], false, 'Back east along the lane');
+    drive([-24, -64], false, 'Curve onto the wall pin, clamp', 0);
+    drive([-42, -59], true, 'Curve back out, lift and arm rising', 270);
+    putOn(G3, 'G3', onG3);
+    drive([-42, -59], true, 'Pull straight out');
+  }
+  skip = false;
+
+  phase = 'Toggle and park';
+  goTo(G3TURN, 'To the south lane');
+  face(TOG_LANE, false, 'Turn nose east; lift up to toggle height');
+  drive(TOG_LANE, true, 'East along the south lane, under G3');
+  face(TOG_HIT, false, 'Turn nose to the bottom wall');
+  drive(TOG_HIT, true, 'Nose into the toggle');
+  drive(TOG_LANE, false, 'Back out');
+  face(PARK_IN, false, 'Turn nose north');
+  drive(PARK_IN, true, 'North past G3');
+  drive(PARK, true, 'Into the middle of the field between the grey goals, stop');
+  return steps;
+}
+
+// ---- drawing
+let steps = [], starts = [], total = 0, t = 0, playing = false;
+const layer = { };
+function poseAt(time) {
+  let i = starts.findIndex((s, k) => time < s + steps[k].dur);
+  if (i < 0) i = steps.length - 1;
+  const s = steps[i], u = Math.min(1, Math.max(0, (time - starts[i]) / s.dur));
+  const e = u * u * (3 - 2 * u);
+  const x = s.from[0] + (s.to[0] - s.from[0]) * e, y = s.from[1] + (s.to[1] - s.from[1]) * e;
+  let h;
+  if (s.kind === 'drive' && s.hMid !== null) {          // swing onto the line early in the move
+    const k = Math.min(1, u / .3); h = s.h0 + wrap(s.hMid - s.h0) * k;
+  } else h = s.h0 + wrap(s.h1 - s.h0) * e;
+  return { i, x, y, h: (h + 360) % 360 };
+}
+function redrawStatic() {
+  svg.innerHTML = ''; drawField();
+  for (const s of steps) if (s.kind === 'drive')
+    el('line', { x1: s.from[0], y1: -s.from[1], x2: s.to[0], y2: -s.to[1], stroke: s.skip ? '#c9a24a' : '#ffd166', 'stroke-opacity': s.phase.startsWith('Three-pin') ? .5 : (s.skip ? .45 : .85), 'stroke-width': .7, 'stroke-dasharray': s.fwd ? '' : '1.6 1.2' });
+  const colors = { gps: '#4cc9f0', read: '#b388ff', goal: '#7bd88f' };
+  for (const s of steps) if (s.mark) el('circle', { cx: s.to[0], cy: -s.to[1], r: 1.6, fill: colors[s.mark], stroke: '#111', 'stroke-width': .3 });
+  layer.trail = el('polyline', { fill: 'none', stroke: '#ff5d8f', 'stroke-width': 1 });
+  layer.robot = el('g', {});
+  el('rect', { x: -6, y: -8, width: 12, height: 16, fill: 'rgba(255,255,255,.18)', stroke: '#fff', 'stroke-width': .6 }, layer.robot);
+  el('rect', { x: -2, y: 7, width: 4, height: 2.2, fill: '#ff5d8f' }, layer.robot);            // claw, at the rear
+  el('path', { d: 'M0,-8 l-2.5,4 h5 z', fill: '#fff' }, layer.robot);                           // nose
+  layer.cam = el('line', { x1: 3.7, y1: -3, x2: 15, y2: -3, stroke: '#4cc9f0', 'stroke-width': .5, 'stroke-dasharray': '1 1' }, layer.robot);
+  el('circle', { cx: 3.7, cy: -3, r: 1, fill: '#4cc9f0' }, layer.robot);
+}
+function render() {
+  const p = poseAt(t), s = steps[p.i];
+  layer.robot.setAttribute('transform', `translate(${p.x},${-p.y}) rotate(${p.h})`);
+  const pts = [];
+  for (let k = 0; k <= p.i; ++k) { if (!pts.length) pts.push(P(steps[k].from)); pts.push(k < p.i ? P(steps[k].to) : `${p.x},${-p.y}`); }
+  layer.trail.setAttribute('points', pts.join(' '));
+  document.getElementById('now').textContent = `${p.i + 1}/${steps.length}  ${s.label}`;
+  document.getElementById('pose').textContent = `${s.phase}   |   center (${p.x.toFixed(1)}, ${p.y.toFixed(1)})  heading ${p.h.toFixed(0)}°`;
+  document.querySelectorAll('#steps li.cur').forEach(n => n.classList.remove('cur'));
+  const li = document.querySelector(`#steps li[data-i="${p.i}"]`);
+  if (li) { li.classList.add('cur'); if (playing) li.scrollIntoView({ block: 'nearest' }); }
+  document.getElementById('scrub').value = Math.round(1000 * t / total);
+}
+function rebuild() {
+  steps = build(document.getElementById('all').checked);
+  starts = []; total = 0;
+  for (const s of steps) { starts.push(total); total += s.dur; }
+  t = Math.min(t, total);
+  const ol = document.getElementById('steps'); ol.innerHTML = '';
+  let phase = '';
+  steps.forEach((s, i) => {
+    if (s.phase !== phase) { phase = s.phase; const hd = document.createElement('li'); hd.className = 'head'; hd.textContent = phase; ol.appendChild(hd); }
+    const li = document.createElement('li'); li.dataset.i = i; li.value = i + 1;
+    li.textContent = (s.kind === 'drive' ? (s.fwd ? '▲ ' : '▼ ') : s.kind === 'turn' ? '↻ ' : '● ') + s.label;
+    if (s.skip) li.className = 'skip';
+    li.onclick = () => { t = starts[i] + s.dur * .999; render(); };
+    ol.appendChild(li);
+  });
+  redrawStatic(); render();
+}
+let last = 0;
+function tick(now) {
+  if (playing) {
+    t += (now - last) / 1000 * parseFloat(document.getElementById('speed').value);
+    if (t >= total) { t = total; playing = false; document.getElementById('play').textContent = 'Play'; }
+    render();
+  }
+  last = now; requestAnimationFrame(tick);
+}
+document.getElementById('play').onclick = e => { if (t >= total) t = 0; playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; };
+document.getElementById('scrub').oninput = e => { t = total * e.target.value / 1000; render(); };
+document.getElementById('next').onclick = () => { const i = poseAt(t).i; t = Math.min(total, starts[Math.min(steps.length - 1, i + 1)] + steps[Math.min(steps.length - 1, i + 1)].dur * .999); render(); };
+document.getElementById('prev').onclick = () => { const i = Math.max(0, poseAt(t).i - 1); t = starts[i] + steps[i].dur * .999; render(); };
+document.getElementById('all').onchange = rebuild;
+rebuild(); requestAnimationFrame(tick);
+</script>
+</body>
+</html>

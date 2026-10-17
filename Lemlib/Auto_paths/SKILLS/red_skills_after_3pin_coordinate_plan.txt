@@ -1,0 +1,401 @@
+OUT OF DATE (2026-10-14): this plan assumes the three-pin ends at (-16,+48)
+next to a top goal. It does not: it starts at the west wall, scores on G2
+(-48,-24) and ends about (-48,-40) nose south. Use this file only for its
+field-element coordinates. The current route is in
+red_skills_after_3pin_actions.md and skills_route_visualizer.html.
+
+RED-SIDE SKILLS EXTENSION — PATH.JERRY COORDINATE REFERENCE
+================================================================
+Starts AFTER existing three-pin finishes. Does NOT replay three-pin.
+
+ASSUMED handoff robot-center GPS: (-16.0, +48.0) inches, heading 90 degrees.
+G1 center = (-24,+48), G2 = (-48,-24), G3 = (-24,-48).
+Robot footprint: 16 in long x 12 in wide. Rear claw width 4 in.
+
+GLOBAL frame: field center (0,0), +X right/east, +Y up/north.
+LOCAL frame:  (dx,dy) = (globalX + 16, globalY - 48)
+Headings: 0=N,90=E,180=S,270=W.
+FWD = chassis front leads. REV = rear claw leads (backwards drive).
+Bezier controls are supplied in GLOBAL inches, not start-relative units.
+Each MOVE corresponds to ONE separately editable Path.Jerry path.
+Stationary turns, clamp, lift and drop actions must be added in PROS.
+
+THE IMPORT FILE IS: red_skills_after_3pin_pathjerry.txt
+DO NOT paste this plain coordinate reference into Path.Jerry.
+
+MOVES (numbers match Path.Jerry tree and Markdown)
+-------------------------------------------------
+
+01 [A] FWD LINE  — Clear previously scored G1 (forward)
+    GLOBAL: ( -16.0, +48.0) -> (  -6.0, +48.0) in
+    LOCAL:  (  +0.0,  +0.0) -> ( +10.0,  +0.0) in
+    THETA:  90 deg -> 90 deg; travel 10.0 in
+
+02 [A] FWD CUBIC — Curve southwest across red open lane
+    GLOBAL: (  -6.0, +48.0) -> ( -37.0, +12.0) in
+    LOCAL:  ( +10.0,  +0.0) -> ( -21.0, -36.0) in
+    THETA:  173 deg -> 225 deg; travel 49.7 in
+    BEZIER: control 1=(-4.0,+31.0), control 2=(-29.0,+20.0) in
+
+03 [A] FWD CUBIC — Enter west travel lane
+    GLOBAL: ( -37.0, +12.0) -> ( -59.0, -18.0) in
+    LOCAL:  ( -21.0, -36.0) -> ( -43.0, -66.0) in
+    THETA:  253 deg -> 180 deg; travel 39.7 in
+    BEZIER: control 1=(-50.0,+8.0), control 2=(-59.0,-5.0) in
+
+04 [A] FWD LINE  — Follow left corridor past G2
+    GLOBAL: ( -59.0, -18.0) -> ( -59.0, -44.0) in
+    LOCAL:  ( -43.0, -66.0) -> ( -43.0, -92.0) in
+    THETA:  180 deg -> 180 deg; travel 26.0 in
+
+05 [A] FWD CUBIC — Bend into lower red loader aisle
+    GLOBAL: ( -59.0, -44.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -43.0, -92.0) -> ( -37.0,-107.0) in
+    THETA:  186 deg -> 117 deg; travel 17.0 in
+    BEZIER: control 1=(-60.0,-53.0), control 2=(-55.0,-58.0) in
+
+06 [A] REV LINE  — Loader #1: reverse/claw-first into RED loader
+    GLOBAL: ( -53.0, -59.0) -> ( -62.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -46.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+    ACTION: CLOSE rear claw / clamp matchload #1. Loader y=-59, rear center x~-70.
+
+07 [A] FWD LINE  — Loader #1: forward clear loader
+    GLOBAL: ( -62.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -46.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+
+08 [A] FWD LINE  — G2 #1: forward east below field pin
+    GLOBAL: ( -53.0, -59.0) -> ( -37.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -21.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 16.0 in
+
+09 [A] FWD CUBIC — G2 #1: curve NORTH east of field pin
+    GLOBAL: ( -37.0, -59.0) -> ( -35.0, -37.0) in
+    LOCAL:  ( -21.0,-107.0) -> ( -19.0, -85.0) in
+    THETA:  0 deg -> 8 deg; travel 22.1 in
+    BEZIER: control 1=(-37.0,-54.0), control 2=(-36.0,-44.0) in
+
+10 [A] REV LINE  — G2 #1: REVERSE diagonal NW to score
+    GLOBAL: ( -35.0, -37.0) -> ( -41.7, -30.3) in
+    LOCAL:  ( -19.0, -85.0) -> ( -25.7, -78.3) in
+    THETA:  135 deg -> 135 deg; travel 9.5 in
+    ACTION: Lift to required G2 stack tier; lower to seat and OPEN rear claw. G2 cumulative: 1 deposited since three-pin.
+
+11 [A] FWD LINE  — G2 #1: forward SE away from goal
+    GLOBAL: ( -41.7, -30.3) -> ( -35.0, -37.0) in
+    LOCAL:  ( -25.7, -78.3) -> ( -19.0, -85.0) in
+    THETA:  135 deg -> 135 deg; travel 9.5 in
+
+12 [A] FWD CUBIC — After G2 score #1: curve back south-east corridor
+    GLOBAL: ( -35.0, -37.0) -> ( -37.0, -59.0) in
+    LOCAL:  ( -19.0, -85.0) -> ( -21.0,-107.0) in
+    THETA:  190 deg -> 180 deg; travel 22.1 in
+    BEZIER: control 1=(-36.0,-43.0), control 2=(-37.0,-54.0) in
+
+13 [A] FWD LINE  — After G2 score #1: west along south lane
+    GLOBAL: ( -37.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -21.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  270 deg -> 270 deg; travel 16.0 in
+
+14 [A] REV LINE  — Loader #2: reverse/claw-first into RED loader
+    GLOBAL: ( -53.0, -59.0) -> ( -62.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -46.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+    ACTION: CLOSE rear claw / clamp matchload #2. Loader y=-59, rear center x~-70.
+
+15 [A] FWD LINE  — Loader #2: forward clear loader
+    GLOBAL: ( -62.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -46.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+
+16 [A] FWD LINE  — G2 #2: forward east below field pin
+    GLOBAL: ( -53.0, -59.0) -> ( -37.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -21.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 16.0 in
+
+17 [A] FWD CUBIC — G2 #2: curve NORTH east of field pin
+    GLOBAL: ( -37.0, -59.0) -> ( -35.0, -37.0) in
+    LOCAL:  ( -21.0,-107.0) -> ( -19.0, -85.0) in
+    THETA:  0 deg -> 8 deg; travel 22.1 in
+    BEZIER: control 1=(-37.0,-54.0), control 2=(-36.0,-44.0) in
+
+18 [A] REV LINE  — G2 #2: REVERSE diagonal NW to score
+    GLOBAL: ( -35.0, -37.0) -> ( -41.7, -30.3) in
+    LOCAL:  ( -19.0, -85.0) -> ( -25.7, -78.3) in
+    THETA:  135 deg -> 135 deg; travel 9.5 in
+    ACTION: Lift to required G2 stack tier; lower to seat and OPEN rear claw. G2 cumulative: 2 deposited since three-pin.
+
+19 [A] FWD LINE  — G2 #2: forward SE away from goal
+    GLOBAL: ( -41.7, -30.3) -> ( -35.0, -37.0) in
+    LOCAL:  ( -25.7, -78.3) -> ( -19.0, -85.0) in
+    THETA:  135 deg -> 135 deg; travel 9.5 in
+
+20 [B] FWD CUBIC — From G2 staging travel SOUTH east of middle pin
+    GLOBAL: ( -35.0, -37.0) -> ( -37.0, -59.0) in
+    LOCAL:  ( -19.0, -85.0) -> ( -21.0,-107.0) in
+    THETA:  190 deg -> 180 deg; travel 22.1 in
+    BEZIER: control 1=(-36.0,-43.0), control 2=(-37.0,-54.0) in
+
+21 [B] FWD LINE  — Travel WEST under southwest field pin
+    GLOBAL: ( -37.0, -59.0) -> ( -59.0, -59.0) in
+    LOCAL:  ( -21.0,-107.0) -> ( -43.0,-107.0) in
+    THETA:  270 deg -> 270 deg; travel 22.0 in
+
+22 [B] FWD LINE  — Up west aisle: stay left of G2 + southwest pin
+    GLOBAL: ( -59.0, -59.0) -> ( -59.0, -38.0) in
+    LOCAL:  ( -43.0,-107.0) -> ( -43.0, -86.0) in
+    THETA:  0 deg -> 0 deg; travel 21.0 in
+
+23 [B] REV CUBIC — Curve REVERSE into west-wall pin 2
+    GLOBAL: ( -59.0, -38.0) -> ( -63.4, -24.0) in
+    LOCAL:  ( -43.0, -86.0) -> ( -47.4, -72.0) in
+    THETA:  204 deg -> 90 deg; travel 16.5 in
+    BEZIER: control 1=(-56.1,-31.5), control 2=(-60.0,-24.0) in
+    ACTION: CLOSE rear claw on LEFT wall pin (wall x~-72); hold before lifting.
+
+24 [B] FWD CUBIC — Curve FRONT-first out, retracing wallpin approach
+    GLOBAL: ( -63.4, -24.0) -> ( -59.0, -38.0) in
+    LOCAL:  ( -47.4, -72.0) -> ( -43.0, -86.0) in
+    THETA:  90 deg -> 204 deg; travel 16.5 in
+    BEZIER: control 1=(-60.0,-24.0), control 2=(-56.1,-31.5) in
+
+25 [B] FWD LINE  — Return SOUTH in west aisle
+    GLOBAL: ( -59.0, -38.0) -> ( -59.0, -59.0) in
+    LOCAL:  ( -43.0, -86.0) -> ( -43.0,-107.0) in
+    THETA:  180 deg -> 180 deg; travel 21.0 in
+
+26 [B] FWD LINE  — Carry wallpin2 EAST beneath southwest field pin
+    GLOBAL: ( -59.0, -59.0) -> ( -37.0, -59.0) in
+    LOCAL:  ( -43.0,-107.0) -> ( -21.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 22.0 in
+
+27 [B] FWD CUBIC — Curve back NORTH to G2 staging
+    GLOBAL: ( -37.0, -59.0) -> ( -35.0, -37.0) in
+    LOCAL:  ( -21.0,-107.0) -> ( -19.0, -85.0) in
+    THETA:  0 deg -> 8 deg; travel 22.1 in
+    BEZIER: control 1=(-37.0,-54.0), control 2=(-36.0,-44.0) in
+
+28 [B] REV LINE  — Score west-wall pin on G2 (score #3)
+    GLOBAL: ( -35.0, -37.0) -> ( -41.7, -30.3) in
+    LOCAL:  ( -19.0, -85.0) -> ( -25.7, -78.3) in
+    THETA:  135 deg -> 135 deg; travel 9.5 in
+    ACTION: Raise to G2 third scoring tier; lower to seat; OPEN rear claw.
+
+29 [B] FWD LINE  — Clear G2 after wall-pin score
+    GLOBAL: ( -41.7, -30.3) -> ( -35.0, -37.0) in
+    LOCAL:  ( -25.7, -78.3) -> ( -19.0, -85.0) in
+    THETA:  135 deg -> 135 deg; travel 9.5 in
+
+30 [C] FWD CUBIC — Move south for first G3 red matchload
+    GLOBAL: ( -35.0, -37.0) -> ( -37.0, -59.0) in
+    LOCAL:  ( -19.0, -85.0) -> ( -21.0,-107.0) in
+    THETA:  190 deg -> 180 deg; travel 22.1 in
+    BEZIER: control 1=(-36.0,-43.0), control 2=(-37.0,-54.0) in
+
+31 [C] FWD LINE  — West to lower loader
+    GLOBAL: ( -37.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -21.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  270 deg -> 270 deg; travel 16.0 in
+
+32 [C] REV LINE  — Loader #3: reverse/claw-first into RED loader
+    GLOBAL: ( -53.0, -59.0) -> ( -62.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -46.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+    ACTION: CLOSE rear claw / clamp matchload #3. Loader y=-59, rear center x~-70.
+
+33 [C] FWD LINE  — Loader #3: forward clear loader
+    GLOBAL: ( -62.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -46.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+
+34 [C] FWD LINE  — G3 loader #3: east under southwest field pin
+    GLOBAL: ( -53.0, -59.0) -> ( -43.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -27.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 10.0 in
+
+35 [C] REV CUBIC — G3 loader #3: curve REVERSE northeast to G3
+    GLOBAL: ( -43.0, -59.0) -> ( -30.4, -54.4) in
+    LOCAL:  ( -27.0,-107.0) -> ( -14.4,-102.4) in
+    THETA:  234 deg -> 225 deg; travel 15.0 in
+    BEZIER: control 1=(-41.0,-62.0), control 2=(-35.8,-59.9) in
+    ACTION: Lift to G3 tier 1; lower and OPEN rear claw. Total matchloads scored on G3: 1.
+
+36 [C] FWD CUBIC — After G3 score #3: curve out to southwest staging
+    GLOBAL: ( -30.4, -54.4) -> ( -43.0, -59.0) in
+    LOCAL:  ( -14.4,-102.4) -> ( -27.0,-107.0) in
+    THETA:  224 deg -> 326 deg; travel 15.0 in
+    BEZIER: control 1=(-35.8,-60.0), control 2=(-41.0,-62.0) in
+
+37 [C] FWD LINE  — After G3 score #3: west to red-loader staging
+    GLOBAL: ( -43.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -27.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  270 deg -> 270 deg; travel 10.0 in
+
+38 [C] REV LINE  — Loader #4: reverse/claw-first into RED loader
+    GLOBAL: ( -53.0, -59.0) -> ( -62.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -46.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+    ACTION: CLOSE rear claw / clamp matchload #4. Loader y=-59, rear center x~-70.
+
+39 [C] FWD LINE  — Loader #4: forward clear loader
+    GLOBAL: ( -62.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -46.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+
+40 [C] FWD LINE  — G3 loader #4: east under southwest field pin
+    GLOBAL: ( -53.0, -59.0) -> ( -43.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -27.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 10.0 in
+
+41 [C] REV CUBIC — G3 loader #4: curve REVERSE northeast to G3
+    GLOBAL: ( -43.0, -59.0) -> ( -30.4, -54.4) in
+    LOCAL:  ( -27.0,-107.0) -> ( -14.4,-102.4) in
+    THETA:  234 deg -> 225 deg; travel 15.0 in
+    BEZIER: control 1=(-41.0,-62.0), control 2=(-35.8,-59.9) in
+    ACTION: Lift to G3 tier 2; lower and OPEN rear claw. Total matchloads scored on G3: 2.
+
+42 [C] FWD CUBIC — After G3 score #4: curve out to southwest staging
+    GLOBAL: ( -30.4, -54.4) -> ( -43.0, -59.0) in
+    LOCAL:  ( -14.4,-102.4) -> ( -27.0,-107.0) in
+    THETA:  224 deg -> 326 deg; travel 15.0 in
+    BEZIER: control 1=(-35.8,-60.0), control 2=(-41.0,-62.0) in
+
+43 [C] FWD LINE  — After G3 score #4: west to red-loader staging
+    GLOBAL: ( -43.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -27.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  270 deg -> 270 deg; travel 10.0 in
+
+44 [C] REV LINE  — Loader #5: reverse/claw-first into RED loader
+    GLOBAL: ( -53.0, -59.0) -> ( -62.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -46.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+    ACTION: CLOSE rear claw / clamp matchload #5. Loader y=-59, rear center x~-70.
+
+45 [C] FWD LINE  — Loader #5: forward clear loader
+    GLOBAL: ( -62.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -46.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+
+46 [C] FWD LINE  — G3 loader #5: east under southwest field pin
+    GLOBAL: ( -53.0, -59.0) -> ( -43.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -27.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 10.0 in
+
+47 [C] REV CUBIC — G3 loader #5: curve REVERSE northeast to G3
+    GLOBAL: ( -43.0, -59.0) -> ( -30.4, -54.4) in
+    LOCAL:  ( -27.0,-107.0) -> ( -14.4,-102.4) in
+    THETA:  234 deg -> 225 deg; travel 15.0 in
+    BEZIER: control 1=(-41.0,-62.0), control 2=(-35.8,-59.9) in
+    ACTION: Lift to G3 tier 3; lower and OPEN rear claw. Total matchloads scored on G3: 3.
+
+48 [C] FWD CUBIC — After G3 score #5: curve out to southwest staging
+    GLOBAL: ( -30.4, -54.4) -> ( -43.0, -59.0) in
+    LOCAL:  ( -14.4,-102.4) -> ( -27.0,-107.0) in
+    THETA:  224 deg -> 326 deg; travel 15.0 in
+    BEZIER: control 1=(-35.8,-60.0), control 2=(-41.0,-62.0) in
+
+49 [C] FWD LINE  — After G3 score #5: west to red-loader staging
+    GLOBAL: ( -43.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -27.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  270 deg -> 270 deg; travel 10.0 in
+
+50 [C] REV LINE  — Loader #6: reverse/claw-first into RED loader
+    GLOBAL: ( -53.0, -59.0) -> ( -62.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -46.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+    ACTION: CLOSE rear claw / clamp matchload #6. Loader y=-59, rear center x~-70.
+
+51 [C] FWD LINE  — Loader #6: forward clear loader
+    GLOBAL: ( -62.0, -59.0) -> ( -53.0, -59.0) in
+    LOCAL:  ( -46.0,-107.0) -> ( -37.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 9.0 in
+
+52 [C] FWD LINE  — G3 loader #6: east under southwest field pin
+    GLOBAL: ( -53.0, -59.0) -> ( -43.0, -59.0) in
+    LOCAL:  ( -37.0,-107.0) -> ( -27.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 10.0 in
+
+53 [C] REV CUBIC — G3 loader #6: curve REVERSE northeast to G3
+    GLOBAL: ( -43.0, -59.0) -> ( -30.4, -54.4) in
+    LOCAL:  ( -27.0,-107.0) -> ( -14.4,-102.4) in
+    THETA:  234 deg -> 225 deg; travel 15.0 in
+    BEZIER: control 1=(-41.0,-62.0), control 2=(-35.8,-59.9) in
+    ACTION: Lift to G3 tier 4; lower and OPEN rear claw. Total matchloads scored on G3: 4.
+
+54 [D] FWD CUBIC — After 4th G3 matchload: curve OUT southwest
+    GLOBAL: ( -30.4, -54.4) -> ( -43.0, -59.0) in
+    LOCAL:  ( -14.4,-102.4) -> ( -27.0,-107.0) in
+    THETA:  224 deg -> 326 deg; travel 15.0 in
+    BEZIER: control 1=(-35.8,-60.0), control 2=(-41.0,-62.0) in
+
+55 [D] REV CUBIC — REVERSE curve into bottom-wall pin 3
+    GLOBAL: ( -43.0, -59.0) -> ( -24.0, -63.0) in
+    LOCAL:  ( -27.0,-107.0) -> (  -8.0,-111.0) in
+    THETA:  243 deg -> 0 deg; travel 20.9 in
+    BEZIER: control 1=(-38.0,-56.5), control 2=(-24.0,-59.0) in
+    ACTION: CLOSE rear claw on BOTTOM wall pin at (-24,-72). Robot center ~(-24,-63.0).
+
+56 [D] FWD CUBIC — FWD curve out along same bottom-wall arc
+    GLOBAL: ( -24.0, -63.0) -> ( -43.0, -59.0) in
+    LOCAL:  (  -8.0,-111.0) -> ( -27.0,-107.0) in
+    THETA:  0 deg -> 243 deg; travel 20.9 in
+    BEZIER: control 1=(-24.0,-59.0), control 2=(-38.0,-56.5) in
+
+57 [D] REV CUBIC — REVERSE curved return to G3 for wall-stack score
+    GLOBAL: ( -43.0, -59.0) -> ( -30.4, -54.4) in
+    LOCAL:  ( -27.0,-107.0) -> ( -14.4,-102.4) in
+    THETA:  326 deg -> 225 deg; travel 15.0 in
+    BEZIER: control 1=(-41.0,-62.0), control 2=(-35.8,-59.9) in
+    ACTION: Raise to G3 fifth-score tier (IF mechanical stack allows); lower, OPEN rear claw.
+
+58 [D] FWD CUBIC — Curve FRONT-first back toward bottom lane
+    GLOBAL: ( -30.4, -54.4) -> ( -43.0, -59.0) in
+    LOCAL:  ( -14.4,-102.4) -> ( -27.0,-107.0) in
+    THETA:  224 deg -> 326 deg; travel 15.0 in
+    BEZIER: control 1=(-35.8,-60.0), control 2=(-41.0,-62.0) in
+
+59 [D] FWD LINE  — Drive east along SOUTH lane to bottom toggle
+    GLOBAL: ( -43.0, -59.0) -> ( -12.0, -59.0) in
+    LOCAL:  ( -27.0,-107.0) -> (  +4.0,-107.0) in
+    THETA:  90 deg -> 90 deg; travel 31.0 in
+
+60 [D] REV LINE  — Touch bottom-wall toggle in goal-3 quadrant
+    GLOBAL: ( -12.0, -59.0) -> ( -12.0, -64.0) in
+    LOCAL:  (  +4.0,-107.0) -> (  +4.0,-112.0) in
+    THETA:  0 deg -> 0 deg; travel 5.0 in
+    ACTION: ACTUATE side toggle ONCE at bottom wall; adjust striker offset on real robot.
+
+61 [D] FWD LINE  — Back clear of toggle wall
+    GLOBAL: ( -12.0, -64.0) -> ( -12.0, -59.0) in
+    LOCAL:  (  +4.0,-112.0) -> (  +4.0,-107.0) in
+    THETA:  0 deg -> 0 deg; travel 5.0 in
+
+62 [D] FWD CUBIC — Travel WEST along bottom lane, behind goal 3
+    GLOBAL: ( -12.0, -59.0) -> ( -52.0, -60.0) in
+    LOCAL:  (  +4.0,-107.0) -> ( -36.0,-108.0) in
+    THETA:  270 deg -> 270 deg; travel 40.0 in
+    BEZIER: control 1=(-24.0,-59.0), control 2=(-40.0,-60.0) in
+
+63 [D] FWD LINE  — Enter red PARK zone in bottom-left corner
+    GLOBAL: ( -52.0, -60.0) -> ( -62.0, -60.0) in
+    LOCAL:  ( -36.0,-108.0) -> ( -46.0,-108.0) in
+    THETA:  270 deg -> 270 deg; travel 10.0 in
+    ACTION: STOP / BRAKE in red PARK zone. Verify zone criteria; final footprint partly extends beyond red outline in screenshot.
+
+CHECKPOINTS / NON-MOTION COMMANDS
+---------------------------------
+- At loader start (robot center -53,-59) pivot to 90deg before REV pickup.
+- At each G2 scoring staging point (-35,-37), pivot to 135deg, back diagonally into G2; set appropriate lift tier, lower, and release.
+- At G2 left-wall stack staging (-59,-38), rotate to start rear-first CURVED approach, end near (-63.4,-24) facing ~90deg; reverse curve after grip.
+- At each G3 matchload return near (-43,-59), turn the rear claw toward G3 (end ~225deg) and back through a southwest arc to (-30.4,-54.4); lower and release.
+- At G3 bottom-wall pin staging (-43,-59), curve rear-first to (-24,-63) ending nose north (rear south); clamp; reverse the path out.
+- At lower toggle staging (-12,-59), pivot to ~0deg, reverse to (-12,-64), strike toggle ONCE, drive forward back to (-12,-59).
+- Pivot west ~270deg for park run; finish near (-62,-60). Parking-zone legality must be verified.
+
+IMPORTANT
+---------
+- Every pose and clearance is screenshot-based and approximate; physically calibrate the post-3pin handoff pose and claw reach.
+- Path.Jerry is a planning editor; it does NOT execute lift, clamp, toggle, or REVERSE calls in LemLib.
+- In nonholonomic display mode, the robot visualization may face the tangent even for REV legs. The text REV label and headings are authoritative for intended motion.
+- The G3 5th-score tier, loader rules, and actual park geometry must be validated separately.
