@@ -4,7 +4,9 @@
 #include "lemlib/pid.hpp"
 #include "gps_reset/gps_reset.hpp"
 #include "field_display_status.hpp"
+#include "skills_control.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -164,10 +166,14 @@ double lowerLiftToRest(std::atomic_bool* cancel) {
     constexpr double kRestToleranceDeg = 8.0, kProgressDeg = 3.0;
     constexpr std::uint32_t kStoppedMs = 300, kTimeoutMs = 6000;
     const std::uint32_t began = pros::millis();
-    double current = lift_sensor.get_position() / 100.0;
+    const auto read_position = [] {
+        const std::int32_t raw = lift_sensor.get_position();
+        return raw == PROS_ERR ? NAN : raw / 100.0;
+    };
+    double current = read_position();
     double progress_from = current;
     std::uint32_t progress_at = began;
-    while (pros::millis() - began < kTimeoutMs &&
+    while (std::isfinite(current) && pros::millis() - began < kTimeoutMs &&
            current < lift_position::stage_0_deg - kRestToleranceDeg &&
            !(cancel != nullptr && cancel->load())) {
         lift_move_seen_ms.store(pros::millis());
@@ -175,7 +181,7 @@ double lowerLiftToRest(std::atomic_bool* cancel) {
         slider_left.move(kDownPower);
         slider_right.move(kDownPower);
         pros::delay(10);
-        current = lift_sensor.get_position() / 100.0;
+        current = read_position();
         const std::uint32_t now = pros::millis();
         if (std::abs(current - progress_from) >= kProgressDeg) {
             progress_from = current;
@@ -186,6 +192,11 @@ double lowerLiftToRest(std::atomic_bool* cancel) {
     }
     slider_left.brake();
     slider_right.brake();
+    if (!std::isfinite(current) || (cancel != nullptr && cancel->load())) {
+        std::printf("LIFT_SETTLE_FAIL,%s\n",
+                    std::isfinite(current) ? "cancelled" : "sensor");
+        return NAN;
+    }
     std::printf("LIFT_SETTLED,current=%.1f,elapsed_ms=%lu\n", current,
                 static_cast<unsigned long>(pros::millis() - began));
     return current;
@@ -198,46 +209,33 @@ constexpr std::uint32_t kPneumaticSettleMs = 75;
 constexpr float kGoalClearanceIn = 6.0f;
 }  // namespace
 
-void moveArm(double targetDeg, std::atomic_bool* cancel) {
-    const double kP = 0.55;
-    const double tolerance = 3.0;
-    const auto starting_mode = pros::competition::get_status();
-
-    while (true) {
-        if ((cancel != nullptr && cancel->load()) ||
-            pros::competition::get_status() != starting_mode)
-            break;
-        double current = claw_sensor.get_position() / 100.0;
-        double error = targetDeg - current;
-
-        if (fabs(error) <= tolerance)
-            break;
-
-        int power = static_cast<int>(error * kP);
-
-        // Normal speed.
-        power = std::clamp(power, -110, 110);
-
-        // Soft landing near either endpoint.
-        if (fabs(error) < 60)
-            power = std::clamp(power, -35, 35);
-
-        if (fabs(error) < 25)
-            power = std::clamp(power, -20, 20);
-
-        // Minimum power only when sufficiently far away.
-        if (fabs(error) > 25) {
-            if (power > 0 && power < 25)
-                power = 25;
-            else if (power < 0 && power > -25)
-                power = -25;
+namespace {
+skills_control::ArmOutcome move_arm_bounded(double target,
+                                           std::atomic_bool* cancel,
+                                           std::uint32_t timeout_ms) {
+    struct ArmIO {
+        std::atomic_bool* cancel;
+        std::uint8_t mode;
+        std::uint32_t now() const { return pros::millis(); }
+        void delay(std::uint32_t ms) const { pros::delay(ms); }
+        double position_deg() const {
+            const std::int32_t raw = claw_sensor.get_position();
+            return raw == PROS_ERR ? NAN : raw / 100.0;
         }
+        bool cancelled() const {
+            return (cancel != nullptr && cancel->load()) ||
+                   pros::competition::get_status() != mode;
+        }
+        void command(int power) const { claw_arm.move(power); }
+        void brake() const { claw_arm.brake(); }
+    } io{cancel, pros::competition::get_status()};
+    return skills_control::run_arm(target, timeout_ms, io);
+}
+}  // namespace
 
-        claw_arm.move(-power);
-
-        pros::delay(10);
-    }
-    claw_arm.brake();
+void moveArm(double targetDeg, std::atomic_bool* cancel) {
+    // Driver macros retain their existing power profile and cancel ownership.
+    (void)move_arm_bounded(targetDeg, cancel, 0);
 }
 // GPS mount check. Run it from driver control (LEFT) with room to spin and
 // about 2 ft clear ahead.
@@ -497,18 +495,28 @@ public:
     // exact height; anything no higher than the preload height counts.
     struct Settle {};
     explicit LiftJob(Settle) {
+        cancelled() = false;
         state() = 0;
         pros::Task([] {
-            state() = lowerLiftToRest() >= kPreloadSeatDeg - 8.0 ? 1 : -1;
+            const double at = lowerLiftToRest(&cancelled());
+            state() = std::isfinite(at) && at >= kPreloadSeatDeg - 8.0 ? 1 : -1;
         });
     }
     explicit LiftJob(double targetDeg, bool fastUp = false) {
+        cancelled() = false;
         state() = 0;
         pros::Task([targetDeg, fastUp] {
-            state() = moveLift(targetDeg, 6000, nullptr, fastUp) ? 1 : -1;
+            state() = moveLift(targetDeg, 6000, &cancelled(), fastUp) ? 1 : -1;
         });
     }
     bool done() const { return state() != 0; }
+    bool succeeded() const { return state() == 1; }
+    bool failed() const { return state() == -1; }
+    // Used when Skills aborts. Join before another worker may own the motors.
+    static void end() {
+        cancelled() = true;
+        while (state() == 0) pros::delay(10);
+    }
     bool wait() {
         while (state() == 0) pros::delay(10);
         if (state() == 1) return true;
@@ -519,6 +527,10 @@ public:
     }
 
 private:
+    static std::atomic_bool& cancelled() {
+        static std::atomic_bool value{false};
+        return value;
+    }
     static std::atomic<int>& state() {
         static std::atomic<int> value{1};
         return value;
@@ -559,23 +571,28 @@ constexpr double kStalledRpm = 12.0;
 double drive_rpm() {
     double rpm = 0.0;
     int motors = 0;
-    for (double v : left_motors.get_actual_velocity_all())
+    for (double v : left_motors.get_actual_velocity_all()) {
+        if (!std::isfinite(v)) return 2.0 * kStalledRpm;
         rpm += std::abs(v), ++motors;
-    for (double v : right_motors.get_actual_velocity_all())
+    }
+    for (double v : right_motors.get_actual_velocity_all()) {
+        if (!std::isfinite(v)) return 2.0 * kStalledRpm;
         rpm += std::abs(v), ++motors;
+    }
     return motors ? rpm / motors : 2.0 * kStalledRpm;
 }
 
 // Wait for the current move to finish, ending it early if the drive has
 // stopped turning: the robot is against the goal and pushing longer only
-// wastes time. Returns true if it was ended that way.
-bool wait_done_or_stalled() {
+// wastes time. Returns true if it was ended that way. Delayed callers pass
+// the start of the active motion, so waiting for the lift does not buy that
+// same motion another launch grace. A restarted motion needs a new timestamp.
+bool wait_done_or_stalled(std::uint32_t motion_started = pros::millis()) {
     constexpr std::uint32_t kStalledMs = 150, kLaunchMs = 300;
-    const std::uint32_t began = pros::millis();
     std::uint32_t slow_since = 0;
     while (chassis.isInMotion()) {
         const std::uint32_t now = pros::millis();
-        if (drive_rpm() > kStalledRpm || now - began < kLaunchMs)
+        if (drive_rpm() > kStalledRpm || now - motion_started < kLaunchMs)
             slow_since = 0;
         else if (slow_since == 0)
             slow_since = now;
@@ -1803,31 +1820,30 @@ constexpr bool with_arm(int held) {
     return kLevels[held].arm_deg > arm_position::rest_deg;
 }
 
-// An arm move running alongside the drive, like LiftJob. moveArm() has no
-// time limit and can sit just short of its target, so each move is given one
-// here and counts as done when it runs out.
+// The worker owns its deadline even while the route is inside a chassis
+// motion. A finished job is not proof that the arm reached its target.
 class ArmJob {
 public:
     explicit ArmJob(double targetDeg, std::uint32_t limitMs = 1500) {
         end();
         cancelled() = false;
-        running() = true;
-        deadline() = pros::millis() + limitMs;
-        pros::Task([targetDeg] {
-            moveArm(targetDeg, &cancelled());
-            running() = false;
+        outcome() = skills_control::ArmOutcome::running;
+        pros::Task([targetDeg, limitMs] {
+            outcome() = move_arm_bounded(targetDeg, &cancelled(), limitMs);
         });
     }
-    static bool done() {
-        if (running() && pros::millis() >= deadline()) cancelled() = true;
-        return !running();
+    static skills_control::ArmOutcome result() { return outcome().load(); }
+    static bool done() { return result() != skills_control::ArmOutcome::running; }
+    static bool failed() {
+        return result() == skills_control::ArmOutcome::sensor_error ||
+               result() == skills_control::ArmOutcome::cancelled;
     }
     static void wait() {
         while (!done()) pros::delay(10);
     }
     static void end() {
         cancelled() = true;
-        while (running()) pros::delay(5);
+        while (!done()) pros::delay(5);
     }
 
 private:
@@ -1835,15 +1851,41 @@ private:
         static std::atomic_bool value{false};
         return value;
     }
-    static std::atomic_bool& running() {
-        static std::atomic_bool value{false};
-        return value;
-    }
-    static std::atomic<std::uint32_t>& deadline() {
-        static std::atomic<std::uint32_t> value{0};
+    static std::atomic<skills_control::ArmOutcome>& outcome() {
+        static std::atomic<skills_control::ArmOutcome> value{
+            skills_control::ArmOutcome::reached};
         return value;
     }
 };
+
+// Blocking time only: mechanism work that overlaps driving is not added
+// here. These counters are also shown on the Brain, without a terminal.
+struct TripTiming {
+    std::uint32_t wall_ms = 0, down_ms = 0, stack_ms = 0, pickup_ms = 0;
+    std::uint32_t loader_ms = 0, aim_ms = 0, goal_ms = 0, release_ms = 0;
+    std::uint32_t return_ms = 0;
+};
+
+double lift_degrees() {
+    const std::int32_t raw = lift_sensor.get_position();
+    return raw == PROS_ERR ? NAN : raw / 100.0;
+}
+double arm_degrees() {
+    const std::int32_t raw = claw_sensor.get_position();
+    return raw == PROS_ERR ? NAN : raw / 100.0;
+}
+
+// A false readiness result ends the attempt with the element still held.
+// run() joins both workers on every return, including these aborts.
+const char* mechanism_stop_reason = "";
+bool mechanism_failure(const char* stage) {
+    mechanism_stop_reason = stage;
+    chassis.cancelAllMotions();
+    three_pin::brake_drive();
+    std::printf("SKILLS_MECHANISM_FAIL,%s,lift=%.1f,arm=%.1f\n", stage,
+                lift_degrees(), arm_degrees());
+    return false;
+}
 
 // Turn the nose toward `target`, handing straight over to the drive. For the
 // corners a single drive would swing wide on, next to a goal or the cups.
@@ -1888,6 +1930,25 @@ void calm_turn_to_point(Point target, bool forwards) {
                          .minSpeed = kTurnStopFloor,
                          .earlyExitRange = kTurnStopExitDeg}, false);
     three_pin::brake_drive();
+}
+
+// One aim, with the load low. The previous second turn ran after raising
+// had begun and was also being used to hide residual rotation from the first.
+bool aim_for_score(Point goal) {
+    calm_turn_to_point(goal, false);
+    three_pin::stop_rolling(150);
+    const auto heading_error = [&] {
+        const lemlib::Pose p = chassis.getPose();
+        const float target = std::atan2(goal.x - p.x, goal.y - p.y) *
+                                 180.0f / static_cast<float>(M_PI) + 180.0f;
+        return std::abs(std::remainder(p.theta - target, 360.0f));
+    };
+    if (heading_error() > kTurnFixDeg) {
+        calm_turn_to_point(goal, false);
+        three_pin::stop_rolling(150);
+    }
+    return std::isfinite(heading_error()) && heading_error() <= kTurnFixDeg &&
+           three_pin::drive_rpm() <= 15.0;
 }
 // With async the caller brakes once the move is done.
 void calm_drive_to(Point target, bool forwards, bool async = false) {
@@ -1961,7 +2022,7 @@ constexpr float kSensorFwdIn = 4.5f;  // robot center to the sensors' faces
 // tiles are 600 mm (23.62 in), so G2 at (-1200, -600) mm is 46.63 in north
 // of the south wall. This frame puts G2 at y = -24.
 constexpr float kSouthWallY = kG2Field.y - (70.25f - 23.62f);
-// Samples: every 10 ms for 60 ms, two fresh readings at about 30 Hz; the
+// Samples: six polls at 0..50 ms, about two sensor updates at 30 Hz; the
 // median of each sensor's samples is used, so one bad sample does nothing.
 // The robot has just braked to a stop at the end of a turn, so there is no
 // separate wait for it to be still unless the wheels are still turning.
@@ -1994,6 +2055,8 @@ WallReading read_wall() {
     // braked, so this is usually at once (at most 0.2 s in all).
     for (int tries = 0; tries < 20 && n < kWallSamples; ++tries) {
         if (three_pin::drive_rpm() > kWallStillRpm) {
+            // Every accepted batch must describe one continuous stop.
+            n = 0;
             pros::delay(kWallSampleMs);
             continue;
         }
@@ -2006,6 +2069,7 @@ WallReading read_wall() {
             b[n] = db / 25.4f;
             ++n;
         }
+        if (n == kWallSamples) break;  // do not sleep after the final reading
         pros::delay(kWallSampleMs);
     }
     WallReading r;
@@ -2041,10 +2105,11 @@ WallFix south_wall_reset() {
     using namespace three_pin;
     WallFix fix;
     brake_drive();
-    const lemlib::Pose pose = chassis.getPose();
+    const lemlib::Pose before = chassis.getPose();
     const float square = field_heading(180.0f);
-    const float off_deg = std::remainder(pose.theta - square, 360.0f);
-    if (std::abs(off_deg) > kWallMaxSquareDeg) {
+    if (!std::isfinite(before.theta) ||
+        std::abs(std::remainder(before.theta - square, 360.0f)) >
+            kWallMaxSquareDeg) {
         fix.why = "not square";
         coast_drive();
         return fix;
@@ -2053,6 +2118,22 @@ WallFix south_wall_reset() {
     fix.a_in = r.a_in;
     fix.b_in = r.b_in;
     fix.rms_in = r.rms_in;
+    // Sampling can take 200 ms. Preserve the current unconstrained axis and
+    // heading, and gate the correction against the current pose, not the
+    // pose from before the wheels finished stopping.
+    const lemlib::Pose pose = chassis.getPose();
+    const float off_deg = std::remainder(pose.theta - square, 360.0f);
+    if (drive_rpm() > kWallStillRpm || !std::isfinite(pose.x) ||
+        !std::isfinite(pose.y) || !std::isfinite(off_deg)) {
+        fix.why = "moving or invalid pose";
+        coast_drive();
+        return fix;
+    }
+    if (std::abs(off_deg) > kWallMaxSquareDeg) {
+        fix.why = "not square";
+        coast_drive();
+        return fix;
+    }
     coast_drive();
     if (r.samples < kWallSamples / 2) {
         fix.why = "no reading";
@@ -2092,38 +2173,42 @@ constexpr double kArmCloseDeg = 25.0;
 constexpr double kLiftAtDeg = 25.0;
 constexpr double kArmAtDeg = 20.0;
 constexpr std::uint32_t kStackWaitMs = 2500;
-// Wait until the lift and arm are physically down, at most 2.5 s. False if
-// the lift's job failed.
-bool wait_until_down() {
+// Physical clearance lets driving overlap the tail of a lowering job.
+// Job completion alone never supplies clearance, and expiration is failure.
+bool wait_until_down(TripTiming& timing) {
     using three_pin::LiftJob;
+    using skills_control::Readiness;
     const std::uint32_t began = pros::millis();
-    while (pros::millis() - began < 2500) {
-        const bool lift_down =
-            lift_sensor.get_position() / 100.0 >= kLiftDownDeg ||
-            LiftJob{LiftJob::Running{}}.done();
-        const bool arm_down =
-            claw_sensor.get_position() / 100.0 <=
-                arm_position::rest_deg + kArmCloseDeg ||
-            ArmJob::done();
-        if (lift_down && arm_down) break;
-        pros::delay(10);
-    }
     LiftJob running{LiftJob::Running{}};
-    return !running.done() || running.wait();
+    const auto outcome = skills_control::wait_until(began, kStackWaitMs, [&] {
+        const double lift = lift_degrees(), arm = arm_degrees();
+        if (!std::isfinite(lift) || !std::isfinite(arm) ||
+            running.failed() || ArmJob::failed()) return Readiness::failed;
+        if (skills_control::loader_position_ready(
+                lift, arm, kLiftDownDeg, arm_position::rest_deg, kArmCloseDeg))
+            return Readiness::ready;
+        if ((running.done() && lift < kLiftDownDeg) ||
+            (ArmJob::done() && arm > arm_position::rest_deg + kArmCloseDeg))
+            return Readiness::failed;
+        return Readiness::waiting;
+    }, [] { return pros::millis(); }, [](std::uint32_t ms) { pros::delay(ms); });
+    timing.down_ms += pros::millis() - began;
+    return outcome == skills_control::WaitOutcome::ready ||
+           mechanism_failure("loader clearance");
 }
 
 // With the claw empty: to kLineUp, square up nose south, reset position from
-// the GPS, turn the claw to the loader, back in until the robot is against
+// the south wall, turn the claw to the loader, back in until the robot is against
 // it, wait kLoaderWaitMs, clamp, and lift the pin to carrying height. The
 // lift (and the arm, after a stack set down from it) must be back down
 // before the robot backs in.
 bool take_load(FixTally& lined_up, FixTally& at_loader, bool measure_gps,
                lemlib::Pose* stopped_at, float* reference_in,
-               WallFix* wall_fix = nullptr) {
+               WallFix* wall_fix, TripTiming& timing) {
     using namespace three_pin;
     go_to(kLineUp);
     // Nose south to the south wall, 7 in away: the distance sensors set the
-    // heading and the distance from that wall (the robot's sideways place
+    // distance from that wall (the robot's sideways place
     // in front of the loader). The GPS is no longer used here: parked nose
     // south its camera looks straight at the loader, which hides most of
     // the wall code.
@@ -2135,7 +2220,9 @@ bool take_load(FixTally& lined_up, FixTally& at_loader, bool measure_gps,
     if (std::abs(std::remainder(chassis.getPose().theta -
                                 field_heading(180.0f), 360.0f)) > 3.0f)
         calm_turn_to_heading(field_heading(180.0f));
+    const std::uint32_t resetting_since = pros::millis();
     const WallFix reset = south_wall_reset();
+    timing.wall_ms += pros::millis() - resetting_since;
     if (wall_fix) *wall_fix = reset;
     // The reset sets the robot's distance from the south wall, which is
     // along its own axis (nose south). Before, the robot turned to the
@@ -2143,8 +2230,11 @@ bool take_load(FixTally& lined_up, FixTally& at_loader, bool measure_gps,
     // the difference sideways, swinging in and ending in the same wrong
     // place. Now it first drives straight forward or back onto the line-up
     // spot, so the run into the loader is straight.
-    if (reset.applied && std::abs(reset.dy_in) > kLineUpFixIn) {
-        const lemlib::Pose p = chassis.getPose();
+    const lemlib::Pose p = chassis.getPose();
+    // The correction size is not the remaining placement error. A large
+    // reset can put us exactly on the spot; do not command a zero-length
+    // minimum-power move in that case. Only route X was measured here.
+    if (reset.applied && std::abs(kLineUp.x - p.x) > kLineUpFixIn) {
         const float h = p.theta * static_cast<float>(M_PI) / 180.0f;
         const float ahead = (kLineUp.x - p.x) * std::sin(h) +
                             (kLineUp.y - p.y) * std::cos(h);
@@ -2159,10 +2249,11 @@ bool take_load(FixTally& lined_up, FixTally& at_loader, bool measure_gps,
     // their jobs end: lowering the lift only ends 0.3 s after it stops at
     // the bottom, and the arm often stops just short of 0 and then only
     // ends at its 1.5 s limit. Both kept the robot standing here.
-    if (!wait_until_down()) return false;
+    if (!wait_until_down(timing)) return false;
     // A gentle curve back onto the lane that arrives square: inside 7.5 in
     // of the target LemLib only holds the heading, so the last stretch into
     // the loader is straight.
+    const std::uint32_t loader_started = pros::millis();
     chassis.moveToPose(kLoader.x, kLoader.y, field_heading(90.0f), 2500,
                        {.forwards = false, .lead = kLoaderLead,
                         .maxSpeed = kCalmDrive, .minSpeed = kGentleFloor},
@@ -2171,7 +2262,8 @@ bool take_load(FixTally& lined_up, FixTally& at_loader, bool measure_gps,
     // until the time limit (the target is 4 in past it, so it cannot be
     // reached). Only a run that odometry says got all the way there is not
     // trusted.
-    wait_done_or_stalled();
+    wait_done_or_stalled(loader_started);
+    timing.loader_ms += pros::millis() - loader_started;
     const bool against_loader =
         std::hypot(kLoader.x - chassis.getPose().x,
                    kLoader.y - chassis.getPose().y) > 1.0f;
@@ -2200,12 +2292,26 @@ bool take_load(FixTally& lined_up, FixTally& at_loader, bool measure_gps,
     pros::delay(kPneumaticSettleMs);
     // The lowering job has long finished by now; one lift job at a time.
     if (!LiftJob{LiftJob::Running{}}.wait()) return false;
-    const double lift_start = lift_sensor.get_position() / 100.0;
+    const double lift_start = lift_degrees();
+    if (!std::isfinite(lift_start)) return mechanism_failure("pickup sensor");
     LiftJob raise(kLoadOffFloorDeg);
     const std::uint32_t lifting_since = pros::millis();
-    while (lift_sensor.get_position() / 100.0 > lift_start - kLiftClearDeg &&
-           pros::millis() - lifting_since < 400)
-        pros::delay(10);
+    const auto picked_up = skills_control::wait_until(lifting_since, 400, [&] {
+        const double lift = lift_degrees();
+        if (!std::isfinite(lift) || raise.failed())
+            return skills_control::Readiness::failed;
+        // A successful -150 target may end at -142. From an allowed -83
+        // start that is 59 degrees: it is already at the accepted carrying
+        // height and must not burn the whole 400 ms waiting for degree 60.
+        if (skills_control::pickup_clear(lift, lift_start, raise.succeeded(),
+                                         kLoadOffFloorDeg, kLiftClearDeg, 8.0))
+            return skills_control::Readiness::ready;
+        return raise.done() ? skills_control::Readiness::failed
+                            : skills_control::Readiness::waiting;
+    }, [] { return pros::millis(); }, [](std::uint32_t ms) { pros::delay(ms); });
+    timing.pickup_ms += pros::millis() - lifting_since;
+    if (picked_up != skills_control::WaitOutcome::ready)
+        return mechanism_failure("pickup clearance");
     coast_drive();
     return true;
 }
@@ -2217,29 +2323,35 @@ bool raise_for(int held) {
     using three_pin::LiftJob;
     if (!LiftJob{LiftJob::Running{}}.wait()) return false;
     LiftJob raise(kLevels[held].lift_deg, /*fastUp=*/true);
-    if (with_arm(held)) ArmJob arm(kLevels[held].arm_deg);
+    // A previous high-score return may have stopped within the loader's
+    // 25-degree clearance but outside the score's 20-degree window. Every
+    // score gets its required target, including rest on the ordinary levels.
+    ArmJob arm(kLevels[held].arm_deg);
     return true;
 }
 
 
 // From where the robot stands with a stack in the claw and the lift and arm
-// already on their way up (raise_for): turn the claw to `goal`, which
+// already on their way up (raise_for), after aim_for_score: `goal`
 // already holds `held`, back in until the robot is against the goal
 // (holding short if the lift or arm is not up yet), let go, and take
 // position from the goal as the three-pin does. False if the lift failed.
 // The robot may leave as soon as this returns: the claw is open.
-bool put_on(Point goal, int held, float* reference_in = nullptr) {
+bool put_on(Point goal, int held, float* reference_in, TripTiming& timing,
+            bool lower_for_toggle = false) {
     using namespace three_pin;
+    using skills_control::Readiness;
     LiftJob raise{LiftJob::Running{}};
-    // A settled turn (no hand-over), so the run in starts square and
-    // straight, as the three-pin's preload does.
-    calm_turn_to_point(goal, false);
+    // The one low-load aim has already stopped and been checked. Do not
+    // issue another turn after starting the raise.
     const lemlib::Pose turned = chassis.getPose();
     const Point here{turned.x, turned.y};
     const Point stop = standoff(here, goal, kScoreReachIn);
     const lemlib::MoveToPointParams entry{.forwards = false,
                                           .maxSpeed = kCalmDrive,
                                           .minSpeed = kGentleFloor};
+    const std::uint32_t approaching_since = pros::millis();
+    std::uint32_t motion_started = approaching_since;
     chassis.moveToPoint(stop.x, stop.y, 2500, entry, true);
     // The robot meets the goal kReach out, before `stop`; it holds
     // kGoalStandbyIn short of that.
@@ -2254,67 +2366,106 @@ bool put_on(Point goal, int held, float* reference_in = nullptr) {
     // band the lift lock holds), the arm within kArmAtDeg of its own.
     const double lift_target = kLevels[held].lift_deg;
     const double arm_target = kLevels[held].arm_deg;
-    const auto stack_ready = [&] {
-        const double lift = lift_sensor.get_position() / 100.0;
-        const bool lift_up = raise.done() &&
-                             (lift <= lift_target + kLiftAtDeg ||
-                              lift <= lift_position::lock_from_deg);
-        const bool arm_up =
-            std::abs(claw_sensor.get_position() / 100.0 - arm_target) <=
-            kArmAtDeg;
-        return lift_up && arm_up;
+    const auto stack_state = [&] {
+        const double lift = lift_degrees(), arm = arm_degrees();
+        if (!std::isfinite(lift) || !std::isfinite(arm) || raise.failed() ||
+            ArmJob::failed()) return Readiness::failed;
+        const bool positioned = skills_control::score_position_ready(
+            lift, arm, lift_target, arm_target, kLiftAtDeg, kArmAtDeg,
+            lift_position::lock_from_deg);
+        // Joining the raise is still required before a lowering job takes
+        // the motors. A completed failure never satisfies this gate.
+        if (raise.succeeded() && positioned) return Readiness::ready;
+        if ((raise.done() && lift > lift_target + kLiftAtDeg &&
+             lift > lift_position::lock_from_deg) ||
+            (ArmJob::done() && std::abs(arm - arm_target) > kArmAtDeg))
+            return Readiness::failed;
+        return Readiness::waiting;
     };
-    // Waits at most kStackWaitMs; false if the lift failed.
+    // One deadline for this scoring attempt, shared by the short-of-goal
+    // gate and the final release gate. No second 2.5 s wait, and no hidden
+    // unbounded LiftJob::wait() after an expired readiness gate.
+    const std::uint32_t ready_since = pros::millis();
     const auto wait_for_stack = [&] {
         const std::uint32_t began = pros::millis();
-        while (!stack_ready() && pros::millis() - began < kStackWaitMs)
-            pros::delay(10);
-        return raise.wait();
+        const auto result = skills_control::wait_until(
+            ready_since, kStackWaitMs, stack_state,
+            [] { return pros::millis(); },
+            [](std::uint32_t ms) { pros::delay(ms); });
+        timing.stack_ms += pros::millis() - began;
+        return result == skills_control::WaitOutcome::ready;
     };
-    if (chassis.isInMotion() && !stack_ready()) {
-        chassis.cancelMotion();
+    if (stack_state() != Readiness::ready) {
+        if (chassis.isInMotion()) chassis.cancelMotion();
         brake_drive();
-        if (!wait_for_stack()) return false;
+        if (!wait_for_stack()) {
+            timing.goal_ms += pros::millis() - approaching_since;
+            return mechanism_failure("score height");
+        }
         coast_drive();
+        motion_started = pros::millis();
         chassis.moveToPoint(stop.x, stop.y, 2500, entry, true);
     }
-    const bool against_goal = wait_done_or_stalled();
-    if (!wait_for_stack()) return false;
+    const bool against_goal = wait_done_or_stalled(motion_started);
+    if (!wait_for_stack()) {
+        timing.goal_ms += pros::millis() - approaching_since;
+        return mechanism_failure("release height");
+    }
     brake_drive();
+    timing.goal_ms += pros::millis() - approaching_since;
+    const std::uint32_t releasing_since = pros::millis();
+    const auto release_failed = [&](const char* stage) {
+        timing.release_ms += pros::millis() - releasing_since;
+        return mechanism_failure(stage);
+    };
 
     if (with_arm(held)) {
         // RIGHT in driver control: the arm comes down, the claw lets go
-        // halfway there, and the lift starts down. Unlike the macro, the claw
-        // opens even if the arm stops short of halfway: a route cannot wait.
+        // halfway there, and the lift starts down. An expired worker is not
+        // evidence that the arm has reached that release position.
+        const double release_start = arm_degrees();
+        if (!std::isfinite(release_start))
+            return release_failed("arm release sensor");
         const double release_within =
-            std::abs(claw_sensor.get_position() / 100.0 -
-                     arm_position::release_deg) / 2.0;
+            std::abs(release_start - arm_position::release_deg) / 2.0;
         ArmJob lower_arm(arm_position::release_deg);
         while (!ArmJob::done() &&
-               std::abs(claw_sensor.get_position() / 100.0 -
-                        arm_position::release_deg) > release_within)
+               std::isfinite(arm_degrees()) &&
+               std::abs(arm_degrees() - arm_position::release_deg) > release_within)
             pros::delay(10);
+        const double release_at = arm_degrees();
+        if (ArmJob::failed() || !std::isfinite(release_at) ||
+            std::abs(release_at - arm_position::release_deg) > release_within)
+            return release_failed("arm release travel");
         claw_piston.set_value(false);
         pros::delay(arm_position::release_settle_ms);
-        // All the way down while the robot heads back to the loader; the
-        // arm goes back to rest once the claw is clear (leave_to).
-        LiftJob lower{LiftJob::Settle{}};
+        // Last planned G3 load: the next lift destination is the toggle,
+        // not the floor. Avoid lowering to rest and raising back to -375.
+        // Both destinations overlap departure; arm return still waits for
+        // the existing 6-inch claw clearance in leave_to().
+        if (lower_for_toggle) LiftJob lower(kCarryDeg);
+        else LiftJob lower{LiftJob::Settle{}};
     } else if (held == 0) {
         // On an empty goal: lower only as far as seats the pin.
-        if (!LiftJob(kPreloadSeatDeg).wait()) return false;
+        if (!LiftJob(kPreloadSeatDeg).wait()) return release_failed("pin seat");
         claw_piston.set_value(false);
         pros::delay(kPneumaticSettleMs);
     } else {
         // Set the stack down, opening the claw a third of a level down; the
         // lift carries on all the way down while the robot heads back to the
         // loader.
-        const double scored_at = lift_sensor.get_position() / 100.0;
+        const double scored_at = lift_degrees();
+        if (!std::isfinite(scored_at)) return release_failed("seat sensor");
         LiftJob lower{LiftJob::Settle{}};
         const std::uint32_t lowering_since = pros::millis();
-        while (!lower.done() &&
-               lift_sensor.get_position() / 100.0 < scored_at + kSeatDropDeg &&
-               pros::millis() - lowering_since < 800)
-            pros::delay(10);
+        const auto seated = skills_control::wait_until(lowering_since, 800, [&] {
+            const double lift = lift_degrees();
+            if (!std::isfinite(lift) || lower.failed()) return Readiness::failed;
+            if (lift >= scored_at + kSeatDropDeg) return Readiness::ready;
+            return lower.done() ? Readiness::failed : Readiness::waiting;
+        }, [] { return pros::millis(); }, [](std::uint32_t ms) { pros::delay(ms); });
+        if (seated != skills_control::WaitOutcome::ready)
+            return release_failed("seat travel");
         claw_piston.set_value(false);
         pros::delay(kPneumaticSettleMs);
     }
@@ -2338,6 +2489,7 @@ bool put_on(Point goal, int held, float* reference_in = nullptr) {
     } else if (reference_in) {
         *reference_in = -1.0f;  // skipped
     }
+    timing.release_ms += pros::millis() - releasing_since;
     coast_drive();
     return true;
 }
@@ -2375,6 +2527,19 @@ bool take_wall_pin(const WallPin& pin, four_pin_far::WallLog& log) {
 
 void run() {
     using namespace three_pin;
+    // Cooperative cancellation and join on every return. No background
+    // raise/lower is allowed to outlive a failed Skills attempt.
+    struct FinishJobs {
+        ~FinishJobs() {
+            chassis.cancelAllMotions();
+            brake_drive();
+            ArmJob::end();
+            LiftJob::end();
+        }
+    } finish_jobs;
+    ArmJob::end();
+    LiftJob::end();
+    mechanism_stop_reason = "";
     const std::uint32_t started = pros::millis();
     const auto now_s = [&] { return (pros::millis() - started) / 1000.0f; };
     if (!run_three_pin()) return;
@@ -2383,8 +2548,11 @@ void run() {
     coast_drive();
 
     constexpr int kLoads = kG2Loads + kG3Loads;
+    static_assert(kG2Loads >= 0 && kOnG2AfterThreePin + kG2Loads <= kMostOnGoal);
+    static_assert(kG3Loads >= 0 && kG3Loads <= kMostOnGoal);
     float toggle_s = 0.0f, park_s = 0.0f;
     int trips = 0, on_g2 = kOnG2AfterThreePin, on_g3 = 0;
+    bool lowering_for_toggle = false;
     const char* stop_note = "";
     FixTally lined_up, at_loader;  // kept for take_load's signature
     // One line per trip on the report.
@@ -2394,8 +2562,9 @@ void run() {
         float loader_ref = NAN;    // field X change at the loader contact
         float goal_ref = -1.0f;    // reset from the goal (-1 = skipped)
         WallFix wall[2];           // before the loader; before the G3 run
+        TripTiming timing;
     };
-    Trip trip[kLoads];
+    std::array<Trip, kLoads> trip{};
     // A wall reset in a few characters: the Y change, or why it was refused.
     const auto wall_short = [](const WallFix& w, char* out, int size) {
         const char* why = w.why;
@@ -2409,6 +2578,7 @@ void run() {
         else if (std::strcmp(why, "sensors disagree") == 0) why = "dis";
         else if (std::strcmp(why, "no reading") == 0) why = "none";
         else if (std::strcmp(why, "too far from odometry") == 0) why = "far";
+        else if (std::strcmp(why, "moving or invalid pose") == 0) why = "move";
         std::snprintf(out, size, "%s", why);
     };
     // Shown after every step, so a run cut off part way still leaves its
@@ -2416,12 +2586,17 @@ void run() {
     // reset (or skip), wall reset before the loader, wall reset before G3.
     const auto show = [&] {
         char text[1024];
+        TripTiming waits;
         int used = std::snprintf(
             text, sizeof(text), "SKILLS %.1f s (3 pin %.1f)  G2 %d  G3 %d%s%s",
             now_s(), three_pin_s, on_g2, on_g3, *stop_note ? "  STOP " : "",
             stop_note);
         for (int i = 0; i < trips && used < static_cast<int>(sizeof(text)); ++i) {
             const Trip& t = trip[i];
+            waits.wall_ms += t.timing.wall_ms;
+            waits.down_ms += t.timing.down_ms;
+            waits.stack_ms += t.timing.stack_ms;
+            waits.pickup_ms += t.timing.pickup_ms;
             char w0[16], w1[16], g[16];
             wall_short(t.wall[0], w0, sizeof(w0));
             wall_short(t.wall[1], w1, sizeof(w1));
@@ -2435,7 +2610,12 @@ void run() {
         }
         if (used < static_cast<int>(sizeof(text)))
             std::snprintf(text + used, sizeof(text) - used,
-                          "\nToggle at %.1f s   parked at %.1f s", toggle_s,
+                          "\nWait wall %.2fs  down %.2fs"
+                          "\nWait up %.2fs  pickup %.2fs"
+                          "\nToggle at %.1f s   parked at %.1f s",
+                          waits.wall_ms / 1000.0f, waits.down_ms / 1000.0f,
+                          waits.stack_ms / 1000.0f, waits.pickup_ms / 1000.0f,
+                          toggle_s,
                           park_s);
         fieldviz::report_full(text);
     };
@@ -2458,28 +2638,59 @@ void run() {
     //       to kG3Lane, claw east, raise, back in, come back out to kG3Lane.
     // Turns are made with the load low; the lift and arm go up after.
     const auto load = [&](bool to_g3) {
-        Trip& t = trip[trips];
+        Trip& t = trip[trips++];  // include a failed attempt in the report
         t.goal = to_g3 ? 3 : 2;
         const float began = now_s();
+        const auto finished = [&](bool success) {
+            t.seconds = now_s() - began;
+            const TripTiming& m = t.timing;
+            std::printf("SKILLS_PHASE,trip=%d,goal=%d,ok=%d,total_s=%.3f,"
+                        "wall_ms=%lu,down_ms=%lu,stack_ms=%lu,pickup_ms=%lu,"
+                        "loader_ms=%lu,aim_ms=%lu,goal_ms=%lu,release_ms=%lu,"
+                        "return_ms=%lu\n", trips, t.goal, success, t.seconds,
+                        static_cast<unsigned long>(m.wall_ms),
+                        static_cast<unsigned long>(m.down_ms),
+                        static_cast<unsigned long>(m.stack_ms),
+                        static_cast<unsigned long>(m.pickup_ms),
+                        static_cast<unsigned long>(m.loader_ms),
+                        static_cast<unsigned long>(m.aim_ms),
+                        static_cast<unsigned long>(m.goal_ms),
+                        static_cast<unsigned long>(m.release_ms),
+                        static_cast<unsigned long>(m.return_ms));
+            return success;
+        };
         int& on = to_g3 ? on_g3 : on_g2;
         const Point goal = to_g3 ? kG3 : kG2;
         lemlib::Pose stopped(0, 0, 0);
         if (!take_load(lined_up, at_loader, false, &stopped, &t.loader_ref,
-                       &t.wall[0]))
-            return false;
+                       &t.wall[0], t.timing))
+            return finished(false);
         calm_drive_to(kLineUp, true);
         if (to_g3) {
             calm_turn_to_heading(field_heading(180.0f));
+            const std::uint32_t resetting_since = pros::millis();
             t.wall[1] = south_wall_reset();
+            t.timing.wall_ms += pros::millis() - resetting_since;
             calm_drive_to(kG3Lane, false);
         }
-        calm_turn_to_point(goal, false);
-        if (!raise_for(on)) return false;
-        if (!put_on(goal, on, &t.goal_ref)) return false;
+        const std::uint32_t aiming_since = pros::millis();
+        const bool aimed = aim_for_score(goal);
+        t.timing.aim_ms += pros::millis() - aiming_since;
+        if (!aimed) {
+            mechanism_failure("goal alignment");
+            return finished(false);
+        }
+        if (!raise_for(on)) return finished(false);
+        const bool final_arm_score = to_g3 && on + 1 == kG3Loads &&
+                                     with_arm(on) && kToggleAndPark;
+        if (!put_on(goal, on, &t.goal_ref, t.timing, final_arm_score))
+            return finished(false);
+        lowering_for_toggle = final_arm_score;
+        const std::uint32_t returning_since = pros::millis();
         leave_to(to_g3 ? kG3Lane : kLineUp, on);
+        t.timing.return_ms += pros::millis() - returning_since;
         ++on;
-        t.seconds = now_s() - began;
-        ++trips;
+        finished(true);
         show();
         return true;
     };
@@ -2489,18 +2700,28 @@ void run() {
     // load off the loader at floor height.
     if (!LiftJob{LiftJob::Running{}}.wait()) return;
     LiftJob to_loader{LiftJob::Settle{}};
+    // A fresh command belongs to this attempt; a cancelled/failed arm job
+    // from the last Skills run must not poison the first loader gate. The
+    // opening has left the goal, so returning to rest can overlap this leg.
+    ArmJob arm_to_loader(arm_position::rest_deg);
 
     // 1. MATCH LOADS ONTO G2 until it holds a pin and five cups (the
     //    three-pin left the pin and two).
-    while (on_g2 < kMostOnGoal) {
+    while (on_g2 < kOnG2AfterThreePin + kG2Loads) {
         if (!fits(kG2TripS)) { stop_note = "time (G2)"; break; }
-        if (!load(false)) { stop_note = "lift (G2)"; show(); return; }
+        if (!load(false)) {
+            stop_note = *mechanism_stop_reason ? mechanism_stop_reason : "lift (G2)";
+            show(); return;
+        }
     }
     // 2. MATCH LOADS ONTO G3: the first load is a pin (dropped like the
     //    three-pin's preload), then four cups at levels 1 to 4.
     while (on_g3 < kG3Loads) {
         if (!fits(kG3TripS)) { stop_note = "time (G3)"; break; }
-        if (!load(true)) { stop_note = "lift (G3)"; show(); return; }
+        if (!load(true)) {
+            stop_note = *mechanism_stop_reason ? mechanism_stop_reason : "lift (G3)";
+            show(); return;
+        }
     }
 
     // 3. TOGGLE AND PARK. From kG3Lane south to the line-up spot, east along
@@ -2508,13 +2729,20 @@ void run() {
     //    raised as in the three-pin (the toggle cannot be reached with it
     //    low), then back north claw first into the park.
     if (kToggleAndPark) {
-        if (!LiftJob{LiftJob::Running{}}.wait()) { stop_note = "lift"; show(); return; }
-        LiftJob for_toggle(kCarryDeg);
+        if (!lowering_for_toggle) {
+            if (!LiftJob{LiftJob::Running{}}.wait()) {
+                stop_note = "lift"; show(); return;
+            }
+            LiftJob for_toggle(kCarryDeg);
+        }
+        // The final direct lowering job can finish during this travel.
         go_to(kLineUp);
         calm_turn_to_point(kToggleLane, true);
         calm_drive_to(kToggleLane, true);
         calm_turn_to_heading(field_heading(180.0f));
-        if (!for_toggle.wait()) { stop_note = "lift"; show(); return; }
+        if (!LiftJob{LiftJob::Running{}}.wait()) {
+            stop_note = "lift"; show(); return;
+        }
         clamp_piston.set_value(true);
         coast_drive();
         chassis.moveToPoint(kToggleHit.x, kToggleHit.y, 900, {.forwards = true},
