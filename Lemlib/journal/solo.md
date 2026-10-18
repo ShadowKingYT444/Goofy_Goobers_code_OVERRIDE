@@ -1,4 +1,4 @@
-# Solo autonomous (`solo_auton`, no slot yet)
+# Solo autonomous (`solo_auton`, slot 5 "solo")
 
 From the three-pin's start: toggle, preload onto G2, the wall pin beside the
 toggle onto G2, field pin 2 onto G3 (the other alliance goal), field pin 1
@@ -31,6 +31,17 @@ differently). Drawing: `Auto_paths/SOLO/solo_route.html`.
   G3 like the preload (carry -375, set down at -75); pin 1 on the black goal
   at the four-pin's neutral first level (-1035).
 - Pickups use the three-pin's `pick_up` (fast approach, gentle last 10 in).
+
+## Chaining (2026-10-18, to save time)
+Only the kinds of chaining the three-pin already uses, at full speed:
+- Turns toward a goal hand over still turning (floor 20, ends within 4
+  degrees) into the run, which steers out the rest. Load low in every turn.
+- After each score the robot pulls straight out 8 in without stopping (the
+  three-pin's retreat), which also clears the goal before the next turn.
+- Pickups are the three-pin's `pick_up` (chained turn, fast approach).
+- Two spots still stop fully: beside the wall pin (the turn there clears the
+  cup by about an inch) and at the end of the run along the wall (the turn
+  toward G2 there clears G2 by about 2.5 in).
 
 ## Open
 - Not run yet. Expected to be well over 15 s at first (rough estimate 22 to

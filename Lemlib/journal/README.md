@@ -10,7 +10,7 @@ Newest entries are at the bottom of each file, dated.
 | [three_pin.md](three_pin.md) | The three-pin match autonomous (slot 1) |
 | [four_pin.md](four_pin.md) | The four-pin far and close match autonomous (slots 2 and 3), formerly "two-pin" |
 | [skills.md](skills.md) | The skills route (slot 4) |
-| [solo.md](solo.md) | The solo autonomous (not on a slot yet) |
+| [solo.md](solo.md) | The solo autonomous (slot 5) |
 | [gps_reset_findings.md](gps_reset_findings.md) | 2026-10-10 deep review of the GPS correction code (moved here from `docs/`) |
 
 Related material that is not journal text:
@@ -25,4 +25,5 @@ Related material that is not journal text:
 | 1 | 3 pin | `three_pin_auton` |
 | 2 | 4 pin far | `four_pin_far_auton` |
 | 3 | 4 pin close | `four_pin_close_auton` |
-| 4 | skills | `skills` (test build: three-pin, then match loads onto G2) |
+| 4 | skills | `skills` |
+| 5 | solo | `solo_auton` |

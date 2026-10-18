@@ -2879,6 +2879,35 @@ struct Note {
     bool stalled = false;
 };
 
+// Motions (2026-10-18: chained where the three-pin already chains the same
+// kind of move; full speed, as the three-pin).
+//   turn_into_run: a turn that hands over still turning (floor 20, ends
+//     within 4 degrees), like the three-pin's turn into each pickup. Only
+//     used with the load low and straight before a run into a goal or pin,
+//     which steers out what is left.
+//   pull_out: straight out of a goal, nose first, without stopping, like the
+//     three-pin's retreat after a score. It clears the goal before the next
+//     turn (turning in place with the claw round the goal would clip it).
+//   stop_at: a drive that ends crisply (low floor at the point, brakes), for
+//     the two tight spots: beside the wall pin and along the wall by G2.
+void turn_into_run(Point target, bool claw_first) {
+    using namespace three_pin;
+    chassis.turnToPoint(target.x, target.y, 900,
+                        {.forwards = !claw_first, .minSpeed = kTurnChainSpeed,
+                         .earlyExitRange = kTurnChainExitDeg}, false);
+}
+void pull_out() {
+    using namespace three_pin;
+    chain_to(straight_ahead(8.0f), true, 800);
+}
+void stop_at(Point target, bool forwards) {
+    using namespace three_pin;
+    chassis.moveToPoint(target.x, target.y, 2000,
+                        {.forwards = forwards, .minSpeed = 20,
+                         .earlyExitRange = 0.5f}, false);
+    brake_drive();
+}
+
 // Lift a just-clamped load off the floor before the robot moves.
 void lift_off_floor() {
     LiftJob{LiftJob::Running{}}.wait();
@@ -3034,15 +3063,22 @@ void run() {
 
     // WALL PIN ONTO G2, from the wall side: along the wall nose first, turn
     // the claw to G2, back in one level up from the preload.
-    skills_route::calm_turn_to_heading(90.0f);
-    skills_route::calm_drive_to(kCorridor, true);
-    skills_route::calm_turn_to_point(kG2, false);
+    // Beside the wall pin the turn clears the cup by about an inch: it stops
+    // first (above) and turns without handing over.
+    chassis.turnToHeading(90.0f, 1000, {.minSpeed = 10, .earlyExitRange = 2.0f},
+                          false);
+    stop_rolling(150);
+    // Along the wall at full speed, stopping crisply: the turn to G2 there
+    // clears G2 by about 2.5 in.
+    stop_at(kCorridor, true);
+    turn_into_run(kG2, true);
     if (!score_on(kG2, lift_position::stage_1_deg, false, g2))
         return fail("lift (G2)");
     g2.at_s = now_s();
     show();
 
     // FIELD PIN 2 ONTO G3 (an empty goal: set down like the preload).
+    pull_out();
     LiftJob lower2{LiftJob::Settle{}};
     lemlib::Pose p = chassis.getPose();
     Point at{p.x, p.y}, seat{};
@@ -3050,20 +3086,21 @@ void run() {
         return fail("lift (pin 2)");
     grab2_s = now_s();
     lift_off_floor();
-    skills_route::calm_turn_to_point(kG3, false);
+    turn_into_run(kG3, true);
     if (!score_on(kG3, kPinCarryDeg, true, g3)) return fail("lift (G3)");
     g3.at_s = now_s();
     show();
 
     // FIELD PIN 1 ONTO THE BLACK GOAL (it holds a pin already: the
     // four-pin's first level on the taller neutral goal).
+    pull_out();
     LiftJob lower1{LiftJob::Settle{}};
     p = chassis.getPose();
     at = {p.x, p.y};
     if (!pick_up(at, seat, kPin1, grab1, &lower1)) return fail("lift (pin 1)");
     grab1_s = now_s();
     lift_off_floor();
-    skills_route::calm_turn_to_point(kBlackGoal, false);
+    turn_into_run(kBlackGoal, true);
     if (!score_on(kBlackGoal, lift_position::middle_goal_stage_1_deg, false,
                   black))
         return fail("lift (black goal)");
