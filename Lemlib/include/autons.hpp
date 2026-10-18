@@ -30,6 +30,7 @@ void moveArm(double targetDeg, std::atomic_bool* cancel = nullptr);
 // The three-pin, then match loads, wall stacks, toggle and park; see
 // skills_route in src/autons.cpp.
 void skills();
+void solo_auton();  // three-pin start: preload, wall pin, 2 field pins
 // Four-pin far curve recorder for driver control; see curve_capture in
 // src/autons.cpp. Toggle starts or ends a recording and returns true if one
 // is now running; call Sample every loop.

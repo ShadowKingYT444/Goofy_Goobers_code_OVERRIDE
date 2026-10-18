@@ -10,6 +10,7 @@ Newest entries are at the bottom of each file, dated.
 | [three_pin.md](three_pin.md) | The three-pin match autonomous (slot 1) |
 | [four_pin.md](four_pin.md) | The four-pin far and close match autonomous (slots 2 and 3), formerly "two-pin" |
 | [skills.md](skills.md) | The skills route (slot 4) |
+| [solo.md](solo.md) | The solo autonomous (not on a slot yet) |
 | [gps_reset_findings.md](gps_reset_findings.md) | 2026-10-10 deep review of the GPS correction code (moved here from `docs/`) |
 
 Related material that is not journal text:

@@ -2825,6 +2825,256 @@ void run() {
 
 void skills() { skills_route::run(); }
 
+// SOLO: from the three-pin's start. Toggle, preload onto G2 (both exactly as
+// the three-pin), the wall pin beside the toggle (the four-pin's tuned
+// approach, mirrored to this side of the toggle) onto G2, then field pin 2
+// onto the other alliance goal (G3), then field pin 1 onto the black goal.
+// Laid out from the team's drawing and a video of another team running it
+// (2026-10-18); nothing here has run on our robot yet.
+//
+// Start-relative frame as in the three-pin: start (0, 0) heading 180 facing
+// the toggle wall, +X along the wall toward G2, +Y away from the wall.
+// Positions are taken from tuned routes wherever one exists:
+//   G2            three-pin kGoal (20, 15)
+//   wall pin      four-pin's wall stack (-18.7, -8.6, heading 28) mirrored
+//                 across the start, like four_pin_close: (18.7, -8.6), -28;
+//                 its approach via (3.4, 11.2) from (-8, 15) likewise
+//   field pin 2   three-pin kStack2 (43.5, 13.25)
+//   G3            G2 plus one 23.62 in tile each way: (43.62, 38.62)
+//   field pin 1   three-pin kStack1 (20.1, 36.79)
+//   black goal    four-pin's neutral goal on this side: (-28, 15)
+// After the wall pin the robot goes along the wall (between G2 and the
+// wall) and scores on G2 from that side, as drawn, which leaves it next to
+// field pin 2. All turns are made with the load low; the lift goes up on
+// the straight run into each goal, and the run holds 6 in short if the lift
+// is not up yet. Every score ends against the goal and resets position from
+// it (as the three-pin does).
+namespace solo {
+using three_pin::Point;
+using three_pin::LiftJob;
+constexpr Point kG2 = three_pin::kGoal;
+constexpr Point kStaging{-four_pin_far::kStaging.x, four_pin_far::kStaging.y};
+constexpr Point kWallVia{-four_pin_far::kWallTurnIn.x, four_pin_far::kWallTurnIn.y};
+constexpr Point kWallPin{-four_pin_far::kWallStackAim.x,
+                         four_pin_far::kWallStackAim.y};
+constexpr float kWallPinHeading = -four_pin_far::kWallStackHeading;
+// Straight back out from the wall pin, nose first, far enough that the
+// turn along the wall clears the wall and the cup 8 in beside the pin.
+constexpr float kWallBackOffIn = 14.0f;
+// Along the wall between G2 and the wall; G2 is scored from here.
+constexpr Point kCorridor{34.0f, 3.0f};
+constexpr Point kPin2 = three_pin::kStack2;
+constexpr Point kG3{three_pin::kGoal.x + 23.62f, three_pin::kGoal.y + 23.62f};
+constexpr Point kPin1 = three_pin::kStack1;
+constexpr Point kBlackGoal{-28.0f, 15.0f};
+// Lift heights. A carried load is held just off the floor until the run
+// into a goal; the lift starts up once the robot is within kRaiseWithinIn
+// of the goal (at once on shorter runs).
+constexpr double kLowCarryDeg = lift_position::matchload;
+constexpr double kPinCarryDeg = lift_position::matchload - 125;  // preload's
+constexpr float kRaiseWithinIn = 24.0f;
+
+struct Note {
+    float at_s = 0.0f;
+    bool stalled = false;
+};
+
+// Lift a just-clamped load off the floor before the robot moves.
+void lift_off_floor() {
+    LiftJob{LiftJob::Running{}}.wait();
+    const double start = lift_sensor.get_position() / 100.0;
+    LiftJob carry(kLowCarryDeg);
+    const std::uint32_t since = pros::millis();
+    while (lift_sensor.get_position() / 100.0 > start - three_pin::kLiftClearDeg &&
+           pros::millis() - since < 400)
+        pros::delay(10);
+}
+
+// The claw is already turned to `goal` with the load low. Back straight in
+// to 1 in past the goal's center (the three-pin's scoring depth, so it
+// always ends against the goal), raising the lift on the way and holding
+// 6 in short if it is not up. Then set the load down: an empty goal like
+// the three-pin's preload (lower to -75, open), otherwise drop a third of a
+// level and open. Finally take position from the goal: the claw's grip is
+// on its center, kReach behind the robot's center.
+bool score_on(Point goal, double liftDeg, bool emptyGoal, Note& note) {
+    using namespace three_pin;
+    if (!LiftJob{LiftJob::Running{}}.wait()) return false;
+    const lemlib::Pose start = chassis.getPose();
+    const Point here{start.x, start.y};
+    const Point stop = standoff(here, goal, kScoreReach);
+    const float run = std::hypot(stop.x - here.x, stop.y - here.y);
+    const float contact = run - (kReach - kScoreReach);
+    const lemlib::MoveToPointParams entry{.forwards = false,
+                                          .maxSpeed = kGoalSpeed,
+                                          .minSpeed = kGentleFloor};
+    coast_drive();
+    chassis.moveToPoint(stop.x, stop.y, 3000, entry, true);
+    chassis.waitUntil(std::max(0.0f, contact - kRaiseWithinIn));
+    LiftJob raise(liftDeg, /*fastUp=*/true);
+    chassis.waitUntil(std::max(0.0f, contact - kGoalStandbyIn));
+    if (chassis.isInMotion() && !raise.done()) {
+        chassis.cancelMotion();
+        brake_drive();
+        if (!raise.wait()) return false;
+        coast_drive();
+        chassis.moveToPoint(stop.x, stop.y, 3000, entry, true);
+    }
+    note.stalled = wait_done_or_stalled();
+    if (!raise.wait()) return false;
+    brake_drive();
+    if (emptyGoal) {
+        if (!LiftJob(kPreloadSeatDeg).wait()) return false;
+    } else {
+        const double scored_at = lift_sensor.get_position() / 100.0;
+        LiftJob lower{LiftJob::Settle{}};
+        const std::uint32_t since = pros::millis();
+        while (!lower.done() &&
+               lift_sensor.get_position() / 100.0 < scored_at + kSeatDropDeg &&
+               pros::millis() - since < 800)
+            pros::delay(10);
+    }
+    claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
+    const lemlib::Pose pressed = chassis.getPose();
+    const float h = pressed.theta * static_cast<float>(M_PI) / 180.0f;
+    chassis.setPose(goal.x + kReach * std::sin(h), goal.y + kReach * std::cos(h),
+                    pressed.theta);
+    coast_drive();
+    return true;
+}
+
+void run() {
+    using namespace three_pin;
+    const std::uint32_t started = pros::millis();
+    const auto now_s = [&] { return (pros::millis() - started) / 1000.0f; };
+    set_lateral_kp(kLateralKp);
+    coast_drive();
+    gpsreset::set_auto_reset(false);
+    chassis.setPose(0, 0, 180);
+    Note toggle, preload, g2, g3, black;
+    PickLog grab2, grab1;
+    four_pin_far::WallLog wall;
+    float wall_s = 0.0f, grab2_s = 0.0f, grab1_s = 0.0f;
+    const char* stop_note = "done";
+    const auto show = [&] {
+        char text[640];
+        std::snprintf(text, sizeof(text),
+            "SOLO  %.1f s  %s\n"
+            "Toggle %.1f  preload %.1f\n"
+            "Wall pin %.1f s  approach %lu ms stalled %lu ms\n"
+            " short %.1f  right %+.1f  %+.1f deg\n"
+            "G2 %.1f %s   pin 2 %.1f short %.1f\n"
+            "G3 %.1f %s   pin 1 %.1f short %.1f\n"
+            "Black goal %.1f %s",
+            now_s(), stop_note, toggle.at_s, preload.at_s, wall_s,
+            static_cast<unsigned long>(wall.approach_ms),
+            static_cast<unsigned long>(wall.stalled_ms), wall.short_in,
+            wall.right_in, wall.heading_off_deg, g2.at_s,
+            g2.stalled ? "wall" : "spot", grab2_s, grab2.short_in, g3.at_s,
+            g3.stalled ? "wall" : "spot", grab1_s, grab1.short_in, black.at_s,
+            black.stalled ? "wall" : "spot");
+        fieldviz::report_full(text);
+    };
+    const auto fail = [&](const char* why) {
+        stop_note = why;
+        show();
+    };
+
+    // TOGGLE and PRELOAD: the three-pin's opening, unchanged.
+    const double lift_from = lift_sensor.get_position() / 100.0;
+    const double lift_to = lift_position::matchload - 125;
+    LiftJob raise_preload(lift_to);
+    chassis.moveToPoint(0, 8, 500, {.forwards = false}, false);
+    const double lift_enough =
+        lift_from + kToggleLiftFraction * (lift_to - lift_from);
+    const std::uint32_t waiting_since = pros::millis();
+    while (!raise_preload.done() && pros::millis() - waiting_since < 1500 &&
+           (lift_to < lift_from
+                ? lift_sensor.get_position() / 100.0 > lift_enough
+                : lift_sensor.get_position() / 100.0 < lift_enough))
+        pros::delay(10);
+    clamp_piston.set_value(true);
+    pros::delay(kPneumaticSettleMs);
+    chassis.moveToPoint(0, -2, 700, {.forwards = true}, true);
+    wait_done_or_stalled();
+    toggle.at_s = now_s();
+    const Point preload_spot{kGoal.x - kReach, kGoal.y};
+    chassis.moveToPoint(0, kGoal.y, 1000, {.forwards = false}, false);
+    chassis.turnToHeading(270, 800, {}, false);
+    chassis.moveToPoint(preload_spot.x, preload_spot.y, 1200,
+                        {.forwards = false, .maxSpeed = kGoalSpeed}, false);
+    if (!raise_preload.wait()) return fail("lift (preload)");
+    if (!LiftJob(kPreloadSeatDeg).wait()) return fail("lift (preload)");
+    claw_piston.set_value(false);
+    pros::delay(kPneumaticSettleMs);
+    preload.at_s = now_s();
+
+    // WALL PIN: out along the lane to the staging point (the lift comes
+    // down once clear of the goal), then the four-pin's approach mirrored,
+    // clamp, lift just off the floor, and straight back out nose first.
+    chassis.moveToPoint(kStaging.x, kStaging.y, 1200,
+                        {.forwards = true, .minSpeed = kChainSpeed,
+                         .earlyExitRange = kChainExitIn}, true);
+    chassis.waitUntil(kGoalClearanceIn);
+    LiftJob lower_for_pin{LiftJob::Settle{}};
+    chassis.waitUntilDone();
+    if (!lower_for_pin.wait()) return fail("lift (wall pin)");
+    const Point pin_spot = four_pin_far::spot_for(kWallPin, kWallPinHeading,
+                                                  four_pin_far::kWallDeeperIn);
+    const float wh = kWallPinHeading * static_cast<float>(M_PI) / 180.0f;
+    const Point back_off{pin_spot.x + kWallBackOffIn * std::sin(wh),
+                         pin_spot.y + kWallBackOffIn * std::cos(wh)};
+    four_pin_far::take_wall_stack(kWallPin, kWallPinHeading, kWallVia,
+                                  four_pin_far::kWallDeeperIn, kLowCarryDeg,
+                                  back_off, kWallPinHeading, wall);
+    stop_rolling(150);
+    wall_s = now_s();
+    show();
+
+    // WALL PIN ONTO G2, from the wall side: along the wall nose first, turn
+    // the claw to G2, back in one level up from the preload.
+    skills_route::calm_turn_to_heading(90.0f);
+    skills_route::calm_drive_to(kCorridor, true);
+    skills_route::calm_turn_to_point(kG2, false);
+    if (!score_on(kG2, lift_position::stage_1_deg, false, g2))
+        return fail("lift (G2)");
+    g2.at_s = now_s();
+    show();
+
+    // FIELD PIN 2 ONTO G3 (an empty goal: set down like the preload).
+    LiftJob lower2{LiftJob::Settle{}};
+    lemlib::Pose p = chassis.getPose();
+    Point at{p.x, p.y}, seat{};
+    if (!pick_up(at, seat, kPin2, grab2, &lower2, kSeatIn, kStack2DeeperIn))
+        return fail("lift (pin 2)");
+    grab2_s = now_s();
+    lift_off_floor();
+    skills_route::calm_turn_to_point(kG3, false);
+    if (!score_on(kG3, kPinCarryDeg, true, g3)) return fail("lift (G3)");
+    g3.at_s = now_s();
+    show();
+
+    // FIELD PIN 1 ONTO THE BLACK GOAL (it holds a pin already: the
+    // four-pin's first level on the taller neutral goal).
+    LiftJob lower1{LiftJob::Settle{}};
+    p = chassis.getPose();
+    at = {p.x, p.y};
+    if (!pick_up(at, seat, kPin1, grab1, &lower1)) return fail("lift (pin 1)");
+    grab1_s = now_s();
+    lift_off_floor();
+    skills_route::calm_turn_to_point(kBlackGoal, false);
+    if (!score_on(kBlackGoal, lift_position::middle_goal_stage_1_deg, false,
+                  black))
+        return fail("lift (black goal)");
+    black.at_s = now_s();
+    chain_to(straight_ahead(8.0f), true, 800);
+    show();
+}
+}  // namespace solo
+
+void solo_auton() { solo::run(); }
+
 // X in driver control: note where the lift and arm are now. The list is
 // shown over the whole Brain screen, for setting skills_route::kLevels.
 namespace height_notes {
