@@ -64,6 +64,16 @@ Only the kinds of chaining the three-pin already uses, at full speed:
 - Field pin 2 moved to (38.9, 17.45): the robot went about 4.6 in too far
   along the wall and 4.2 in too close to it (team's map).
 
+## Tuner (2026-10-18)
+The preload curve overshot (ended about 6 in to the side of G2 and 4.6 in
+short), and the chained moves were not smooth. Rather than guess,
+`motion_tune_auton` (slot 5 "tuner" for now; `src/motion_tune.cpp`) drives
+solo's preload curve with 12 settings (lead 0.3/0.45/0.6, speed 80/110,
+floor 0/24) and the after-wall-pin chain (turn, 22 in, turn, back 12 in)
+with 4 hand-over settings (settled, gentle 10/2 + 25/1, solo's 20/4 + 40/2,
+fast 30/6 + 60/3), twice each. The Brain lists the best curves and each
+chain setting's mean time, distance off, overshoot and heading error.
+
 ## Open
 - Not run yet. Expected to be well over 15 s at first (rough estimate 22 to
   25 s); the Brain report shows the time at each step.

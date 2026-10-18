@@ -105,7 +105,8 @@ The 5th was the 4th's height at first and was too low.
 | 2026-10-17 | Line-up 0.75 in back (-57.75); hold short of the goal until lift and arm are measured at height; fast lift raises; loader wait 0.25 s; reset samples while braking; G3 + toggle + park added | Everything consistent; loader still off by the same 0.75 in the same way |
 | 2026-10-17 | Loader lane another 0.75 in (-57.0) | Not uploaded. Wrong way: -57.75 and -57.0 moved the robot away from the loader corner (a misread "go back") |
 | 2026-10-17 | Loader lane -59.25 (0.75 in past -58.5, toward the loader corner) | Not yet run |
-| 2026-10-18 | PR #2 with fixes; lift starts during the goal turn; tighter loader; diagonal G3 | Not yet run |
+| 2026-10-18 | PR #2 with fixes; lift starts during the goal turn; tighter loader; diagonal G3 | Consistent, but stops beside the loader (red X): ~3.9 in short toward the corner, ~2 in deeper (against the wall); waits 1 to 2 s short of goals with the stack already up |
+| 2026-10-18 | Loader stop 3.9 in toward the corner (y -63.15; line-up stays at -59.25 for turn clearance, curve in with lead 0.5); lift and arm go straight up at the clamp (lift gain 2.0 going up); no hold short of goals (`kStackGates = false`) | Not yet run |
 
 ## Report (end of the test build)
 Trip times; per trip: where odometry had the robot when it stopped at the

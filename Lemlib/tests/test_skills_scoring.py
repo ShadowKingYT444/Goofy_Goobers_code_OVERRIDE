@@ -296,13 +296,21 @@ void raise_ownership_and_rest() {
 }
 
 void score_failure_keeps_claw() {
-    for (ArmOutcome failure : {ArmOutcome::cancelled, ArmOutcome::sensor_error}) {
+    if (kStackGates) for (ArmOutcome failure : {ArmOutcome::cancelled, ArmOutcome::sensor_error}) {
         at_score(1);
         sim::state.arm_outcome = failure;
         TripTiming timing;
         assert(!put_on({0, 30}, 1, nullptr, timing));
         assert(sim::state.claw_closed && sim::state.opened_at.empty());
         assert(sim::state.lifts.empty() && sim::state.stops == 1);
+    }
+    if (!kStackGates) {  // height checks off (2026-10-18): only a lift failure stops
+        at_score(1);
+        sim::state.lift_state = -1;
+        TripTiming t2;
+        assert(!put_on({0, 30}, 1, nullptr, t2));
+        assert(sim::state.claw_closed && sim::state.lifts.empty());
+        return;
     }
     at_score(1);
     sim::state.arm = 22;  // legal for the loader, outside score's 20 degrees
@@ -338,6 +346,7 @@ void score_timeout_within_tolerance() {
 }
 
 void one_score_deadline() {
+    if (!kStackGates) return;  // height checks off (2026-10-18)
     at_score(1);
     sim::state.lift_state = 0;
     // Fault injection: a worker never publishes completion. The scoring
@@ -410,6 +419,7 @@ void ordinary_seat_failure() {
 // An arm that stopped 30 degrees short of 530 gets one retry; once it is
 // there the score goes ahead.
 void arm_retry_then_score() {
+    if (!kStackGates) return;  // height checks off (2026-10-18)
     at_score(4);
     sim::state.arm = kLevels[4].arm_deg - 30;
     sim::state.arm_outcome = ArmOutcome::timed_out;
@@ -499,6 +509,7 @@ def production_harness():
     for name in ("kMostOnGoal", "kScoreReachIn", "kGoalRefMaxIn", "kCarryDeg",
                  "kThirdCupDeg", "kFullLiftDeg", "kCalmDrive", "kLiftDownDeg",
                  "kArmCloseDeg", "kLiftAtDeg", "kArmAtDeg", "kStackWaitMs",
+                 "kStackGates",
                  "mechanism_stop_reason"):
         parts.append(declaration(source, name))
     parts.append(extract_block(source, r"^struct Level\b", semicolon=True))

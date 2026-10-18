@@ -63,7 +63,7 @@ Read this first. Last updated 2026-10-14.
 - Host tests: `python3 -m unittest discover -s tests` (13 tests: map math,
   GPS estimator and corrections, curve tuner model). None exercise routes.
 - Slots: 1 "3 pin" (`three_pin_auton`), 2 "4 pin far"
-  (`four_pin_far_auton`), 3 "4 pin close" (`four_pin_close_auton`, quadrant 2 = mirror of quadrant 1), 4 "skills" (`skills`), 5 "solo" (`solo_auton`). Skills
+  (`four_pin_far_auton`), 3 "4 pin close" (`four_pin_close_auton`, quadrant 2 = mirror of quadrant 1), 4 "skills" (`skills`), 5 "solo" (`solo_auton`); 5 holds "tuner" (`motion_tune_auton`) while tuning solo. Skills
   no slot yet; ask before overwriting one. The latest two-pin changes (both
   stacks 0.5 in deeper, preload turn/entry time savings, approach logging)
   were **never confirmed uploaded**.
