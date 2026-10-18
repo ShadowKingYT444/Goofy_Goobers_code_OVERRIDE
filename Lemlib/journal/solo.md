@@ -51,6 +51,19 @@ Only the kinds of chaining the three-pin already uses, at full speed:
 - Preload: one backward curve from the toggle onto the preload spot instead
   of back out, turn, back in.
 
+## Field fixes (2026-10-18, second run)
+- Waiting too long at contacts: solo has its own contact check (watches
+  after 0.2 s, ends after 60 ms under 30 rpm; the shared one waits 0.3 s
+  then 150 ms under 12 rpm).
+- Toggle not always flipped: the hit has a floor of 50 into the wall.
+- Preload curve undershot and crept in: speed 110, aims 1 in deeper and
+  ends on contact with G2 (power floor) instead of settling.
+- Wall pin: target 0.5 in further into the wall (y -9.1).
+- After the wall pin everything hands over without stopping (turn, run
+  along the wall, turn to G2, run in); the short back-off still stops.
+- Field pin 2 moved to (38.9, 17.45): the robot went about 4.6 in too far
+  along the wall and 4.2 in too close to it (team's map).
+
 ## Open
 - Not run yet. Expected to be well over 15 s at first (rough estimate 22 to
   25 s); the Brain report shows the time at each step.

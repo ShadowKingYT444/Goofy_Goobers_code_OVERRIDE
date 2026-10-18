@@ -2860,8 +2860,10 @@ using three_pin::LiftJob;
 constexpr Point kG2 = three_pin::kGoal;
 constexpr Point kStaging{-four_pin_far::kStaging.x, four_pin_far::kStaging.y};
 constexpr Point kWallVia{-four_pin_far::kWallTurnIn.x, four_pin_far::kWallTurnIn.y};
+// 0.5 in further into the wall than the four-pin's (2026-10-18: the curve
+// was not getting in far enough toward the wall).
 constexpr Point kWallPin{-four_pin_far::kWallStackAim.x,
-                         four_pin_far::kWallStackAim.y};
+                         four_pin_far::kWallStackAim.y - 0.5f};
 constexpr float kWallPinHeading = -four_pin_far::kWallStackHeading;
 // Straight back out from the wall pin, nose first, far enough that the
 // turn along the wall clears the wall and the cup 8 in beside the pin
@@ -2874,7 +2876,11 @@ constexpr float kWallBackOffIn = 11.0f;
 constexpr float kWallPinLead = 0.5f;
 // Along the wall between G2 and the wall; G2 is scored from here.
 constexpr Point kCorridor{34.0f, 3.0f};
-constexpr Point kPin2 = three_pin::kStack2;
+// The three-pin's stack 2 is (43.5, 13.25), but in solo (after scoring G2
+// from the wall side) the robot went about 4.6 in too far along the wall and
+// 4.2 in too close to it, along the diagonal (measured off the team's map,
+// 2026-10-18).
+constexpr Point kPin2{43.5f - 4.6f, 13.25f + 4.2f};
 constexpr Point kG3{three_pin::kGoal.x + 23.62f, three_pin::kGoal.y + 23.62f};
 constexpr Point kPin1 = three_pin::kStack1;
 constexpr Point kBlackGoal{-28.0f, 15.0f};
@@ -2889,6 +2895,29 @@ struct Note {
     float at_s = 0.0f;
     bool stalled = false;
 };
+
+// Solo's contact check, faster than wait_done_or_stalled (0.3 s before it
+// starts watching, then 150 ms under 12 rpm): it starts watching after
+// 0.2 s and ends the move after 60 ms under 30 rpm. A robot driven into a
+// goal or wall at a power floor drops well below 30 rpm almost at once.
+bool wait_contact(std::uint32_t started) {
+    constexpr std::uint32_t kLaunchMs = 200, kStalledMs = 60;
+    constexpr double kSlowRpm = 30.0;
+    std::uint32_t slow_since = 0;
+    while (chassis.isInMotion()) {
+        const std::uint32_t now = pros::millis();
+        if (three_pin::drive_rpm() > kSlowRpm || now - started < kLaunchMs)
+            slow_since = 0;
+        else if (slow_since == 0)
+            slow_since = now;
+        else if (now - slow_since >= kStalledMs) {
+            chassis.cancelMotion();
+            return true;
+        }
+        pros::delay(10);
+    }
+    return false;
+}
 
 // Motions (2026-10-18: chained where the three-pin already chains the same
 // kind of move; full speed, as the three-pin).
@@ -2925,7 +2954,7 @@ void lift_off_floor() {
     const double start = lift_sensor.get_position() / 100.0;
     LiftJob carry(kLowCarryDeg);
     const std::uint32_t since = pros::millis();
-    while (lift_sensor.get_position() / 100.0 > start - three_pin::kLiftClearDeg &&
+    while (lift_sensor.get_position() / 100.0 > start - 40.0 &&
            pros::millis() - since < 400)
         pros::delay(10);
 }
@@ -2949,18 +2978,21 @@ bool score_on(Point goal, double liftDeg, bool emptyGoal, Note& note) {
                                           .maxSpeed = kGoalSpeed,
                                           .minSpeed = kGentleFloor};
     coast_drive();
+    const std::uint32_t began = pros::millis();
     chassis.moveToPoint(stop.x, stop.y, 3000, entry, true);
     chassis.waitUntil(std::max(0.0f, contact - kRaiseWithinIn));
     LiftJob raise(liftDeg, /*fastUp=*/true);
     chassis.waitUntil(std::max(0.0f, contact - kGoalStandbyIn));
+    std::uint32_t entered = began;
     if (chassis.isInMotion() && !raise.done()) {
         chassis.cancelMotion();
         brake_drive();
         if (!raise.wait()) return false;
         coast_drive();
+        entered = pros::millis();
         chassis.moveToPoint(stop.x, stop.y, 3000, entry, true);
     }
-    note.stalled = wait_done_or_stalled();
+    note.stalled = wait_contact(entered);
     if (!raise.wait()) return false;
     brake_drive();
     if (emptyGoal) {
@@ -3036,19 +3068,29 @@ void run() {
         pros::delay(10);
     clamp_piston.set_value(true);
     pros::delay(kPneumaticSettleMs);
-    chassis.moveToPoint(0, -2, 700, {.forwards = true}, true);
-    wait_done_or_stalled();
+    // Harder than the three-pin's (it was not always flipping the toggle):
+    // a floor of 50 into the wall, ending on contact.
+    const std::uint32_t hitting = pros::millis();
+    chassis.moveToPoint(0, -4, 900, {.forwards = true, .minSpeed = 50}, true);
+    wait_contact(hitting);
     toggle.at_s = now_s();
     // One backward curve from the toggle onto the preload spot (claw first,
     // ending square to G2) instead of the three-pin's back out, turn, back
     // in. The carrot starts near (2.6, 15), so the robot first backs
     // straight away from the wall before it swings round. Same curve helper
     // as the four-pin (lead 0.45), capped at the three-pin's goal speed.
-    const Point preload_spot{kGoal.x - kReach, kGoal.y};
-    curve::Settings to_goal = curve::tuned;
-    to_goal.max_speed = kGoalSpeed;
-    curve::to(preload_spot.x, preload_spot.y, 270.0f, /*forwards=*/false, 1800,
-              to_goal);
+    // 2026-10-18: it undershot and crept in, so it is a little faster (110),
+    // aims 1 in deeper (center 7 in from G2) and ends on contact with G2,
+    // with a power floor instead of settling.
+    const Point preload_spot{kGoal.x - kReach + 1.0f, kGoal.y};
+    const std::uint32_t curving = pros::millis();
+    chassis.moveToPose(preload_spot.x, preload_spot.y, 270.0f, 1800,
+                       {.forwards = false,
+                        .horizontalDrift = curve::tuned.drift,
+                        .lead = curve::tuned.lead, .maxSpeed = 110,
+                        .minSpeed = kGentleFloor}, true);
+    wait_contact(curving);
+    brake_drive();
     if (!raise_preload.wait()) return fail("lift (preload)");
     if (!LiftJob(kPreloadSeatDeg).wait()) return fail("lift (preload)");
     claw_piston.set_value(false);
@@ -3074,20 +3116,19 @@ void run() {
                                   four_pin_far::kWallDeeperIn, kLowCarryDeg,
                                   back_off, kWallPinHeading, wall, kWallPinLead,
                                   /*chain_out=*/false);
-    stop_rolling(150);
     wall_s = now_s();
     show();
 
     // WALL PIN ONTO G2, from the wall side: along the wall nose first, turn
     // the claw to G2, back in one level up from the preload.
-    // Beside the wall pin the turn clears the cup by about an inch: it stops
-    // first (above) and turns without handing over.
-    chassis.turnToHeading(90.0f, 1000, {.minSpeed = 10, .earlyExitRange = 2.0f},
-                          false);
-    stop_rolling(150);
-    // Along the wall at full speed, stopping crisply: the turn to G2 there
-    // clears G2 by about 2.5 in.
-    stop_at(kCorridor, true);
+    // Chained from here (2026-10-18): the back-off above still stops
+    // crisply (chained it coasted into G2); then the turn hands over to the
+    // run along the wall, which hands over to the turn to G2, which hands
+    // over to the run into G2.
+    chassis.turnToHeading(90.0f, 1000,
+                          {.minSpeed = kTurnChainSpeed,
+                           .earlyExitRange = kTurnChainExitDeg}, false);
+    chain_to(kCorridor, true, 2000);
     turn_into_run(kG2, true);
     if (!score_on(kG2, lift_position::stage_1_deg, false, g2))
         return fail("lift (G2)");
