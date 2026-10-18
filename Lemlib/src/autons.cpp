@@ -1127,7 +1127,8 @@ void watch_for_stall() {
 // it if it has to.
 void take_wall_stack(Point stack, float headingDeg, Point via, float deeperIn,
                      float liftDeg, Point out, float outHeading,
-                     WallLog& log, float lead = kWallCurveLead) {
+                     WallLog& log, float lead = kWallCurveLead,
+                     bool chain_out = true) {
     using namespace three_pin;
     const Point spot = spot_for(stack, headingDeg, deeperIn);
     log.gps_start = gps_now();
@@ -1202,12 +1203,16 @@ void take_wall_stack(Point stack, float headingDeg, Point via, float deeperIn,
     log.lift_ms = pros::millis() - lifting_since;
     log.lift_ma = lift_samples ? lift_ma / lift_samples : 0.0;
     coast_drive();
+    // chain_out = false (solo): end at `out` crisply (low floor at the
+    // point, then brakes) instead of handing over at 40 and coasting on.
     chassis.moveToPose(out.x, out.y, outHeading, 2500,
                        {.forwards = true,
                         .horizontalDrift = curve::tuned.drift,
                         .lead = curve::tuned.lead, .maxSpeed = kCurveSpeed,
-                        .minSpeed = kChainSpeed,
-                        .earlyExitRange = kLeaveExitIn}, false);
+                        .minSpeed = chain_out ? kChainSpeed : 20.0f,
+                        .earlyExitRange = chain_out ? kLeaveExitIn : 0.5f},
+                       false);
+    if (!chain_out) brake_drive();
 }
 
 // Back straight down the lane onto `spot` while the lift finishes rising
@@ -2859,8 +2864,14 @@ constexpr Point kWallPin{-four_pin_far::kWallStackAim.x,
                          four_pin_far::kWallStackAim.y};
 constexpr float kWallPinHeading = -four_pin_far::kWallStackHeading;
 // Straight back out from the wall pin, nose first, far enough that the
-// turn along the wall clears the wall and the cup 8 in beside the pin.
-constexpr float kWallBackOffIn = 14.0f;
+// turn along the wall clears the wall and the cup 8 in beside the pin
+// (center about 3.7 in off the wall line). It used to hand over at 40 and
+// coast on to about G2's y, and the run along the wall then hit G2; it now
+// stops crisply here.
+constexpr float kWallBackOffIn = 11.0f;
+// The curve onto the wall pin: carrot further back than the four-pin's 0.4
+// (the robot was not getting all the way onto the pin).
+constexpr float kWallPinLead = 0.5f;
 // Along the wall between G2 and the wall; G2 is scored from here.
 constexpr Point kCorridor{34.0f, 3.0f};
 constexpr Point kPin2 = three_pin::kStack2;
@@ -3028,11 +3039,16 @@ void run() {
     chassis.moveToPoint(0, -2, 700, {.forwards = true}, true);
     wait_done_or_stalled();
     toggle.at_s = now_s();
+    // One backward curve from the toggle onto the preload spot (claw first,
+    // ending square to G2) instead of the three-pin's back out, turn, back
+    // in. The carrot starts near (2.6, 15), so the robot first backs
+    // straight away from the wall before it swings round. Same curve helper
+    // as the four-pin (lead 0.45), capped at the three-pin's goal speed.
     const Point preload_spot{kGoal.x - kReach, kGoal.y};
-    chassis.moveToPoint(0, kGoal.y, 1000, {.forwards = false}, false);
-    chassis.turnToHeading(270, 800, {}, false);
-    chassis.moveToPoint(preload_spot.x, preload_spot.y, 1200,
-                        {.forwards = false, .maxSpeed = kGoalSpeed}, false);
+    curve::Settings to_goal = curve::tuned;
+    to_goal.max_speed = kGoalSpeed;
+    curve::to(preload_spot.x, preload_spot.y, 270.0f, /*forwards=*/false, 1800,
+              to_goal);
     if (!raise_preload.wait()) return fail("lift (preload)");
     if (!LiftJob(kPreloadSeatDeg).wait()) return fail("lift (preload)");
     claw_piston.set_value(false);
@@ -3056,7 +3072,8 @@ void run() {
                          pin_spot.y + kWallBackOffIn * std::cos(wh)};
     four_pin_far::take_wall_stack(kWallPin, kWallPinHeading, kWallVia,
                                   four_pin_far::kWallDeeperIn, kLowCarryDeg,
-                                  back_off, kWallPinHeading, wall);
+                                  back_off, kWallPinHeading, wall, kWallPinLead,
+                                  /*chain_out=*/false);
     stop_rolling(150);
     wall_s = now_s();
     show();

@@ -43,6 +43,14 @@ Only the kinds of chaining the three-pin already uses, at full speed:
   cup by about an inch) and at the end of the run along the wall (the turn
   toward G2 there clears G2 by about 2.5 in).
 
+## Field fixes (2026-10-18, first run)
+- The wall-pin curve did not get all the way onto the pin: its carrot is
+  now further back (lead 0.5, was the four-pin's 0.4).
+- The back-off from the wall pin handed over at 40 and coasted to about G2's
+  y, so the run along the wall hit G2: it is now 11 in and stops crisply.
+- Preload: one backward curve from the toggle onto the preload spot instead
+  of back out, turn, back in.
+
 ## Open
 - Not run yet. Expected to be well over 15 s at first (rough estimate 22 to
   25 s); the Brain report shows the time at each step.
