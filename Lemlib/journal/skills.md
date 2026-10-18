@@ -38,7 +38,28 @@ the loader wall toward its corner is field -Y (three-pin +x).
 6. Release; the lift goes all the way down while the robot drives straight
    back south to the line-up spot.
 
-### One G3 trip
+### 2026-10-18 speed-up (PR #2 plus switches)
+- **PR #2 merged** (measured "stack up" checks, the arm's time limit
+  enforced inside its own task, one 4 s limit per score shared by both
+  checks, stall detection from the start of the move, last G3 score lowers
+  only to toggle height, timing totals on the Brain), with five changes so
+  no check ends the run where the old code carried on: the goal aim never
+  aborts (one slow touch-up instead), pickup carries on after 0.4 s, the
+  seat drop and the arm release open the claw anyway, and an arm move that
+  stops short gets one retry (arm raises get 2.5 s).
+- **Lift during the goal turn** (`kRaiseDuringTurn`): the lift starts up to
+  stage 1 (-660.7) while the robot turns to the goal; the rest of the climb
+  and the arm start after the turn. Higher during a turn makes the robot
+  pivot about a point behind its center.
+- **Tighter loader** : loader wait 0.15 s (was 0.25), stall at the loader
+  100 ms (was 150), drive out once the lift has risen 40 degrees (was 60).
+- **Diagonal G3** (`kG3Diagonal`): from the line-up spot the robot turns to
+  nose south (wall reset, fresh Y), then turns the claw straight at G3 and
+  backs in on the diagonal; it comes back the same way to the line-up spot.
+  No north leg, one turn and one stop fewer each way.
+- Speeds unchanged (60 / 50).
+
+### One G3 trip (older path, `kG3Diagonal = false`)
 As for G2 up to step 3, then: drive out nose first to the line-up spot, turn
 nose south and take a second wall reset (G3's run is east-west, so this Y is
 its sideways place), back straight north to kG3Lane (-48, level with G3),
@@ -84,6 +105,7 @@ The 5th was the 4th's height at first and was too low.
 | 2026-10-17 | Line-up 0.75 in back (-57.75); hold short of the goal until lift and arm are measured at height; fast lift raises; loader wait 0.25 s; reset samples while braking; G3 + toggle + park added | Everything consistent; loader still off by the same 0.75 in the same way |
 | 2026-10-17 | Loader lane another 0.75 in (-57.0) | Not uploaded. Wrong way: -57.75 and -57.0 moved the robot away from the loader corner (a misread "go back") |
 | 2026-10-17 | Loader lane -59.25 (0.75 in past -58.5, toward the loader corner) | Not yet run |
+| 2026-10-18 | PR #2 with fixes; lift starts during the goal turn; tighter loader; diagonal G3 | Not yet run |
 
 ## Report (end of the test build)
 Trip times; per trip: where odometry had the robot when it stopped at the

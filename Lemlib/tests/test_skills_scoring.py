@@ -92,6 +92,7 @@ struct State {
     ArmOutcome arm_outcome = ArmOutcome::reached;
     bool claw_closed = true, motion = false;
     int moves = 0, stops = 0, cancelled_moves = 0, contact_calls = 0;
+    int lift_ends = 0;
     std::vector<LiftCommand> lifts;
     std::vector<ArmCommand> arms;
     std::vector<std::uint32_t> opened_at;
@@ -166,6 +167,11 @@ public:
         start(false, target, fast);
     }
     bool done() const { return sim::state.lift_state != 0; }
+    // Cancel and join: a running worker ends as a failure.
+    static void end() {
+        if (sim::state.lift_state == 0) sim::state.lift_state = -1;
+        ++sim::state.lift_ends;
+    }
     bool succeeded() const { return sim::state.lift_state == 1; }
     bool failed() const { return sim::state.lift_state == -1; }
     bool wait() {
@@ -202,6 +208,7 @@ public:
         if (sim::state.arm_started) sim::state.arm_started(target);
     }
     static bool done() { return sim::state.arm_outcome != ArmOutcome::running; }
+    static ArmOutcome result() { return sim::state.arm_outcome; }
     static bool failed() {
         return sim::state.arm_outcome == ArmOutcome::cancelled ||
                sim::state.arm_outcome == ArmOutcome::sensor_error;
@@ -301,8 +308,12 @@ void score_failure_keeps_claw() {
     sim::state.arm = 22;  // legal for the loader, outside score's 20 degrees
     sim::state.arm_outcome = ArmOutcome::timed_out;
     TripTiming timing;
+    // One retry of the arm move, then the shared deadline; the claw stays
+    // closed and nothing starts lowering.
     assert(!put_on({0, 30}, 1, nullptr, timing));
-    assert(sim::state.claw_closed && sim::state.tick == 0);
+    assert(sim::state.claw_closed && sim::state.tick == kStackWaitMs);
+    assert(sim::state.arms.size() == 1 &&
+           sim::state.arms[0].target == arm_position::rest_deg);
 
     at_score(1);
     sim::state.lift_state = -1;
@@ -341,12 +352,15 @@ void one_score_deadline() {
     };
     TripTiming timing;
     assert(!put_on({0, 30}, 1, nullptr, timing));
-    assert(sim::state.tick == 2500);  // 2200 wait + 200 drive + 100 wait
-    assert(timing.stack_ms == 2300);
+    assert(kStackWaitMs == 4000);
+    assert(sim::state.tick == 4000);  // 2200 wait + 200 drive + 1600 wait
+    assert(timing.stack_ms == 3800);
     assert(sim::state.moves == 2 && sim::state.contact_calls == 1);
     assert(sim::state.claw_closed && sim::state.lifts.empty());
 }
 
+// The stack is on the goal: if the arm job ends before halfway, the claw
+// opens anyway (the behaviour before the PR) and the lift starts down.
 void arm_release_failure() {
     for (ArmOutcome failure : {ArmOutcome::timed_out, ArmOutcome::cancelled,
                                ArmOutcome::sensor_error}) {
@@ -362,9 +376,11 @@ void arm_release_failure() {
             }
         };
         TripTiming timing;
-        assert(!put_on({0, 30}, 4, nullptr, timing));
-        assert(sim::state.claw_closed && sim::state.opened_at.empty());
-        assert(sim::state.lifts.empty() && sim::state.stops == 1);
+        assert(put_on({0, 30}, 4, nullptr, timing));
+        assert(!sim::state.claw_closed && sim::state.opened_at.size() == 1);
+        assert(sim::state.opened_at[0] ==
+               (failure == ArmOutcome::timed_out ? 1500u : 20u));
+        assert(sim::state.lifts.size() == 1 && sim::state.lifts[0].settle);
     }
 }
 
@@ -381,12 +397,49 @@ void ordinary_seat_failure() {
             } else if (scenario == 2) sim::state.lift_state = 1;
             else if (scenario == 3) sim::state.lift = NAN;
         };
+        // The claw opens anyway: after 800 ms, or as soon as the lowering
+        // ends early or the sensor drops out (the behaviour before the PR).
         TripTiming timing;
-        assert(!put_on({0, 30}, 1, nullptr, timing));
-        assert(sim::state.tick == (scenario == 0 ? 800 : 40));
-        assert(sim::state.claw_closed && sim::state.opened_at.empty());
+        assert(put_on({0, 30}, 1, nullptr, timing));
+        assert(!sim::state.claw_closed && sim::state.opened_at.size() == 1);
+        assert(sim::state.opened_at[0] == (scenario == 0 ? 800u : 40u));
         assert(sim::state.lifts.size() == 1 && sim::state.lifts[0].settle);
     }
+}
+
+// An arm that stopped 30 degrees short of 530 gets one retry; once it is
+// there the score goes ahead.
+void arm_retry_then_score() {
+    at_score(4);
+    sim::state.arm = kLevels[4].arm_deg - 30;
+    sim::state.arm_outcome = ArmOutcome::timed_out;
+    sim::state.after_delay = [] {
+        if (sim::state.arms.size() == 1 && pros::millis() >= 300 &&
+            sim::state.arm_outcome == ArmOutcome::running) {
+            sim::state.arm = kLevels[4].arm_deg - 5;
+            sim::state.arm_outcome = ArmOutcome::reached;
+        }
+        if (sim::state.arms.size() == 2 && pros::millis() >= 400)
+            sim::state.arm = arm_position::release_deg + 150;  // past halfway
+    };
+    TripTiming timing;
+    assert(put_on({0, 30}, 4, nullptr, timing));
+    assert(sim::state.arms.size() == 2);
+    assert(sim::state.arms[0].target == kLevels[4].arm_deg);
+    assert(sim::state.arms[1].target == arm_position::release_deg);
+    assert(sim::state.opened_at.size() == 1);
+}
+
+// raise_for(take_over): a pre-raise still running is cancelled and the full
+// raise starts at once, without waiting for it.
+void raise_takes_over() {
+    sim::reset();
+    sim::state.lift_state = 0;  // pre-raise still running
+    assert(raise_for(1, true));
+    assert(sim::state.tick == 0 && sim::state.lift_ends == 1);
+    assert(sim::state.lifts.size() == 1 && sim::state.lifts[0].fast);
+    assert(sim::state.lifts[0].target == kLevels[1].lift_deg);
+    assert(sim::state.arms.size() == 1);
 }
 
 void final_score_carry_sequence() {
@@ -421,6 +474,8 @@ int main(int argc, char** argv) {
     else if (name == "arm_release") arm_release_failure();
     else if (name == "seat") ordinary_seat_failure();
     else if (name == "carry") final_score_carry_sequence();
+    else if (name == "arm_retry") arm_retry_then_score();
+    else if (name == "take_over") raise_takes_over();
     else return 2;
 }
 '''
@@ -490,6 +545,8 @@ class SkillsScoringTests(unittest.TestCase):
         self.run_case("raise")
 
     def test_failed_score_does_not_open_claw_or_start_lowering(self):
+        # Lift failure, arm failure, or an arm still out of place after one
+        # retry: the robot does not drive in or release.
         self.run_case("score_failure")
 
     def test_timed_out_arm_can_satisfy_measured_score_tolerance(self):
@@ -498,11 +555,17 @@ class SkillsScoringTests(unittest.TestCase):
     def test_both_score_checks_share_one_deadline(self):
         self.run_case("deadline")
 
-    def test_arm_release_needs_halfway_travel_and_no_explicit_failure(self):
+    def test_arm_release_opens_even_if_the_arm_job_ends_early(self):
         self.run_case("arm_release")
 
-    def test_cup_release_needs_measured_seat_travel_before_deadline(self):
+    def test_cup_release_opens_even_if_the_seat_drop_ends_early(self):
         self.run_case("seat")
+
+    def test_arm_short_of_height_gets_one_retry(self):
+        self.run_case("arm_retry")
+
+    def test_raise_takes_over_a_running_pre_raise(self):
+        self.run_case("take_over")
 
     def test_last_high_score_lowers_to_carry_after_release_settle(self):
         self.run_case("carry")
