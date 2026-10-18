@@ -16,8 +16,13 @@ a park just south of the center goal. The clock check is off for testing
 (`kUseClock`), so every step runs and its time shows on the report. Wall
 stacks are not in the plan (`kWallPins = false`).
 
+Frames: skills positions are in field coordinates (red side: +X east, +Y
+north). The three-pin's start frame has x along the toggle wall and y away
+from it; three-pin x = -4 - field Y and three-pin y = field X + 63. Along
+the loader wall toward its corner is field -Y (three-pin +x).
+
 ### One G2 trip
-1. **Line-up spot** (-48, -57.0), nose south (no turn if already within 3
+1. **Line-up spot** (-48, -59.25), nose south (no turn if already within 3
    degrees). Distance-sensor reset off the south wall: field Y only. If it
    moved odometry more than 0.3 in, drive straight forward or back onto the
    spot.
@@ -77,7 +82,8 @@ The 5th was the 4th's height at first and was too low.
 | 2026-10-17 | Speeds 60 / 50 with braked stops; lift and arm checked by position; 0.1 s reset; loader lane y -58.5 | Reached a good line-up spot, then swung while turning/backing in and ended where it did before |
 | 2026-10-17 | After the wall reset, drive straight along the robot's axis back onto the line-up spot before turning; turn touch-up if more than 1.5 degrees off; three-pin last-score fix | Very consistent; claw a hair past the loader (0.75 in) |
 | 2026-10-17 | Line-up 0.75 in back (-57.75); hold short of the goal until lift and arm are measured at height; fast lift raises; loader wait 0.25 s; reset samples while braking; G3 + toggle + park added | Everything consistent; loader still off by the same 0.75 in the same way |
-| 2026-10-17 | Loader lane another 0.75 in (-57.0) | Not yet run |
+| 2026-10-17 | Loader lane another 0.75 in (-57.0) | Not uploaded. Wrong way: -57.75 and -57.0 moved the robot away from the loader corner (a misread "go back") |
+| 2026-10-17 | Loader lane -59.25 (0.75 in past -58.5, toward the loader corner) | Not yet run |
 
 ## Report (end of the test build)
 Trip times; per trip: where odometry had the robot when it stopped at the

@@ -1657,9 +1657,14 @@ static_assert(kG2.x == three_pin::kGoal.x && kG2.y == three_pin::kGoal.y);
 // loader about 1 in to its left at -56 and was still on the loader's edge at
 // -57. The robot backs in facing east, so its right is south (-Y). The
 // line-up spot moves with it so the run in stays straight.
-// At -58.5 the claw stopped a hair past the loader on the robot's right;
-// at -57.75 still off by the same amount the same way: another 0.75 in.
-constexpr float kLoaderLaneY = -57.0f;
+// Which way is which: this is field Y (the field map's frame). In the
+// three-pin's start frame (x along the toggle wall, y away from it) the same
+// direction is x: three-pin x = -4 - field Y. More negative here = farther
+// along the wall toward the loader's corner.
+// History: -56 and -57 short of the loader, -58.5 "centimetres" short;
+// -57.75 (a misread "go back") went the wrong way and was further off.
+// So 0.75 in past -58.5, toward the corner.
+constexpr float kLoaderLaneY = -59.25f;
 constexpr Point kLoaderField{-66.0f, kLoaderLaneY};
 constexpr Point kLoader = on_field(kLoaderField);
 // Field X of the robot's center when it is backed against the loader. The
