@@ -96,6 +96,8 @@ pros::Motor slider_left(-19, pros::MotorGears::green);
 pros::Motor slider_right(2, pros::MotorGears::green);
 pros::Rotation lift_sensor(16);
 pros::Rotation claw_sensor(12);
+pros::Distance wall_dist_a(1);
+pros::Distance wall_dist_b(3);
 pros::Motor claw_arm(20, pros::MotorGears::green);
 pros::adi::DigitalOut clamp_piston('A');
 void initialize() {
@@ -158,7 +160,7 @@ void competition_initialize() { cancel_driver_macros(); }
 
 // Routine run by autonomous() and the LEFT hotkey. Build another one into a
 // slot without editing this file:
-//   pros make EXTRA_CXXFLAGS=-DAUTON_ROUTINE=two_pin_far_auton
+//   pros make EXTRA_CXXFLAGS=-DAUTON_ROUTINE=four_pin_far_auton
 #ifndef AUTON_ROUTINE
 #define AUTON_ROUTINE three_pin_auton
 #endif
@@ -248,7 +250,7 @@ void opcontrol() {
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT)) {
             autonomous();
         }
-        // UP records a hand-driven curve for the two-pin far route.
+        // UP records a hand-driven curve for the four-pin far route.
         if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_UP))
             master.rumble(curveCaptureToggle() ? "." : "-");
         curveCaptureSample();

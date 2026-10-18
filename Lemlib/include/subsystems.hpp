@@ -38,3 +38,7 @@ extern pros::Motor claw_arm;
 extern pros::adi::DigitalOut clamp_piston;
 extern pros::Rotation claw_sensor;
 extern pros::Rotation lift_sensor;
+// Two distance sensors on the front face (nose) of the robot, side by side,
+// for position resets against the field walls (skills).
+extern pros::Distance wall_dist_a;  // port 1
+extern pros::Distance wall_dist_b;  // port 3

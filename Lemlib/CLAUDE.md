@@ -1,7 +1,8 @@
 # VEX V5 robot (PROS 4.2.2 + LemLib 0.5.6): working notes
 
 Read this first. Last updated 2026-10-14.
-`docs/GPS_RESET_FINDINGS.md` covers the GPS correction code in depth.
+`journal/` holds the localization notes and one file per autonomous route;
+`journal/gps_reset_findings.md` covers the GPS correction code in depth.
 
 ## How the user works
 - Team robot, V5RC "Override" season. The user tests on the field and reports
@@ -29,6 +30,7 @@ Read this first. Last updated 2026-10-14.
 | Left drive | -17, -18 | blue (600 rpm) cartridges |
 | Right drive | 11, 13 | 2.75 in omnis, 450 rpm drive, 12 in track |
 | IMU | 14 | only heading source |
+| Distance sensors | 1, 3 | on the front face (nose), side by side; wall resets in skills (`south_wall_reset`) |
 | GPS | 10 | camera looks out the robot's **right** side; lens 3.0 in fwd, 3.7 in right (mount never re-surveyed) |
 | Lift motors | `slider_left` -19, `slider_right` 2 | green; **negative power = up** |
 | Lift rotation sensor | 16 | **up is negative**, 0 at rest, max -1670 |
@@ -60,8 +62,8 @@ Read this first. Last updated 2026-10-14.
   package) often fails.
 - Host tests: `python3 -m unittest discover -s tests` (13 tests: map math,
   GPS estimator and corrections, curve tuner model). None exercise routes.
-- Slots: 1 "3 pin" (`three_pin_auton`), 2 "2 pin far"
-  (`two_pin_far_auton`), 3 "2 pin close" (`two_pin_close_auton`). Skills has
+- Slots: 1 "3 pin" (`three_pin_auton`), 2 "4 pin far"
+  (`four_pin_far_auton`), 3 "4 pin close" (`four_pin_close_auton`, quadrant 2 = mirror of quadrant 1), 4 "skills" (`skills`, three-pin + first loader entry only until -DSKILLS_FULL_ROUTE). Skills
   no slot yet; ask before overwriting one. The latest two-pin changes (both
   stacks 0.5 in deeper, preload turn/entry time savings, approach logging)
   were **never confirmed uploaded**.
@@ -141,7 +143,7 @@ Read this first. Last updated 2026-10-14.
   takes its position from the goal: center = goal + 8 in along the heading.
   GPS checkpoint after clamping stack 2. The constants are field-tuned; change
   them only as the user asks.
-- **two_pin_far / two_pin_close** (slots 2/3): toggle, preload onto the
+- **four_pin_far / four_pin_close (renamed from two-pin: 2 cups = 4 pins)** (slots 2/3): toggle, preload onto the
   goal, curve claw-first onto the wall stack behind the goal (recorded with
   the UP recorder), score it; then the mirrored wall stack onto the middle
   goal at 90% of stage 2. Close is the far route mirrored in X, which
