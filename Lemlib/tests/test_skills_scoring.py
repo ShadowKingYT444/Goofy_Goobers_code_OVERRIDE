@@ -134,11 +134,20 @@ struct MoveToPointParams {
     bool forwards = true;
     float maxSpeed = 127, minSpeed = 0;
 };
+struct MoveToPoseParams {
+    bool forwards = true;
+    float horizontalDrift = 0, lead = 0.6f, maxSpeed = 127, minSpeed = 0;
+    float earlyExitRange = 0;
+};
 }
 struct Chassis {
     lemlib::Pose getPose() const { return {}; }
     void setPose(float, float, float) {}
     void moveToPoint(float, float, int, lemlib::MoveToPointParams, bool) {
+        ++sim::state.moves;
+        sim::state.motion = true;
+    }
+    void moveToPose(float, float, float, int, lemlib::MoveToPoseParams, bool) {
         ++sim::state.moves;
         sim::state.motion = true;
     }
@@ -190,7 +199,11 @@ private:
 };
 void brake_drive() {}
 void coast_drive() {}
-bool wait_done_or_stalled(std::uint32_t) {
+struct PastLine {
+    float x, y, ux, uy, at_in;
+};
+bool wait_done_or_stalled(std::uint32_t, std::uint32_t = 150, double = 12.0,
+                          std::uint32_t = 300, const PastLine* = nullptr) {
     ++sim::state.contact_calls;
     if (sim::state.at_contact) sim::state.at_contact();
     sim::state.motion = false;
@@ -304,12 +317,23 @@ void score_failure_keeps_claw() {
         assert(sim::state.claw_closed && sim::state.opened_at.empty());
         assert(sim::state.lifts.empty() && sim::state.stops == 1);
     }
-    if (!kStackGates) {  // height checks off (2026-10-18): only a lift failure stops
+    if (!kStackGates) {  // height checks off (2026-10-18): nothing at the goal waits
+        // A failed raise no longer stops the score: the lift is taken to be
+        // at height and the stack is set down.
         at_score(1);
         sim::state.lift_state = -1;
         TripTiming t2;
-        assert(!put_on({0, 30}, 1, nullptr, t2));
-        assert(sim::state.claw_closed && sim::state.lifts.empty());
+        assert(put_on({0, 30}, 1, nullptr, t2));
+        assert(!sim::state.claw_closed && sim::state.lifts.size() == 1);
+        // A raise still running is stopped, not waited for.
+        at_score(1);
+        sim::state.lift_state = 0;
+        TripTiming t3;
+        assert(put_on({0, 30}, 1, nullptr, t3));
+        assert(sim::state.lift_ends == 1 && sim::state.lifts.size() == 1);
+        // The lowering starts once the robot has settled on the goal.
+        assert(sim::state.lifts[0].settle &&
+               sim::state.lifts[0].at == kGoalSettleMs);
         return;
     }
     at_score(1);
@@ -335,13 +359,14 @@ void score_timeout_within_tolerance() {
     sim::state.arm_outcome = ArmOutcome::timed_out;
     const double scored_at = sim::state.lift;
     sim::state.after_delay = [scored_at] {
-        if (pros::millis() >= 20)
+        if (pros::millis() >= kGoalSettleMs + 20)
             sim::state.lift = scored_at + three_pin::kSeatDropDeg + 0.01;
     };
     TripTiming timing;
     assert(put_on({0, 30}, 1, nullptr, timing));
-    assert(!sim::state.claw_closed && sim::state.opened_at[0] == 20);
-    assert(sim::state.tick == 20 + kPneumaticSettleMs);
+    assert(!sim::state.claw_closed &&
+           sim::state.opened_at[0] == kGoalSettleMs + 20);
+    assert(sim::state.tick == kGoalSettleMs + 20 + kPneumaticSettleMs);
     assert(sim::state.lifts.size() == 1 && sim::state.lifts[0].settle);
 }
 
@@ -368,29 +393,24 @@ void one_score_deadline() {
     assert(sim::state.claw_closed && sim::state.lifts.empty());
 }
 
-// The stack is on the goal: if the arm job ends before halfway, the claw
-// opens anyway (the behaviour before the PR) and the lift starts down.
+// 2026-10-18: the arm levels (4th and 5th cups) are set down like the
+// others: drop a third of a level, open, lift down. No arm move at the goal
+// (the RIGHT macro lowered the arm first and swung the claw past the goal);
+// the arm goes back to rest in leave_to().
 void arm_release_failure() {
-    for (ArmOutcome failure : {ArmOutcome::timed_out, ArmOutcome::cancelled,
-                               ArmOutcome::sensor_error}) {
-        at_score(4);
-        sim::state.after_delay = [failure] {
-            const std::uint32_t end = failure == ArmOutcome::timed_out ? 1500 : 20;
-            if (pros::millis() >= end) {
-                sim::state.arm_outcome = failure;
-                // Explicit failure cannot open even at the halfway point.
-                if (failure != ArmOutcome::timed_out)
-                    sim::state.arm = (arm_position::max_deg +
-                                      arm_position::release_deg) / 2.0;
-            }
-        };
-        TripTiming timing;
-        assert(put_on({0, 30}, 4, nullptr, timing));
-        assert(!sim::state.claw_closed && sim::state.opened_at.size() == 1);
-        assert(sim::state.opened_at[0] ==
-               (failure == ArmOutcome::timed_out ? 1500u : 20u));
-        assert(sim::state.lifts.size() == 1 && sim::state.lifts[0].settle);
-    }
+    at_score(4);
+    const double scored_at = sim::state.lift;
+    sim::state.after_delay = [scored_at] {
+        if (pros::millis() >= kGoalSettleMs + 40)
+            sim::state.lift = scored_at + three_pin::kSeatDropDeg + 0.01;
+    };
+    TripTiming timing;
+    assert(put_on({0, 30}, 4, nullptr, timing));
+    assert(!sim::state.claw_closed && sim::state.opened_at.size() == 1);
+    assert(sim::state.opened_at[0] == kGoalSettleMs + 40);
+    assert(sim::state.arms.empty());
+    assert(sim::state.lifts.size() == 1 && sim::state.lifts[0].settle);
+    assert(sim::state.lifts[0].at == kGoalSettleMs);
 }
 
 void ordinary_seat_failure() {
@@ -399,7 +419,7 @@ void ordinary_seat_failure() {
         at_score(1);
         const double scored_at = sim::state.lift;
         sim::state.after_delay = [scenario, scored_at] {
-            if (pros::millis() < 40) return;
+            if (pros::millis() < kGoalSettleMs + 40) return;
             if (scenario == 1) {
                 sim::state.lift_state = -1;
                 sim::state.lift = scored_at + three_pin::kSeatDropDeg + 0.01;
@@ -411,7 +431,8 @@ void ordinary_seat_failure() {
         TripTiming timing;
         assert(put_on({0, 30}, 1, nullptr, timing));
         assert(!sim::state.claw_closed && sim::state.opened_at.size() == 1);
-        assert(sim::state.opened_at[0] == (scenario == 0 ? 800u : 40u));
+        assert(sim::state.opened_at[0] ==
+               kGoalSettleMs + (scenario == 0 ? 800u : 40u));
         assert(sim::state.lifts.size() == 1 && sim::state.lifts[0].settle);
     }
 }
@@ -455,22 +476,123 @@ void raise_takes_over() {
 void final_score_carry_sequence() {
     for (bool last_load : {false, true}) {
         at_score(4);
-        sim::state.after_delay = [] {
-            if (pros::millis() >= 40)
-                sim::state.arm = (arm_position::max_deg +
-                                  arm_position::release_deg) / 2.0;
+        const double scored_at = sim::state.lift;
+        sim::state.after_delay = [scored_at] {
+            if (pros::millis() >= kGoalSettleMs + 40)
+                sim::state.lift = scored_at + three_pin::kSeatDropDeg + 0.01;
         };
         TripTiming timing;
         assert(put_on({0, 30}, 4, nullptr, timing, last_load));
-        assert(sim::state.opened_at.size() == 1 && sim::state.opened_at[0] == 40);
+        assert(sim::state.opened_at.size() == 1 &&
+               sim::state.opened_at[0] == kGoalSettleMs + 40);
+        assert(sim::state.arms.empty());
         assert(sim::state.lifts.size() == 1);
         const auto& next = sim::state.lifts[0];
-        assert(next.at == 40 + arm_position::release_settle_ms);
-        assert(arm_position::release_settle_ms == 100);
-        assert(sim::state.tick == next.at && !next.fast);
+        // The lowering starts once settled; the claw opens on the way down.
+        assert(next.at == kGoalSettleMs && !next.fast);
         if (last_load) assert(!next.settle && next.target == kCarryDeg);
         else assert(next.settle);
     }
+}
+
+// 2026-10-18: with the gates off, the robot holds short of the goal only
+// while the stack is really not up (here: the top level still climbing),
+// and goes on once the lift is within kLiftNearDeg of its height. The lift
+// lock's band (95% of travel) no longer counts as up: from there the load
+// clipped the top of the goal's stack.
+void light_hold_until_up() {
+    if (kStackGates) return;
+    at_score(5);
+    sim::state.lift = -1600;  // in the lock's band, 62 below the height
+    sim::state.lift_state = 0;
+    sim::state.after_delay = [] {
+        if (pros::millis() >= 300) sim::state.lift = kLevels[5].lift_deg + 5;
+    };
+    TripTiming timing;
+    assert(put_on({0, 30}, 5, nullptr, timing));
+    assert(sim::state.moves == 2 && sim::state.cancelled_moves == 1);
+    assert(timing.stack_ms >= 300 && timing.stack_ms <= 310);
+    assert(sim::state.lift_ends == 1);  // the raise is stopped at contact
+    // Already up: no hold at all.
+    at_score(5);
+    TripTiming t2;
+    assert(put_on({0, 30}, 5, nullptr, t2));
+    // (One cancel and a second move: the hand-over to the slow last
+    // stretch, kGoalFinalSpeed.)
+    assert(sim::state.moves == 2 && sim::state.cancelled_moves == 1 &&
+           t2.stack_ms == 0);
+}
+
+// 2026-10-18: the claw opens after half the old drop (kReleaseDropDeg, a
+// sixth of a level), after the robot has settled on the goal.
+void half_drop_release() {
+    at_score(2);
+    const double scored_at = sim::state.lift;
+    sim::state.after_delay = [scored_at] {
+        if (pros::millis() >= kGoalSettleMs + 30)
+            sim::state.lift = scored_at + kReleaseDropDeg + 0.01;
+    };
+    TripTiming timing;
+    assert(put_on({0, 30}, 2, nullptr, timing));
+    assert(sim::state.opened_at.size() == 1 &&
+           sim::state.opened_at[0] == kGoalSettleMs + 30);
+    assert(kReleaseDropDeg < three_pin::kSeatDropDeg * 0.51);
+}
+
+// 2026-10-18: a hold for a lift that never comes up ends at kHoldCapMs
+// (no more 3 s stops); the robot goes on and the report counts it.
+void hold_is_capped() {
+    if (kStackGates) return;
+    at_score(5);
+    sim::state.lift = -1400;
+    sim::state.lift_state = 0;
+    TripTiming timing;
+    assert(put_on({0, 30}, 5, nullptr, timing));
+    // Once, short of the goal: no second wait at contact after a capped hold.
+    assert(timing.capped == 1);
+    assert(timing.stack_ms >= kHoldCapMs && timing.stack_ms <= kHoldCapMs + 30);
+    assert(sim::state.opened_at.size() == 1);
+}
+
+// 2026-10-18 (fourth video): no arm reading (sensor silent). An arm level
+// is not taken to be up: the hold short of the goal runs to its cap instead
+// of the robot going straight in. A level with the arm at rest goes by the
+// lift alone.
+void missing_arm_reading() {
+    if (kStackGates) return;
+    at_score(4);
+    sim::state.arm = NAN;
+    sim::state.lift_state = 0;  // the raise still running
+    TripTiming timing;
+    assert(put_on({0, 30}, 4, nullptr, timing));
+    assert(timing.capped == 1);
+    assert(timing.stack_ms >= kHoldCapMs && timing.stack_ms <= kHoldCapMs + 30);
+    at_score(3);
+    sim::state.arm = NAN;
+    TripTiming t2;
+    assert(put_on({0, 30}, 3, nullptr, t2));
+    assert(t2.capped == 0 && t2.stack_ms == 0);
+    assert(sim::state.opened_at.size() == 1);
+}
+
+// 2026-10-18 (team): height 4 (the third cup) 180 degrees lower than the
+// third cup's step, and 0.5 s more standing on the goal before it is set
+// down; the other levels keep the plain settle.
+void height_four_padding() {
+    assert(kLevels[3].lift_deg == kThirdCupDeg + 180.0f);
+    assert(kLevels[3].extra_settle_ms == 500 && kLevels[2].extra_settle_ms == 0);
+    at_score(3);
+    const double scored_at = sim::state.lift;
+    sim::state.after_delay = [scored_at] {
+        if (pros::millis() >= kGoalSettleMs + 530)
+            sim::state.lift = scored_at + kReleaseDropDeg + 0.01;
+    };
+    TripTiming timing;
+    assert(put_on({0, 30}, 3, nullptr, timing));
+    assert(sim::state.lifts.size() == 1 &&
+           sim::state.lifts[0].at == kGoalSettleMs + 500);
+    assert(sim::state.opened_at.size() == 1 &&
+           sim::state.opened_at[0] == kGoalSettleMs + 530);
 }
 
 int main(int argc, char** argv) {
@@ -484,6 +606,11 @@ int main(int argc, char** argv) {
     else if (name == "arm_release") arm_release_failure();
     else if (name == "seat") ordinary_seat_failure();
     else if (name == "carry") final_score_carry_sequence();
+    else if (name == "light_hold") light_hold_until_up();
+    else if (name == "half_drop") half_drop_release();
+    else if (name == "hold_cap") hold_is_capped();
+    else if (name == "no_arm") missing_arm_reading();
+    else if (name == "height4") height_four_padding();
     else if (name == "arm_retry") arm_retry_then_score();
     else if (name == "take_over") raise_takes_over();
     else return 2;
@@ -509,7 +636,10 @@ def production_harness():
     for name in ("kMostOnGoal", "kScoreReachIn", "kGoalRefMaxIn", "kCarryDeg",
                  "kThirdCupDeg", "kFullLiftDeg", "kCalmDrive", "kLiftDownDeg",
                  "kArmCloseDeg", "kLiftAtDeg", "kArmAtDeg", "kStackWaitMs",
-                 "kStackGates",
+                 "kStackGates", "kArmNearDeg", "kLiftNearDeg", "kGoalContactMs",
+                 "kGoalContactLaunchMs", "kGoalContactRpm",
+                 "kGoalFinalSpeed", "kPastContactIn", "kGoalSettleMs", "kHoldCapMs",
+                 "kReleaseDropDeg", "kPinSeatDeg",
                  "mechanism_stop_reason"):
         parts.append(declaration(source, name))
     parts.append(extract_block(source, r"^struct Level\b", semicolon=True))
@@ -566,7 +696,7 @@ class SkillsScoringTests(unittest.TestCase):
     def test_both_score_checks_share_one_deadline(self):
         self.run_case("deadline")
 
-    def test_arm_release_opens_even_if_the_arm_job_ends_early(self):
+    def test_arm_levels_release_like_the_others(self):
         self.run_case("arm_release")
 
     def test_cup_release_opens_even_if_the_seat_drop_ends_early(self):
@@ -578,8 +708,23 @@ class SkillsScoringTests(unittest.TestCase):
     def test_raise_takes_over_a_running_pre_raise(self):
         self.run_case("take_over")
 
-    def test_last_high_score_lowers_to_carry_after_release_settle(self):
+    def test_claw_opens_after_half_the_old_drop(self):
+        self.run_case("half_drop")
+
+    def test_holds_for_the_lift_are_capped(self):
+        self.run_case("hold_cap")
+
+    def test_holds_short_only_while_the_stack_is_not_up(self):
+        self.run_case("light_hold")
+
+    def test_last_high_score_lowers_to_carry_while_releasing(self):
         self.run_case("carry")
+
+    def test_missing_arm_reading_does_not_count_as_up(self):
+        self.run_case("no_arm")
+
+    def test_height_four_lower_with_extra_settle(self):
+        self.run_case("height4")
 
 
 if __name__ == "__main__":

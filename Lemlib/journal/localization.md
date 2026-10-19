@@ -169,6 +169,7 @@ noted.
 | 2026-10-17 | Calm loop: speed capped at 60 (drive) and 50 (turns), every move and turn settled; the turn to G2 is made before the lift goes up | G2 lined up well; too slow; loader reached about 1 in to the robot's left |
 | 2026-10-17 | Speeds back up to 100 with braked stops, wall reset 0.15 s, loader lane 1 in to the robot's right (y -57) | Consistent from trip to trip: the resets work. Still on the loader's edge |
 | 2026-10-17 | Loader lane 1.5 in more to the robot's right (y -58.5); 0.1 s wall reset | not yet run |
+| 2026-10-18 | South-wall reading taken at G2 (about 34 in out, 10 polls, scatter up to 0.6 in) instead of at the line-up spot; line-up reset only as a fallback (skills.md) | not yet run |
 
 ## Sources
 - VEX Forum, "About the sensors used in Autonomous" (wall resets vs MCL): https://www.vexforum.com/t/about-the-sensors-used-in-autonomous/139090

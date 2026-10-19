@@ -118,6 +118,21 @@ int main(int argc, char** argv) {
         near(chassis.pose.y,17); near(chassis.pose.theta,92);
         near(fix.dy_in,expected_x-56); // innovation uses the current X
         assert(three_pin::brakes==1 && three_pin::coasts==1);
+    } else if (test=="far_at_goal") {
+        // From G2 (kWallResetAtGoal): ten polls over 0.09 s, same frame.
+        const auto fix=skills_route::south_wall_reset(true);
+        assert(fix.applied && chassis.sets==1);
+        assert(wall_dist_a.read_times.size()==10 && pros::clock_ms==90);
+        near(chassis.pose.x,-4-(-70.63f+4.5f+175/25.4f));
+    } else if (test=="far_scatter_gate") {
+        // 0.5 in RMS: refused near the wall (0.35), allowed from G2 (0.6).
+        for (std::size_t i=0;i<cycles.size();++i)
+            cycles[i].a=cycles[i].b=(i%2 ? 175+13 : 175-13);
+        assert(!skills_route::read_wall().ok);
+        reset();
+        for (std::size_t i=0;i<cycles.size();++i)
+            cycles[i].a=cycles[i].b=(i%2 ? 175+13 : 175-13);
+        assert(skills_route::read_wall(10, 0.6f).ok);
     } else if (test=="heading_drift") {
         pros::tick=[] { chassis.pose.theta=96; };
         const auto fix=skills_route::south_wall_reset();
@@ -196,6 +211,8 @@ constexpr float field_heading(float deg) { return deg-90; }
     def test_samples_describe_only_the_latest_stop(self): self.check("one_stop_only")
     def test_reset_preserves_fresh_pose_components(self): self.check("fresh_pose")
     def test_heading_is_rechecked_after_sampling(self): self.check("heading_drift")
+    def test_far_reading_at_goal_uses_ten_samples(self): self.check("far_at_goal")
+    def test_far_reading_allows_more_scatter(self): self.check("far_scatter_gate")
     def test_motion_after_final_sample_rejects_reset(self): self.check("late_motion")
     def test_invalid_velocity_cannot_prove_stillness(self): self.check("bad_velocity")
     def test_late_contact_wait_does_not_restart_launch_grace(self): self.check("late_contact")

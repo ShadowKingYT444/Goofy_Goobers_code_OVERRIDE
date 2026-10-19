@@ -34,9 +34,17 @@
 // Build: pros make EXTRA_CXXFLAGS=-DAUTON_ROUTINE=motion_tune_auton
 // Run from driver control with LEFT; B stops it. About 2 minutes.
 // Floor: about 3 ft x 3 ft clear, mostly behind the robot and to its left.
+//
+// 2026-10-18 first run: curve best 0.30/80/0 (now in solo). The chain part
+// stopped after its first setting (B or runaway), so the curve part is off
+// (kRunCurves) and the chain part runs alone, each run listed on its own,
+// with why it stopped. Chain floor: about 2 ft clear to the robot's right
+// (and a little behind it).
 namespace {
+constexpr bool kRunCurves = false;
 constexpr float kRunawayIn = 50.0f;
 bool aborted = false;
+char stop_why[48] = "";
 
 pros::Controller& pad() {
     static pros::Controller controller(pros::E_CONTROLLER_MASTER);
@@ -57,8 +65,12 @@ void coast_all() {
 bool watch() {
     while (chassis.isInMotion()) {
         const lemlib::Pose p = chassis.getPose();
-        if (pad().get_digital(pros::E_CONTROLLER_DIGITAL_B) ||
-            std::hypot(p.x, p.y) > kRunawayIn) {
+        const bool b = pad().get_digital(pros::E_CONTROLLER_DIGITAL_B);
+        if (b || std::hypot(p.x, p.y) > kRunawayIn) {
+            if (b) std::snprintf(stop_why, sizeof(stop_why), "B pressed");
+            else
+                std::snprintf(stop_why, sizeof(stop_why),
+                              "runaway at %.0f,%.0f", p.x, p.y);
             chassis.cancelAllMotions();
             brake_all();
             aborted = true;
@@ -175,8 +187,10 @@ bool chain_trial(const ChainSet& c, Trial& t) {
 void show(const char* status, const std::vector<Trial>& curves,
           const std::vector<Trial>& chains) {
     char text[900];
-    int used = std::snprintf(text, sizeof(text), "MOTION TUNE  %s\n"
-                             "Curve lead/speed/floor: s err over deg", status);
+    int used = std::snprintf(text, sizeof(text), "MOTION TUNE  %s", status);
+    if (!curves.empty())
+        used += std::snprintf(text + used, sizeof(text) - used,
+                              "\nCurve lead/speed/floor: s err over deg");
     std::vector<Trial> c = curves;
     std::sort(c.begin(), c.end(),
               [](const Trial& a, const Trial& b) { return a.cost() < b.cost(); });
@@ -186,39 +200,29 @@ void show(const char* status, const std::vector<Trial>& curves,
                               c[i].time_s, c[i].err_in, c[i].over_in,
                               c[i].head_deg);
     used += std::snprintf(text + used, sizeof(text) - used,
-                          "\nChain (mean of runs): s err over deg");
-    // Average the repeated runs of each chain setting.
-    std::vector<Trial> means;
-    for (const Trial& t : chains) {
-        auto it = std::find_if(means.begin(), means.end(), [&](const Trial& m) {
-            return std::string(m.name) == t.name;
-        });
-        if (it == means.end()) {
-            means.push_back(t);
-            continue;
-        }
-        it->time_s = (it->time_s + t.time_s) / 2;
-        it->err_in = (it->err_in + t.err_in) / 2;
-        it->over_in = (it->over_in + t.over_in) / 2;
-        it->head_deg = (it->head_deg + t.head_deg) / 2;
-    }
-    for (const Trial& m : means)
+                          "\nChain runs: s err over deg");
+    // Every run on its own line, so one odd run stands out.
+    for (const Trial& t : chains)
         used += std::snprintf(text + used, sizeof(text) - used,
-                              "\n %-9s %.2f %.1f %+.1f %.0f", m.name, m.time_s,
-                              m.err_in, m.over_in, m.head_deg);
-    if (!c.empty() && !means.empty()) {
-        const Trial* best = &means[0];
-        for (const Trial& m : means)
-            if (m.cost() < best->cost()) best = &m;
-        std::snprintf(text + used, sizeof(text) - used,
-                      "\nBest: curve %s  chain %s", c[0].name, best->name);
+                              "\n %-9s %.2f %.1f %+.1f %.0f", t.name, t.time_s,
+                              t.err_in, t.over_in, t.head_deg);
+    if (!chains.empty()) {
+        const Trial* best = &chains[0];
+        for (const Trial& t : chains)
+            if (t.cost() < best->cost()) best = &t;
+        used += std::snprintf(text + used, sizeof(text) - used,
+                              "\nBest run: chain %s", best->name);
     }
+    if (*stop_why)
+        std::snprintf(text + used, sizeof(text) - used, "\nStopped: %s",
+                      stop_why);
     fieldviz::report_full(text);
 }
 }  // namespace
 
 void motion_tune_auton() {
     aborted = false;
+    stop_why[0] = '\0';
     const CurveSet curve_sets[] = {
         {0.30f, 80, 0},  {0.30f, 110, 0},  {0.30f, 80, 24},  {0.30f, 110, 24},
         {0.45f, 80, 0},  {0.45f, 110, 0},  {0.45f, 80, 24},  {0.45f, 110, 24},
@@ -233,6 +237,7 @@ void motion_tune_auton() {
     std::vector<Trial> curves, chains;
     show("starting", curves, chains);
     for (const CurveSet& c : curve_sets) {
+        if (!kRunCurves) break;
         Trial t;
         if (!curve_trial(c, t)) return show("STOPPED (B or runaway)", curves, chains);
         curves.push_back(t);

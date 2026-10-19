@@ -64,3 +64,24 @@
   125 degrees from the target instead of about 280 (it still ends within 8
   degrees, motors on HOLD). Only skills' raises use it; the match routes keep
   the tuned 0.45.
+
+## 2026-10-18: LemLib facts from the motion tuner (checked against 0.5.6 source)
+- moveToPose with a power floor (minSpeed) ends once the robot is within
+  7.5 in and crosses the target's line, often before the final heading:
+  solo's preload curve ended 5.3 in short and 41 degrees crooked. A curve
+  that must arrive square uses no floor and ends on contact instead.
+- Without a floor, moveToPose stalls about 1.4 in short (drive power is
+  about 6 x distance) and waits for its time limit. Aim past the contact
+  point so it is still driving when it touches.
+- moveToPoint's floor applies all the way in (not only far out).
+- turnToHeading with a floor of 10 can stop short from rest and push until
+  its time limit (it ends early only within 3 degrees after 0.5 s). Skills
+  turns now also end on a 0.1 s stall; small fixes use a floor of 20.
+- A move or turn without a floor ends when EITHER exit triggers (within 1
+  in / 1 degree for 0.1 s, or within 3 in / 3 degrees for 0.5 s). Close in
+  the power (about 6 x inches left) cannot move the robot, so plain moves
+  usually end on the 0.5 s one, just over an inch short. Anything driven
+  into contact should aim past the contact point and end on the stall.
+- Within 7.5 in, moveToPoint raises its speed cap to at least 60 and stops
+  steering; with a floor it ends on crossing the line `earlyExitRange` before
+  the target (LemLib tutorial 8; aadishv.dev/move2point).
