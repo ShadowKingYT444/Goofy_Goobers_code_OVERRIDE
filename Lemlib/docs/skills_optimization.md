@@ -1,5 +1,11 @@
 # Skills: less waiting, with the same drive speeds
 
+**Historical PR #2 record.** Later main changes use diagonal G3 trips, raise the
+lift and arm at the clamp, and change readiness/release policies. The return arc
+below describes the older route. For the current implementation handoff, use
+[RW-based localization and Skills motion plan](rw_localization_motion_plan.md)
+and its pinned baseline. The test results below belong to the earlier change.
+
 This change removes avoidable waiting and exposes mechanism failures. The match-load loop
 keeps its drive cap of 60, turn cap of 50, and loader line-up at field
 **(-48, -59.25)**. The baseline is main commit `dcf9c7c`. Host tests cannot prove
